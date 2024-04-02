@@ -100,7 +100,10 @@ class Object:
         ]
         if value == "-1":
             value = "none"
+        if value == 'parking':
+            value = "parkingSpace"
         if value not in road_types and value not in customs:
+            breakpoint()
             raise AttributeError("Value is not a supported object type!")
         self._type = str(value)
 

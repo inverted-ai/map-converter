@@ -11,15 +11,21 @@ import re
 import sys
 from typing import Tuple, Optional
 
+import imageio
 import numpy as np
 from pathlib import Path
+
+import torch.cuda
 from lxml import etree
 from omegaconf import OmegaConf
 
 import lanelet2
-from torchdrivesim.map import Stopline, MapConfig, store_map_config
+from torchdrivesim.map import Stopline, MapConfig, store_map_config, resolve_paths_to_absolute
 from torchdrivesim.lanelet2 import LaneletMap, load_lanelet_map, road_mesh_from_lanelet_map, lanelet_map_to_lane_mesh
 from torchdrivesim.mesh import BirdviewMesh
+from torchdrivesim.rendering import renderer_from_config, RendererConfig
+from torchdrivesim.traffic_controls import traffic_controls_from_map_config
+from torchdrivesim.utils import Resolution
 
 from crdesigner.common.config.general_config import GeneralConfig
 from crdesigner.common.config.lanelet2_config import lanelet2_config
@@ -142,3 +148,20 @@ if __name__ == '__main__':
         stoplines_path=stoplines_path,
     )
     store_map_config(map_cfg, os.path.join(cfg.dir_path, 'metadata.json'))
+
+    # Visualize results
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    res = Resolution(2048, 2048)
+    map_cfg = resolve_paths_to_absolute(cfg, root=cfg.dir_path)
+    driving_surface_mesh = map_cfg.road_mesh.to(device)
+    renderer_cfg = RendererConfig(left_handed_coordinates=map_cfg.left_handed_coordinates)
+    renderer = renderer_from_config(
+        renderer_cfg, device=device, static_mesh=driving_surface_mesh
+    )
+    traffic_controls = traffic_controls_from_map_config(map_cfg)
+    controls_mesh = renderer.make_traffic_controls_mesh(traffic_controls).to(renderer.device)
+    renderer.add_static_meshes([controls_mesh])
+    map_image = renderer.render_static_meshes(res=res, fov=800)
+    imageio.imsave(
+        os.path.join(cfg.dir_path, 'visualization.png'), map_image[0].cpu().numpy().astype(np.uint8)
+    )

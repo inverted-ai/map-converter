@@ -71,6 +71,18 @@ if __name__ == '__main__':
     # Convert OpenDRIVE to CommonRoad
     general_config = GeneralConfig()
     open_drive_config = OpenDriveConfig()
+    open_drive_config.filter_types = [
+        "driving",
+        "restricted",
+        "onRamp",
+        "offRamp",
+        "exit",
+        "entry",
+        # "sidewalk",
+        # "shoulder",
+        # "crosswalk",
+        # "bidirectional",
+    ]
     opendrive = parse_opendrive(Path(opendrive_path))
     road_network = Network()
     road_network.load_opendrive(opendrive)
@@ -87,46 +99,69 @@ if __name__ == '__main__':
     with open(osm_path, "wb") as file_out:
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))
 
-    # Construct Lanelet2 projector
-    origin = extract_origin(georeference=opendrive.header.geo_reference)
-    projector = lanelet2.projection.UtmProjector(lanelet2.io.Origin(*origin))
-
-    def project_point(p):
-        lanelet2_point = projector.forward(lanelet2.core.GPSPoint(*l2osm.transformer.transform(*p)))
-        return lanelet2_point.x, lanelet2_point.y
-
-    def lanelet_stopline(lanelet, opendrive_id, agent_type):
-        left = np.array(project_point(lanelet.left_vertices[-1]))
-        right = np.array(project_point(lanelet.right_vertices[-1]))
-        center = (left + right) / 2
-        right_to_left = left - right
-        return Stopline(
-            actor_id=opendrive_id, agent_type=agent_type,
-            x=float(center[0]), y=float(center[1]),
-            length=1.0, width=float(np.linalg.norm(left - right)),
-            orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
-        )
-
     # Export stoplines
-    traffic_light_by_id = {t.traffic_light_id: t for t in commonroad.lanelet_network.traffic_lights}
-    traffic_sign_by_id = {t.traffic_sign_id: t for t in commonroad.lanelet_network.traffic_signs}
+    stoplines = []
+    for traffic_light in commonroad.lanelet_network.traffic_lights:
+        if not hasattr(traffic_light, 'iai_stoplines'):
+            continue
+        agent_type = 'traffic-light'
+        opendrive_id = traffic_light.opendrive_id
+        for left, right in traffic_light.iai_stoplines:
+            center = (left + right) / 2
+            right_to_left = left - right
+            stopline = Stopline(
+                actor_id=opendrive_id, agent_type=agent_type, x=float(center[0]), y=float(center[1]),
+                length=1.0, width=float(np.linalg.norm(left - right)),
+                orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
+            )
+            stoplines.append(dataclasses.asdict(stopline))
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
-    lanelet_traffic_light_pairs = [
-        (l, traffic_light_by_id[tid], 'traffic-light')
-        for l in commonroad.lanelet_network.lanelets for tid in l.traffic_lights
-    ]
-    # lanelet_traffic_sign_pairs = [
-    #     (l, traffic_sign_by_id[tid], )
-    #     for l in commonroad.lanelet_network.lanelets for tid in l.traffic_signs
-    #     if traffic_sign_by_id[tid].
-    # ]
-    lanelet_stoplines = [
-        lanelet_stopline(lanelet, t.opendrive_id, agent_type)
-        for (lanelet, t, agent_type) in lanelet_traffic_light_pairs
-    ]
-    stoplines = [dataclasses.asdict(stopline) for stopline in lanelet_stoplines]
     with open(stoplines_path, 'w') as f:
         json.dump(stoplines, f, indent=4)
+
+    # Construct Lanelet2 projector
+    if opendrive.header.geo_reference is None:
+        origin = 0.0, 0.0
+    else:
+        origin = extract_origin(georeference=opendrive.header.geo_reference)
+    projector = lanelet2.projection.UtmProjector(lanelet2.io.Origin(*origin))
+
+    # def project_point(p):
+    #     lanelet2_point = projector.forward(lanelet2.core.GPSPoint(*l2osm.transformer.transform(*p)))
+    #     return lanelet2_point.x, lanelet2_point.y
+    #
+    # def lanelet_stopline(lanelet, opendrive_id, agent_type):
+    #     left = np.array(project_point(lanelet.left_vertices[-1]))
+    #     right = np.array(project_point(lanelet.right_vertices[-1]))
+    #     center = (left + right) / 2
+    #     right_to_left = left - right
+    #     return Stopline(
+    #         actor_id=opendrive_id, agent_type=agent_type,
+    #         x=float(center[0]), y=float(center[1]),
+    #         length=1.0, width=float(np.linalg.norm(left - right)),
+    #         orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
+    #     )
+    #
+    # # Export stoplines
+    # traffic_light_by_id = {t.traffic_light_id: t for t in commonroad.lanelet_network.traffic_lights}
+    # traffic_sign_by_id = {t.traffic_sign_id: t for t in commonroad.lanelet_network.traffic_signs}
+    # stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
+    # lanelet_traffic_light_pairs = [
+    #     (l, traffic_light_by_id[tid], 'traffic-light')
+    #     for l in commonroad.lanelet_network.lanelets for tid in l.traffic_lights
+    # ]
+    # # lanelet_traffic_sign_pairs = [
+    # #     (l, traffic_sign_by_id[tid], )
+    # #     for l in commonroad.lanelet_network.lanelets for tid in l.traffic_signs
+    # #     if traffic_sign_by_id[tid].
+    # # ]
+    # lanelet_stoplines = [
+    #     lanelet_stopline(lanelet, t.opendrive_id, agent_type)
+    #     for (lanelet, t, agent_type) in lanelet_traffic_light_pairs
+    # ]
+    # stoplines = [dataclasses.asdict(stopline) for stopline in lanelet_stoplines]
+    # with open(stoplines_path, 'w') as f:
+    #     json.dump(stoplines, f, indent=4)
 
     # Export road mesh
     mesh_path = os.path.join(cfg.dir_path, f"{location}_mesh.json")
@@ -152,7 +187,7 @@ if __name__ == '__main__':
     # Visualize results
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     res = Resolution(2048, 2048)
-    map_cfg = resolve_paths_to_absolute(cfg, root=cfg.dir_path)
+    map_cfg = resolve_paths_to_absolute(map_cfg, root=cfg.dir_path)
     driving_surface_mesh = map_cfg.road_mesh.to(device)
     renderer_cfg = RendererConfig(left_handed_coordinates=map_cfg.left_handed_coordinates)
     renderer = renderer_from_config(

@@ -153,6 +153,10 @@ class OpenDriveConverter:
 
                 if plane_group.length > 0:
                     plane_groups.append(plane_group)
+
+                    if hasattr(lane, 'signal_reference'):
+                        left_vertices, right_vertices = plane_group.parametric_lanes[0].calc_vertices(0, 0, None)
+                        plane_group.stopline = lane.signal_reference, left_vertices[0], right_vertices[0]
         return plane_groups
 
     @staticmethod

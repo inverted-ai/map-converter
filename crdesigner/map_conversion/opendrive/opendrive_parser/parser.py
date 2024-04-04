@@ -482,6 +482,17 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
     new_signal.unit = road_signal.get("unit")
     new_signal.text = road_signal.get("text")
 
+    for child in road_signal.iterchildren():
+        if child.tag == 'validity':
+            if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
+                breakpoint()
+            fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
+            for lane_idx in range(fromLane, toLane + 1):
+                lane = new_road.lanes.lane_sections[0].getLane(lane_idx)
+                if lane is None:
+                    breakpoint()
+                lane.signal_reference = new_signal.id
+
     new_road.addSignal(new_signal)
 
 
@@ -497,6 +508,17 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
     new_signal_reference.s = road_signal_reference.get("s")  # position along the reference curve
     new_signal_reference.t = road_signal_reference.get("t")  # position away from the reference curve
     new_signal_reference.orientation = road_signal_reference.get("orientation")
+
+    for child in road_signal_reference.iterchildren():
+        if child.tag == 'validity':
+            if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
+                breakpoint()
+            fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
+            for lane_idx in range(fromLane, toLane+1):
+                lane = new_road.lanes.lane_sections[0].getLane(lane_idx)
+                if lane is None:
+                    breakpoint()
+                lane.signal_reference = new_signal_reference.id
 
     new_road.addSignalReference(new_signal_reference)
 

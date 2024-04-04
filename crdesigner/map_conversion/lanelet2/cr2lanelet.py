@@ -219,7 +219,7 @@ class CR2LaneletConverter:
             self._convert_traffic_light(traffic_light)
 
         # map the traffic signs and the referred lanelets (yield+right_of_way) to a 'right_of_way_relation' object
-        self._add_right_of_way_relation()
+        # self._add_right_of_way_relation()  # A maneuver must refer to at least one lanelet that has right of way!
 
         # map the traffic lights and the referred lanelets to a 'right_of_way_relation' object
         self._add_regulatory_element_for_traffic_lights()

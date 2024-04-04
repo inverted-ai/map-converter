@@ -330,18 +330,17 @@ class Network:
 
         if transformer is not None:
             # Apply the transformer to traffic controls
-            # TODO: copy objects instead of modifying them in place
             for xs in [
                 self._traffic_lights,
                 self._traffic_signs,
             ]:
                 for x in xs:
                     x.position = np.array(transformer.transform(*x.position))
-                    # if hasattr(x, 'iai_stoplines'):
-                    #     x.iai_stoplines = [
-                    #         (np.array(transformer.transform(*left)), np.array(transformer.transform(*right)))
-                    #         for left, right in x.iai_stoplines
-                    #     ]
+                    if hasattr(x, 'iai_stoplines'):
+                        x.iai_stoplines = [
+                            (np.array(transformer.transform(*left)), np.array(transformer.transform(*right)))
+                            for left, right in x.iai_stoplines
+                        ]
             for x in self._stop_lines:
                 x.start = np.array(transformer.transform(*x.start))
                 x.end = np.array(transformer.transform(*x.end))

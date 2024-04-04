@@ -219,10 +219,49 @@ class CR2LaneletConverter:
             self._convert_traffic_light(traffic_light)
 
         # map the traffic signs and the referred lanelets (yield+right_of_way) to a 'right_of_way_relation' object
-        # self._add_right_of_way_relation()  # A maneuver must refer to at least one lanelet that has right of way!
+        self._add_right_of_way_relation()
 
         # map the traffic lights and the referred lanelets to a 'right_of_way_relation' object
         self._add_regulatory_element_for_traffic_lights()
+
+        return self.osm.serialize_to_xml()
+
+    def convert_lanelet_network(self, lanelet_network, transformer):
+        if transformer is None:
+            crs_from = CRS(self._cr_config.proj_string_cr)
+            crs_to = CRS(lanelet2_default)
+            self.transformer = Transformer.from_proj(crs_from, crs_to)
+        else:
+            self.transformer = transformer
+
+        self.osm = OSMLanelet()
+        self.lanelet_network = lanelet_network
+        self.first_nodes = {}  # saves first left and right node | dict() but with a faster execution
+        self.last_nodes = {}  # saves last left and right node
+        self.left_ways = {}
+        self.right_ways = {}
+
+        # set origin shift according to translation in scenario
+        if self.scenario_translation[0] != 0 and self.scenario_translation[1] != 0:
+            self.origin_utm = self.scenario_translation
+
+        # convert lanelets
+        for lanelet in lanelet_network.lanelets:
+            self._convert_lanelet(lanelet)
+
+        # convert traffic signs
+        for traffic_sign in lanelet_network.traffic_signs:
+            self._convert_traffic_sign(traffic_sign)
+
+        # convert traffic lights
+        for traffic_light in lanelet_network.traffic_lights:
+            self._convert_traffic_light(traffic_light)
+
+        # map the traffic signs and the referred lanelets (yield+right_of_way) to a 'right_of_way_relation' object
+        # self._add_right_of_way_relation()  # A maneuver must refer to at least one lanelet that has right of way!
+
+        # map the traffic lights and the referred lanelets to a 'right_of_way_relation' object
+        # self._add_regulatory_element_for_traffic_lights()
 
         return self.osm.serialize_to_xml()
 

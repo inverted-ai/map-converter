@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import logging
 from typing import Tuple, Optional
 
 import imageio
@@ -35,24 +36,60 @@ from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.opendrive_conversion.network import Network
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclasses.dataclass
 class Config:
     dir_path: str
     domain: Optional[str] = None
 
 
-def extract_origin(georeference: str) -> Tuple[float, float]:
+@dataclasses.dataclass
+class GeoReference:
+    lat: float
+    lon: float
+
+    @property
+    def origin(self):
+        return self.lat, self.lon
+
+    @property
+    def lanelet2_origin(self):
+        return lanelet2.io.Origin(self.lat, self.lon)
+
+    @property
+    def proj_string(self):
+        return f'+proj=tmerc +lat_0={self.lat} +lon_0={self.lon}'
+
+
+def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
+    proj_pattern = r"\+proj=([\w]+)"
     lat_pattern = r"\+lat_0=([-\d.]+)"
     lon_pattern = r"\+lon_0=([-\d.]+)"
-    lat_match = re.search(lat_pattern, georeference)
-    lon_match = re.search(lon_pattern, georeference)
+    proj_match = re.search(proj_pattern, geo_reference)
+    lat_match = re.search(lat_pattern, geo_reference)
+    lon_match = re.search(lon_pattern, geo_reference)
 
-    if lat_match and lon_match:
+    if proj_match.group(1) == 'tmerc' and lat_match and lon_match:
         latitude = float(lat_match.group(1))
         longitude = float(lon_match.group(1))
-        return latitude, longitude
+        return GeoReference(latitude, longitude)
     else:
-        raise ValueError(f"Unable to parse georeference string {georeference}")
+        return None
+
+
+class CustomTransfomer:
+    """
+    I could not find a way to construct a pyproj transformer equivalent to the Lanelet2 UtmProjector,
+    so I opted to use a wrapper instead.
+    """
+    def __init__(self, projector):
+        self.projector = projector
+
+    def transform(self, x, y):
+        transformed = self.projector.reverse(lanelet2.core.BasicPoint3d(x, y, 0))
+        return transformed.lat, transformed.lon
 
 
 if __name__ == '__main__':
@@ -60,16 +97,26 @@ if __name__ == '__main__':
         Config(**OmegaConf.from_dotlist(sys.argv[1:]))
     )
 
-    # Find OpenDRIVE file
+    # Find and parse OpenDRIVE file
     xodr_files = glob.glob(os.path.join(cfg.dir_path, '*.xodr'))
     if not xodr_files:
-        print(f'No .xodr files found in {cfg.dir_path} - aborting')
+        logger.error(f'No .xodr files found in {cfg.dir_path} - aborting')
     opendrive_path = xodr_files[0]
-    print(f'Using {opendrive_path} as input')
+    logger.info(f'Using {opendrive_path} as input')
     location = os.path.basename(opendrive_path)[:-5]
+    opendrive = parse_opendrive(Path(opendrive_path))
+
+    # Construct Lanelet2 projector
+    if opendrive.header.geo_reference is None:
+        geo_reference = GeoReference(0.0, 0.0)
+    else:
+        geo_reference = extract_geo_reference(geo_reference=opendrive.header.geo_reference)
+        if geo_reference is None:
+            logger.warning(f'Unable to parse geo reference - Lanelet2 map will not be properly geo referenced')
+            geo_reference = GeoReference(0.0, 0.0)
+    projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
 
     # Convert OpenDRIVE to CommonRoad
-    general_config = GeneralConfig()
     open_drive_config = OpenDriveConfig()
     open_drive_config.filter_types = [
         "driving",
@@ -83,25 +130,28 @@ if __name__ == '__main__':
         # "crosswalk",
         # "bidirectional",
     ]
-    opendrive = parse_opendrive(Path(opendrive_path))
     road_network = Network()
     road_network.load_opendrive(opendrive)
     # for index in range(len(road_network._traffic_lights)):
     #     road_network._traffic_lights[index]._traffic_light_id = abs(
     #         road_network._traffic_lights[index].traffic_light_id
     #     )
-    commonroad = road_network.export_commonroad_scenario(general_config, open_drive_config)
+    # We leave everything in the original OpenDRIVE inertial coordinate frame
+    lanelet_network = road_network.export_lanelet_network(transformer=None, filter_types=open_drive_config.filter_types)
 
     # Export CommonRoad to Lanelet2
-    l2osm = CR2LaneletConverter(config=lanelet2_config)
-    osm = l2osm(commonroad)
+    commonroad_config = GeneralConfig()
+    commonroad_config.proj_string_cr = opendrive.header.geo_reference  # geo_reference.proj_string
+    l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
+    # osm = l2osm(commonroad)
+    osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector))
     osm_path = os.path.join(cfg.dir_path, f"{location}.osm")
     with open(osm_path, "wb") as file_out:
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))
 
     # Export stoplines
     stoplines = []
-    for traffic_light in commonroad.lanelet_network.traffic_lights:
+    for traffic_light in lanelet_network.traffic_lights:
         if not hasattr(traffic_light, 'iai_stoplines'):
             continue
         agent_type = 'traffic-light'
@@ -118,13 +168,6 @@ if __name__ == '__main__':
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         json.dump(stoplines, f, indent=4)
-
-    # Construct Lanelet2 projector
-    if opendrive.header.geo_reference is None:
-        origin = 0.0, 0.0
-    else:
-        origin = extract_origin(georeference=opendrive.header.geo_reference)
-    projector = lanelet2.projection.UtmProjector(lanelet2.io.Origin(*origin))
 
     # def project_point(p):
     #     lanelet2_point = projector.forward(lanelet2.core.GPSPoint(*l2osm.transformer.transform(*p)))
@@ -175,7 +218,7 @@ if __name__ == '__main__':
     # Write metadata
     center = combined_mesh.center.numpy().tolist()
     map_cfg = MapConfig(
-        name=location, center=center, lanelet_map_origin=origin,
+        name=location, center=center, lanelet_map_origin=geo_reference.origin,
         iai_location_name=f'{cfg.domain}:{location}' if cfg.domain else None,
         left_handed_coordinates=False,
         lanelet_path=os.path.abspath(osm_path),

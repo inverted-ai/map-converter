@@ -141,9 +141,8 @@ if __name__ == '__main__':
 
     # Export CommonRoad to Lanelet2
     commonroad_config = GeneralConfig()
-    commonroad_config.proj_string_cr = opendrive.header.geo_reference  # geo_reference.proj_string
+    commonroad_config.proj_string_cr = geo_reference.proj_string  # not currently used - see CustomTransformer
     l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
-    # osm = l2osm(commonroad)
     osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector))
     osm_path = os.path.join(cfg.dir_path, f"{location}.osm")
     with open(osm_path, "wb") as file_out:
@@ -165,46 +164,18 @@ if __name__ == '__main__':
                 orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
             )
             stoplines.append(dataclasses.asdict(stopline))
+    traffic_signs = [('stop-sign', x) for x in road_network._iai_stop_signs] +\
+                    [('yield-sign', x) for x in road_network._iai_yield_signs]
+    for agent_type, (xy, orientation, length, width, opendrive_id) in traffic_signs:
+        length = 1.0  # We could also adjust width and placement based on lanelet information
+        stopline = Stopline(
+            actor_id=opendrive_id, agent_type=agent_type, x=float(xy[0]), y=float(xy[1]),
+            length=float(length), width=float(width), orientation=float(orientation),
+        )
+        stoplines.append(dataclasses.asdict(stopline))
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         json.dump(stoplines, f, indent=4)
-
-    # def project_point(p):
-    #     lanelet2_point = projector.forward(lanelet2.core.GPSPoint(*l2osm.transformer.transform(*p)))
-    #     return lanelet2_point.x, lanelet2_point.y
-    #
-    # def lanelet_stopline(lanelet, opendrive_id, agent_type):
-    #     left = np.array(project_point(lanelet.left_vertices[-1]))
-    #     right = np.array(project_point(lanelet.right_vertices[-1]))
-    #     center = (left + right) / 2
-    #     right_to_left = left - right
-    #     return Stopline(
-    #         actor_id=opendrive_id, agent_type=agent_type,
-    #         x=float(center[0]), y=float(center[1]),
-    #         length=1.0, width=float(np.linalg.norm(left - right)),
-    #         orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
-    #     )
-    #
-    # # Export stoplines
-    # traffic_light_by_id = {t.traffic_light_id: t for t in commonroad.lanelet_network.traffic_lights}
-    # traffic_sign_by_id = {t.traffic_sign_id: t for t in commonroad.lanelet_network.traffic_signs}
-    # stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
-    # lanelet_traffic_light_pairs = [
-    #     (l, traffic_light_by_id[tid], 'traffic-light')
-    #     for l in commonroad.lanelet_network.lanelets for tid in l.traffic_lights
-    # ]
-    # # lanelet_traffic_sign_pairs = [
-    # #     (l, traffic_sign_by_id[tid], )
-    # #     for l in commonroad.lanelet_network.lanelets for tid in l.traffic_signs
-    # #     if traffic_sign_by_id[tid].
-    # # ]
-    # lanelet_stoplines = [
-    #     lanelet_stopline(lanelet, t.opendrive_id, agent_type)
-    #     for (lanelet, t, agent_type) in lanelet_traffic_light_pairs
-    # ]
-    # stoplines = [dataclasses.asdict(stopline) for stopline in lanelet_stoplines]
-    # with open(stoplines_path, 'w') as f:
-    #     json.dump(stoplines, f, indent=4)
 
     # Export road mesh
     mesh_path = os.path.join(cfg.dir_path, f"{location}_mesh.json")

@@ -152,6 +152,8 @@ class Network:
         self._traffic_lights = []
         self._traffic_signs = []
         self._stop_lines = []
+        self._iai_stop_signs = []
+        self._iai_yield_signs = []
         self._crosswalks = []
         self._country_ID = None
 
@@ -269,6 +271,26 @@ class Network:
 
                     stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
                     self._stop_lines.append(stop_line)
+
+                stop_sign_names = [
+                    'Stencil_STOP',
+                ]
+                yield_sign_names = [
+                    'Stencil_Yield_Triangles',
+                ]
+
+                if road_object.name in stop_sign_names + yield_sign_names:
+                    xy, orientation, _, _ = road.planView.calc(road_object.s, compute_curvature=False)
+                    xy = xy + road_object.t * np.array([- np.sin(orientation), np.cos(orientation)])
+                    if road_object.orientation == "+":
+                        orientation = orientation + np.pi
+                    stopline = (xy, orientation, road_object.validLength, road_object.width, road_object.id)
+                    if road_object.name in stop_sign_names:
+                        self._iai_stop_signs.append(stopline)
+                    elif road_object.name in yield_sign_names:
+                        self._iai_yield_signs.append(stopline)
+                    else:
+                        assert False
 
         for traffic_light in self._traffic_lights:
             if hasattr(traffic_light, 'opendrive_id'):

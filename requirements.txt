@@ -1,0 +1,7 @@
+git+https://github.com/inverted-ai/torchdrivesim.git@d9a8b861dd9cce3f0995cf994cdbdb3718e04b4b
+lanelet2
+commonroad-io
+lxml
+pyqt6
+pyproj
+mgrs

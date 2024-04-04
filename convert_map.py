@@ -15,6 +15,7 @@ import numpy as np
 from pathlib import Path
 from lxml import etree
 from omegaconf import OmegaConf
+import logging
 
 import lanelet2
 from torchdrivesim.map import Stopline, MapConfig, store_map_config
@@ -28,6 +29,8 @@ from crdesigner.map_conversion.opendrive.opendrive_parser.parser import parse_op
 from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.opendrive_conversion.network import Network
 
+
+logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class Config:
@@ -68,6 +71,15 @@ if __name__ == '__main__':
     opendrive = parse_opendrive(Path(opendrive_path))
     road_network = Network()
     road_network.load_opendrive(opendrive)
+    # Construct Lanelet2 projector
+    geo_reference = opendrive.header.geo_reference
+    if geo_reference is not None:
+        origin = extract_origin(georeference=opendrive.header.geo_reference)
+    else:
+        logger.warning(f"Georeference not found in OpenDRIVE file {opendrive_path}. Using default origin (0, 0).")
+        origin = 0, 0
+    projector = lanelet2.projection.UtmProjector(lanelet2.io.Origin(*origin))
+
     # for index in range(len(road_network._traffic_lights)):
     #     road_network._traffic_lights[index]._traffic_light_id = abs(
     #         road_network._traffic_lights[index].traffic_light_id
@@ -81,9 +93,6 @@ if __name__ == '__main__':
     with open(osm_path, "wb") as file_out:
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))
 
-    # Construct Lanelet2 projector
-    origin = extract_origin(georeference=opendrive.header.geo_reference)
-    projector = lanelet2.projection.UtmProjector(lanelet2.io.Origin(*origin))
 
     def project_point(p):
         lanelet2_point = projector.forward(lanelet2.core.GPSPoint(*l2osm.transformer.transform(*p)))

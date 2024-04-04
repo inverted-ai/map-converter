@@ -120,7 +120,7 @@ if __name__ == '__main__':
     open_drive_config = OpenDriveConfig()
     open_drive_config.filter_types = [
         "driving",
-        "restricted",
+        # "restricted",
         "onRamp",
         "offRamp",
         "exit",

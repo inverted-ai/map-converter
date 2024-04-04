@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
-class Config:
+class MapConversionConfig:
     dir_path: str
     domain: Optional[str] = None
 
@@ -92,15 +92,12 @@ class CustomTransfomer:
         return transformed.lat, transformed.lon
 
 
-if __name__ == '__main__':
-    cfg: Config = OmegaConf.structured(
-        Config(**OmegaConf.from_dotlist(sys.argv[1:]))
-    )
-
+def convert_map(cfg: MapConversionConfig) -> None:
     # Find and parse OpenDRIVE file
     xodr_files = glob.glob(os.path.join(cfg.dir_path, '*.xodr'))
     if not xodr_files:
         logger.error(f'No .xodr files found in {cfg.dir_path} - aborting')
+        return
     opendrive_path = xodr_files[0]
     logger.info(f'Using {opendrive_path} as input')
     location = os.path.basename(opendrive_path)[:-5]
@@ -108,6 +105,7 @@ if __name__ == '__main__':
 
     # Construct Lanelet2 projector
     if opendrive.header.geo_reference is None:
+        logger.warning(f'Geo reference not found in {opendrive_path} - Lanelet2 map will not be properly geo referenced')
         geo_reference = GeoReference(0.0, 0.0)
     else:
         geo_reference = extract_geo_reference(geo_reference=opendrive.header.geo_reference)
@@ -146,6 +144,7 @@ if __name__ == '__main__':
     osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector))
     osm_path = os.path.join(cfg.dir_path, f"{location}.osm")
     with open(osm_path, "wb") as file_out:
+        logger.info(f'Writing converted Lanelet2 map to {osm_path}')
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))
 
     # Export stoplines
@@ -175,15 +174,18 @@ if __name__ == '__main__':
         stoplines.append(dataclasses.asdict(stopline))
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
+        logger.info(f'Writing extracted stoplines to {stoplines_path}')
         json.dump(stoplines, f, indent=4)
 
     # Export road mesh
     mesh_path = os.path.join(cfg.dir_path, f"{location}_mesh.json")
     lanelet_map = lanelet2.io.load(osm_path, projector)
+    logger.info(f'Computing road mesh')
     road_mesh = road_mesh_from_lanelet_map(lanelet_map)
     road_mesh = BirdviewMesh.set_properties(road_mesh, category='road').to(road_mesh.device)
     lane_mesh = lanelet_map_to_lane_mesh(lanelet_map, left_handed=False)
     combined_mesh = lane_mesh.merge(road_mesh)
+    logger.info(f'Writing road mesh to {mesh_path}')
     combined_mesh.save(mesh_path)
 
     # Write metadata
@@ -196,7 +198,9 @@ if __name__ == '__main__':
         mesh_path=mesh_path,
         stoplines_path=stoplines_path,
     )
-    store_map_config(map_cfg, os.path.join(cfg.dir_path, 'metadata.json'))
+    metadata_path = os.path.join(cfg.dir_path, 'metadata.json')
+    logger.info(f'Writing metadata to {metadata_path}')
+    store_map_config(map_cfg, metadata_path)
 
     # Visualize results
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -211,6 +215,17 @@ if __name__ == '__main__':
     controls_mesh = renderer.make_traffic_controls_mesh(traffic_controls).to(renderer.device)
     renderer.add_static_meshes([controls_mesh])
     map_image = renderer.render_static_meshes(res=res, fov=800)
+    viz_path = os.path.join(cfg.dir_path, 'visualization.png')
+    logger.info(f'Saving visualization to {viz_path}')
     imageio.imsave(
-        os.path.join(cfg.dir_path, 'visualization.png'), map_image[0].cpu().numpy().astype(np.uint8)
+        viz_path, map_image[0].cpu().numpy().astype(np.uint8)
     )
+
+
+if __name__ == '__main__':
+    cfg: MapConversionConfig = OmegaConf.structured(
+        MapConversionConfig(**OmegaConf.from_dotlist(sys.argv[1:]))
+    )
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.StreamHandler())
+    convert_map(cfg)

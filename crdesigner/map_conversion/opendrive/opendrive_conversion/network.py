@@ -209,8 +209,9 @@ class Network:
                 self._planes.extend(parametric_lane_groups)
 
                 for plane_group in parametric_lane_groups:
-                    if hasattr(plane_group, 'stopline'):
-                        light_stoplines[plane_group.stopline[0]].append(plane_group.stopline[1:])
+                    if hasattr(plane_group, 'stoplines'):
+                        for stopline in plane_group.stoplines:
+                            light_stoplines[stopline[0]].append(stopline[1:])
 
             # stop lines from traffic signals (legacy)
             stop_lines_final = []

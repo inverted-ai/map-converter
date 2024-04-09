@@ -189,7 +189,7 @@ def get_traffic_signals(road: Road) -> Tuple[List[TrafficLight], List[TrafficSig
 
         elif signal.dynamic == "yes":
             if signal.type not in [  # https://publications.pages.asam.net/standards/ASAM_OpenDRIVE/ASAM_OpenDRIVE_Signal_reference/latest/signal-catalog/01_road_signals/road_signals.html
-                '1000001', '1000009', '1000010', '1000011',
+                '1000001', '1000009', '1000010', '1000011', '1000100', '1000101', '1002101'
             ]:
                 continue
             # the three listed here are hard to interpret in commonroad.

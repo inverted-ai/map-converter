@@ -280,7 +280,7 @@ class ParametricLane:
         #
         if self.length < 0:
             return np.array(left_vertices), np.array(right_vertices)
-        num_steps = int(max(3, np.ceil(self.length / float(0.5))))
+        num_steps = int(max(3, np.ceil(self.length / min_delta_s)))
         poses = np.linspace(0, self.length, num_steps)
         for s in poses:
             #

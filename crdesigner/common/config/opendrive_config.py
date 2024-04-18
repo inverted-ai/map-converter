@@ -12,7 +12,7 @@ class OpenDriveConfig(BaseConfig):
     )
 
     min_delta_s = Attribute(
-        1, "Min. delta s", "Min. step length between two sampling positions on the reference geometry"
+        0.5, "Min. delta s", "Min. step length between two sampling positions on the reference geometry"
     )
 
     precision = Attribute(0.5, "Precision", "Precision with which to convert plane group to lanelet")

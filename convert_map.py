@@ -153,7 +153,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
     for traffic_light in lanelet_network.traffic_lights:
         if not hasattr(traffic_light, 'iai_stoplines'):
             continue
-        agent_type = 'traffic-light'
+        agent_type = 'traffic_light'
         opendrive_id = traffic_light.opendrive_id
         for left, right in traffic_light.iai_stoplines:
             center = (left + right) / 2
@@ -164,8 +164,8 @@ def convert_map(cfg: MapConversionConfig) -> None:
                 orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
             )
             stoplines.append(dataclasses.asdict(stopline))
-    traffic_signs = [('stop-sign', x) for x in road_network._iai_stop_signs] +\
-                    [('yield-sign', x) for x in road_network._iai_yield_signs]
+    traffic_signs = [('stop_sign', x) for x in road_network._iai_stop_signs] +\
+                    [('yield_sign', x) for x in road_network._iai_yield_signs]
     for agent_type, (xy, orientation, length, width, opendrive_id) in traffic_signs:
         length = 1.0  # We could also adjust width and placement based on lanelet information
         stopline = Stopline(

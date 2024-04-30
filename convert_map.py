@@ -116,6 +116,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
 
     # Convert OpenDRIVE to CommonRoad
     open_drive_config = OpenDriveConfig()
+    open_drive_config.min_delta_s = 1.0
     open_drive_config.filter_types = [
         "driving",
         # "restricted",

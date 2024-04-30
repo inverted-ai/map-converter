@@ -13,6 +13,7 @@ import logging
 from typing import Tuple, Optional
 
 import imageio
+import math
 import numpy as np
 from pathlib import Path
 
@@ -59,6 +60,14 @@ class GeoOffset:
         hdg = float(offset_dict['hdg'])
         return cls(x, y, z, hdg)
 
+    def apply_offset(self, x, y):
+        x_translated = x + float(self.x)
+        y_translated = y + float(self.y)
+        hdg_rad = math.radians(float(self.hdg))
+        x_rotated = x_translated * math.cos(hdg_rad) - y_translated * math.sin(hdg_rad)
+        y_rotated = x_translated * math.sin(hdg_rad) + y_translated * math.cos(hdg_rad)
+        return x_rotated, y_rotated
+
 @dataclasses.dataclass
 class GeoReference:
     lat: float
@@ -104,8 +113,7 @@ class CustomTransfomer:
 
     def transform(self, x, y):
         if self.offset is not None:
-            x += self.offset.x
-            y += self.offset.y
+            x, y = self.offset.apply_offset(x, y)
         transformed = self.projector.reverse(lanelet2.core.BasicPoint3d(x, y, 0))
         return transformed.lat, transformed.lon
 
@@ -132,7 +140,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
             geo_reference = GeoReference(0.0, 0.0)
     if opendrive.header.offset is not None:
         geo_offset = GeoOffset.from_dict(opendrive.header.offset)
-        geo_reference.offset = GeoOffset.from_dict(opendrive.header.offset)
+        geo_reference.offset = geo_offset
     else:
         geo_offset = None
     projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)

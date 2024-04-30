@@ -1,4 +1,4 @@
-git+https://github.com/inverted-ai/torchdrivesim.git@d9a8b861dd9cce3f0995cf994cdbdb3718e04b4b
+torchdrivesim>=0.2.1
 lanelet2
 commonroad-io
 lxml

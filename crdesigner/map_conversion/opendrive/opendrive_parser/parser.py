@@ -223,7 +223,7 @@ def parse_opendrive_road_geometry(new_road: Road, road_geometry: etree.ElementTr
             curv_end,
         )
     elif road_geometry.find("arc") is not None:
-        if road_geometry.find("arc").get("curvature") == 0:
+        if float(road_geometry.find("arc").get("curvature")) > 0:
             new_road.planView.add_arc(
                 start_coord,
                 float(road_geometry.get("hdg")) - float(offset["hdg"]),

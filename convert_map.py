@@ -13,6 +13,7 @@ import logging
 from typing import Tuple, Optional
 
 import imageio
+import math
 import numpy as np
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from torchdrivesim.map import Stopline, MapConfig, store_map_config, resolve_pat
 from torchdrivesim.lanelet2 import LaneletMap, load_lanelet_map, road_mesh_from_lanelet_map, lanelet_map_to_lane_mesh
 from torchdrivesim.mesh import BirdviewMesh
 from torchdrivesim.rendering import renderer_from_config, RendererConfig
-from torchdrivesim.traffic_controls import traffic_controls_from_map_config
+from torchdrivesim.map import traffic_controls_from_map_config
 from torchdrivesim.utils import Resolution
 
 from crdesigner.common.config.general_config import GeneralConfig
@@ -44,6 +45,28 @@ class MapConversionConfig:
     dir_path: str
     domain: Optional[str] = None
 
+@dataclasses.dataclass
+class GeoOffset:
+    x: float
+    y: float
+    z: float
+    hdg: float
+
+    @classmethod
+    def from_dict(cls, offset_dict: dict):
+        x = float(offset_dict['x'])
+        y = float(offset_dict['y'])
+        z = float(offset_dict['z'])
+        hdg = float(offset_dict['hdg'])
+        return cls(x, y, z, hdg)
+
+    def apply_offset(self, x, y):
+        x_translated = x + float(self.x)
+        y_translated = y + float(self.y)
+        hdg_rad = math.radians(float(self.hdg))
+        x_rotated = x_translated * math.cos(hdg_rad) - y_translated * math.sin(hdg_rad)
+        y_rotated = x_translated * math.sin(hdg_rad) + y_translated * math.cos(hdg_rad)
+        return x_rotated, y_rotated
 
 @dataclasses.dataclass
 class GeoReference:
@@ -61,7 +84,7 @@ class GeoReference:
     @property
     def proj_string(self):
         return f'+proj=tmerc +lat_0={self.lat} +lon_0={self.lon}'
-
+    
 
 def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
     proj_pattern = r"\+proj=([\w]+)"
@@ -84,10 +107,13 @@ class CustomTransfomer:
     I could not find a way to construct a pyproj transformer equivalent to the Lanelet2 UtmProjector,
     so I opted to use a wrapper instead.
     """
-    def __init__(self, projector):
+    def __init__(self, projector, offset: Optional[GeoOffset] = None):
         self.projector = projector
+        self.offset = offset
 
     def transform(self, x, y):
+        if self.offset is not None:
+            x, y = self.offset.apply_offset(x, y)
         transformed = self.projector.reverse(lanelet2.core.BasicPoint3d(x, y, 0))
         return transformed.lat, transformed.lon
 
@@ -112,6 +138,11 @@ def convert_map(cfg: MapConversionConfig) -> None:
         if geo_reference is None:
             logger.warning(f'Unable to parse geo reference - Lanelet2 map will not be properly geo referenced')
             geo_reference = GeoReference(0.0, 0.0)
+    if opendrive.header.offset is not None:
+        geo_offset = GeoOffset.from_dict(opendrive.header.offset)
+        geo_reference.offset = geo_offset
+    else:
+        geo_offset = None
     projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
 
     # Convert OpenDRIVE to CommonRoad
@@ -142,7 +173,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
     commonroad_config = GeneralConfig()
     commonroad_config.proj_string_cr = geo_reference.proj_string  # not currently used - see CustomTransformer
     l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
-    osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector))
+    osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector, geo_offset))
     osm_path = os.path.join(cfg.dir_path, f"{location}.osm")
     with open(osm_path, "wb") as file_out:
         logger.info(f'Writing converted Lanelet2 map to {osm_path}')

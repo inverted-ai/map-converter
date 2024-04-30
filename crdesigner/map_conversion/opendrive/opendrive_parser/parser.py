@@ -218,12 +218,19 @@ def parse_opendrive_road_geometry(new_road: Road, road_geometry: etree.ElementTr
             curv_end,
         )
     elif road_geometry.find("arc") is not None:
-        new_road.planView.add_arc(
-            start_coord,
-            float(road_geometry.get("hdg")) - float(offset["hdg"]),
-            float(road_geometry.get("length")),
-            float(road_geometry.find("arc").get("curvature")),
-        )
+        if float(road_geometry.find("arc").get("curvature")) != 0:
+            new_road.planView.add_arc(
+                start_coord,
+                float(road_geometry.get("hdg")) - float(offset["hdg"]),
+                float(road_geometry.get("length")),
+                float(road_geometry.find("arc").get("curvature")),
+            )
+        else:
+            new_road.planView.add_line(
+                start_coord,
+                float(road_geometry.get("hdg")) - float(offset["hdg"]),
+                float(road_geometry.get("length")),
+            )
 
     elif road_geometry.find("poly3") is not None:
         new_road.planView.add_poly3(
@@ -727,6 +734,7 @@ def parse_opendrive_header(opendrive: OpenDrive, header: etree.ElementTree):
         header.get("east"),
         header.get("west"),
         header.get("vendor"),
+        header.get("offset")
     )
 
     # Reference

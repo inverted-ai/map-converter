@@ -151,7 +151,9 @@ class Header:
         east=None,
         west=None,
         vendor=None,
+        offset=None,
     ):
+        import json
         self.revMajor = rev_major
         self.revMinor = rev_minor
         self.name = name
@@ -163,4 +165,4 @@ class Header:
         self.west = west
         self.vendor = vendor
         self.geo_reference = None
-        self.offset = {"x": "0.0", "y": "0.0", "z": "0.0", "hdg": "0.0"}
+        self.offset = {"x": "0.0", "y": "0.0", "z": "0.0", "hdg": "0.0"} if offset is None else json.loads(offset)

@@ -105,11 +105,6 @@ def parse_opendrive(file_path: Path) -> OpenDrive:
     # Header
     header = root_node.find("header")
     if header is not None:
-        # Search for offset child object if exists
-        offset = header.find("offset")
-        if offset is not None:
-            import json
-            header.attrib['offset'] = json.dumps(dict(offset.attrib))
         parse_opendrive_header(opendrive, header)
 
     # Junctions

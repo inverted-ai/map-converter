@@ -63,7 +63,6 @@ class GeoOffset:
 class GeoReference:
     lat: float
     lon: float
-    _offset: Optional[GeoOffset] = None
 
     @property
     def origin(self):
@@ -77,14 +76,6 @@ class GeoReference:
     def proj_string(self):
         return f'+proj=tmerc +lat_0={self.lat} +lon_0={self.lon}'
     
-    @property
-    def offset(self) -> GeoOffset:
-        return self._offset
-
-    @offset.setter
-    def offset(self, value):
-        self._offset = value
-
 
 def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
     proj_pattern = r"\+proj=([\w]+)"

@@ -221,7 +221,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
     combined_mesh.save(mesh_path)
 
     # Write metadata
-    center = combined_mesh.center.numpy().tolist()
+    center = combined_mesh.center.squeeze(0).numpy().tolist()
     map_cfg = MapConfig(
         name=location, center=center, lanelet_map_origin=geo_reference.origin,
         iai_location_name=f'{cfg.domain}:{location}' if cfg.domain else None,

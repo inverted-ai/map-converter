@@ -94,7 +94,7 @@ def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
     lat_match = re.search(lat_pattern, geo_reference)
     lon_match = re.search(lon_pattern, geo_reference)
 
-    if proj_match.group(1) == 'tmerc' and lat_match and lon_match:
+    if proj_match is not None and proj_match.group(1) == 'tmerc' and lat_match and lon_match:
         latitude = float(lat_match.group(1))
         longitude = float(lon_match.group(1))
         return GeoReference(latitude, longitude)

@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 class MapConversionConfig:
     dir_path: str
     domain: Optional[str] = None
+    lane_marking_join_threshold: float = 0.1
 
 @dataclasses.dataclass
 class GeoOffset:
@@ -215,7 +216,10 @@ def convert_map(cfg: MapConversionConfig) -> None:
     logger.info(f'Computing road mesh')
     road_mesh = road_mesh_from_lanelet_map(lanelet_map)
     road_mesh = BirdviewMesh.set_properties(road_mesh, category='road').to(road_mesh.device)
-    lane_mesh = lanelet_map_to_lane_mesh(lanelet_map, left_handed=False)
+    lane_mesh = lanelet_map_to_lane_mesh(
+        lanelet_map, left_handed=False,
+        left_right_marking_join_threshold=cfg.lane_marking_join_threshold
+    )
     combined_mesh = lane_mesh.merge(road_mesh)
     logger.info(f'Writing road mesh to {mesh_path}')
     combined_mesh.save(mesh_path)

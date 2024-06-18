@@ -985,7 +985,10 @@ class CR2LaneletConverter:
                         if type_adj_left != "unknown":
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
-                            subtype = subtype_adj_left + "_" + subtype_lanelet
+                            if lanelet.adj_left_same_direction:
+                                subtype = subtype_adj_left
+                            else:
+                                subtype = subtype_adj_left + "_" + subtype_lanelet
 
                             # dashed_dashed does not exist in L2 format
                             if subtype == "dashed_dashed":

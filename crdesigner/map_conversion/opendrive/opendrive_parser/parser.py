@@ -218,12 +218,19 @@ def parse_opendrive_road_geometry(new_road: Road, road_geometry: etree.ElementTr
             curv_end,
         )
     elif road_geometry.find("arc") is not None:
-        new_road.planView.add_arc(
-            start_coord,
-            float(road_geometry.get("hdg")) - float(offset["hdg"]),
-            float(road_geometry.get("length")),
-            float(road_geometry.find("arc").get("curvature")),
-        )
+        if float(road_geometry.find("arc").get("curvature")) != 0:
+            new_road.planView.add_arc(
+                start_coord,
+                float(road_geometry.get("hdg")) - float(offset["hdg"]),
+                float(road_geometry.get("length")),
+                float(road_geometry.find("arc").get("curvature")),
+            )
+        else:
+            new_road.planView.add_line(
+                start_coord,
+                float(road_geometry.get("hdg")) - float(offset["hdg"]),
+                float(road_geometry.get("length")),
+            )
 
     elif road_geometry.find("poly3") is not None:
         new_road.planView.add_poly3(
@@ -482,6 +489,20 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
     new_signal.unit = road_signal.get("unit")
     new_signal.text = road_signal.get("text")
 
+    for child in road_signal.iterchildren():
+        if child.tag == 'validity':
+            if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
+                breakpoint()
+            fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
+            for lane_idx in range(fromLane, toLane + 1):
+                lane = new_road.lanes.lane_sections[0].getLane(lane_idx)
+                if lane is None:
+                    breakpoint()
+                if hasattr(lane, 'signal_references'):
+                    lane.signal_references.append(new_signal.id)
+                else:
+                    lane.signal_references = [new_signal.id]
+
     new_road.addSignal(new_signal)
 
 
@@ -497,6 +518,20 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
     new_signal_reference.s = road_signal_reference.get("s")  # position along the reference curve
     new_signal_reference.t = road_signal_reference.get("t")  # position away from the reference curve
     new_signal_reference.orientation = road_signal_reference.get("orientation")
+
+    for child in road_signal_reference.iterchildren():
+        if child.tag == 'validity':
+            if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
+                breakpoint()
+            fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
+            for lane_idx in range(fromLane, toLane+1):
+                lane = new_road.lanes.lane_sections[0].getLane(lane_idx)
+                if lane is None:
+                    breakpoint()
+                if hasattr(lane, 'signal_references'):
+                    lane.signal_references.append(new_signal_reference.id)
+                else:
+                    lane.signal_references = [new_signal_reference.id]
 
     new_road.addSignalReference(new_signal_reference)
 
@@ -699,6 +734,7 @@ def parse_opendrive_header(opendrive: OpenDrive, header: etree.ElementTree):
         header.get("east"),
         header.get("west"),
         header.get("vendor"),
+        header.get("offset")
     )
 
     # Reference
@@ -730,7 +766,10 @@ def parse_opendrive_junction(opendrive: OpenDrive, junction: etree.ElementTree):
 
         new_connection.id = connection.get("id")
         new_connection.incomingRoad = connection.get("incomingRoad")
-        new_connection.connectingRoad = connection.get("connectingRoad")
+        connecting_road = connection.get("connectingRoad")
+        if connecting_road is None:  # sometimes we observed linkedRoad being used instead
+            connecting_road = connection.get("linkedRoad")
+        new_connection.connectingRoad = connecting_road
         new_connection.contactPoint = connection.get("contactPoint")
 
         for laneLink in connection.findall("laneLink"):

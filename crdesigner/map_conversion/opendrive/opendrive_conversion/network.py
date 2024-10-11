@@ -1,5 +1,5 @@
 import copy
-from collections import deque
+from collections import deque, defaultdict
 from typing import List, Optional, Union
 
 import iso3166
@@ -152,6 +152,8 @@ class Network:
         self._traffic_lights = []
         self._traffic_signs = []
         self._stop_lines = []
+        self._iai_stop_signs = []
+        self._iai_yield_signs = []
         self._crosswalks = []
         self._country_ID = None
 
@@ -184,6 +186,8 @@ class Network:
         self._geo_ref = opendrive.header.geo_reference
         self._offset = opendrive.header.offset
 
+        light_stoplines = defaultdict(list)
+
         # Get country ID form signal data in openDrive and set it as attribute of the network object
         self.assign_country_id(Network.get_country_id_from_opendrive(opendrive.roads))
         # transformed_start_coord = transformer.transform(float(road_geometry.get("x")), float(road_geometry.get("y")))
@@ -204,11 +208,16 @@ class Network:
 
                 self._planes.extend(parametric_lane_groups)
 
+                for plane_group in parametric_lane_groups:
+                    if hasattr(plane_group, 'stoplines'):
+                        for stopline in plane_group.stoplines:
+                            light_stoplines[stopline[0]].append(stopline[1:])
+
             # stop lines from traffic signals (legacy)
             stop_lines_final = []
             traffic_lights, traffic_signs, stop_lines = get_traffic_signals(road)
 
-            self._crosswalks.extend(get_crosswalks(road))
+            # self._crosswalks.extend(get_crosswalks(road))  # mislabeled as driving lane
 
             self._traffic_lights.extend(traffic_lights)
             for stop_line in stop_lines:
@@ -264,6 +273,30 @@ class Network:
                     stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
                     self._stop_lines.append(stop_line)
 
+                stop_sign_names = [
+                    'Stencil_STOP',
+                ]
+                yield_sign_names = [
+                    'Stencil_Yield_Triangles',
+                ]
+
+                if road_object.name in stop_sign_names + yield_sign_names:
+                    xy, orientation, _, _ = road.planView.calc(road_object.s, compute_curvature=False)
+                    xy = xy + road_object.t * np.array([- np.sin(orientation), np.cos(orientation)])
+                    if road_object.orientation == "+":
+                        orientation = orientation + np.pi
+                    stopline = (xy, orientation, road_object.validLength, road_object.width, road_object.id)
+                    if road_object.name in stop_sign_names:
+                        self._iai_stop_signs.append(stopline)
+                    elif road_object.name in yield_sign_names:
+                        self._iai_yield_signs.append(stopline)
+                    else:
+                        assert False
+
+        for traffic_light in self._traffic_lights:
+            if hasattr(traffic_light, 'opendrive_id'):
+                traffic_light.iai_stoplines = light_stoplines[traffic_light.opendrive_id]
+
     def export_lanelet_network(
         self, transformer: Transformer, filter_types: Optional[List[str]] = None
     ) -> LaneletNetwork:
@@ -317,6 +350,23 @@ class Network:
             lanelet_network.create_intersection(intersection_map, intersection_id_counter)
 
         self.relate_crosswalks_to_intersection(lanelet_network)
+
+        if transformer is not None:
+            # Apply the transformer to traffic controls
+            for xs in [
+                self._traffic_lights,
+                self._traffic_signs,
+            ]:
+                for x in xs:
+                    x.position = np.array(transformer.transform(*x.position))
+                    if hasattr(x, 'iai_stoplines'):
+                        x.iai_stoplines = [
+                            (np.array(transformer.transform(*left)), np.array(transformer.transform(*right)))
+                            for left, right in x.iai_stoplines
+                        ]
+            for x in self._stop_lines:
+                x.start = np.array(transformer.transform(*x.start))
+                x.end = np.array(transformer.transform(*x.end))
 
         # Assign traffic signals, lights and stop lines to lanelet network
         lanelet_network.add_traffic_lights_to_network(self._traffic_lights)

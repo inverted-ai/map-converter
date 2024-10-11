@@ -100,7 +100,13 @@ class Object:
         ]
         if value == "-1":
             value = "none"
+        if value == 'parking':
+            value = "parkingSpace"
+        if value == "stopline":
+            # TODO: maybe we should treat them specially, and feed it through to how the output stoplines are made?
+            value = "roadMark"
         if value not in road_types and value not in customs:
+            breakpoint()
             raise AttributeError("Value is not a supported object type!")
         self._type = str(value)
 

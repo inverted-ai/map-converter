@@ -183,17 +183,25 @@ def get_traffic_signals(road: Road) -> Tuple[List[TrafficLight], List[TrafficSig
                 position=position,
                 virtual=False,
             )
+            traffic_sign.opendrive_id = signal.id
 
             traffic_signs.append(traffic_sign)
 
         elif signal.dynamic == "yes":
+            if signal.type not in [ 
+                # https://publications.pages.asam.net/standards/ASAM_OpenDRIVE/ASAM_OpenDRIVE_Signal_reference/latest/signal-catalog/01_road_signals/road_signals.html
+                '1000001', '1000009', '1000010', '1000011',
+                # Traffic light types not listed in the current documentation but have been observed in OpenDrive maps
+                '1000100', '1000101', '1002101'
+            ]:
+                continue
             # the three listed here are hard to interpret in commonroad.
             # we ignore such signals in order not cause trouble in traffic simulation
             if signal.type != ("1000002" or "1000007" or "1000013"):
                 traffic_light = TrafficLight(
                     traffic_light_id=generate_unique_id(), position=position, traffic_light_cycle=get_default_cycle()
                 )  # TODO remove for new CR-Format
-
+                traffic_light.opendrive_id = signal.id
                 traffic_lights.append(traffic_light)
             else:
                 continue

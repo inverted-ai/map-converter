@@ -1,0 +1,7 @@
+torchdrivesim>=0.2.2
+lanelet2
+commonroad-io
+lxml
+pyqt6
+pyproj
+mgrs

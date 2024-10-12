@@ -194,9 +194,11 @@ class Network:
         # start_coord = np.array([transformed_start_coord[0], transformed_start_coord[1]])
         # Convert all parts of a road to parametric lanes (planes)
         for road in opendrive.roads:
+
             road.planView.precalculate()
             # The reference border is the baseline for the whole road
             reference_border = OpenDriveConverter.create_reference_border(road.planView, road.lanes.laneOffsets)
+            reference_border.elevations = road.elevationProfile.elevations
             # Extracting signals, signs and stop lines from each road
 
             # signal_references = get_traffic_signal_references(road)

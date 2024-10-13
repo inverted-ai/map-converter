@@ -45,6 +45,11 @@ class MapConversionConfig:
     dir_path: str
     domain: Optional[str] = None
     lane_marking_join_threshold: float = 0.1
+    visualization_fov: float = 800
+    center: Optional[Tuple[float, float]] = None  # world center in local coordinates - by default road mesh center
+    trim_radius: Optional[float] = None  # trim the map to this radius around the center
+    trim_vertical_limits: Optional[Tuple[float, float]] = None  # lower and upper elevation bounds for trimming
+
 
 @dataclasses.dataclass
 class GeoOffset:
@@ -101,6 +106,34 @@ def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
         return GeoReference(latitude, longitude)
     else:
         return None
+
+
+def trim_map(lanelet_map, center, radius, vertical_limits=None):
+    """
+    Trims a lanelet map to a circular neighbourhood around a given center.
+    """
+    trimmed_map = lanelet2.core.LaneletMap()
+    center = lanelet2.core.Point3d(lanelet2.core.getId(), center[0], center[1], 0)
+    if vertical_limits is None:
+        min_ele, max_ele = -100000, 1000000
+    else:
+        min_ele, max_ele = vertical_limits
+    for lanelet in lanelet_map.laneletLayer:
+        left_boundary = [p for p in lanelet.leftBound
+                         if lanelet2.geometry.distance(center, p) <= radius
+                         and min_ele <= p.z <= max_ele]
+        right_boundary = [p for p in lanelet.rightBound
+                          if lanelet2.geometry.distance(center, p) <= radius
+                          and min_ele <= p.z <= max_ele]
+        if len(left_boundary) > 0 and len(right_boundary) > 0:
+            left_boundary = lanelet2.core.LineString3d(lanelet.leftBound.id, left_boundary)
+            right_boundary = lanelet2.core.LineString3d(lanelet.rightBound.id, right_boundary)
+            trimmed_lanelet = lanelet2.core.Lanelet(lanelet.id, left_boundary, right_boundary)
+            # trimmed_lanelet.attributes['type'] = lanelet.attributes['type']
+            # trimmed_lanelet.attributes['subtype'] = lanelet.attributes['subtype']
+            # trimmed_lanelet.attributes['is_intersection'] = lanelet.attributes['is_intersection']
+            trimmed_map.add(trimmed_lanelet)
+    return trimmed_map
 
 
 class CustomTransfomer:
@@ -180,6 +213,14 @@ def convert_map(cfg: MapConversionConfig) -> None:
         logger.info(f'Writing converted Lanelet2 map to {osm_path}')
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))
 
+    # Trim the map if requested
+    if cfg.trim_radius is not None:
+        assert cfg.center is not None, "Must specify center for trimming"
+        lanelet_map = lanelet2.io.load(osm_path, projector)
+        trimmed_map = trim_map(lanelet_map, center=cfg.center, radius=cfg.trim_radius,
+                               vertical_limits=cfg.trim_vertical_limits)
+        lanelet2.io.write(osm_path, trimmed_map, projector)
+
     # Export stoplines
     stoplines = []
     for traffic_light in lanelet_network.traffic_lights:
@@ -190,21 +231,43 @@ def convert_map(cfg: MapConversionConfig) -> None:
         for left, right in traffic_light.iai_stoplines:
             center = (left + right) / 2
             right_to_left = left - right
-            stopline = Stopline(
-                actor_id=opendrive_id, agent_type=agent_type, x=float(center[0]), y=float(center[1]),
-                length=1.0, width=float(np.linalg.norm(left - right)),
-                orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
-            )
-            stoplines.append(dataclasses.asdict(stopline))
+            x, y, z = float(center[0]), float(center[1]), float(center[2])
+
+            include_stopline = True
+            if cfg.center is not None and cfg.trim_radius is not None:
+                within_radius = (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 <= cfg.trim_radius ** 2
+                include_stopline = include_stopline and within_radius
+            if cfg.trim_vertical_limits is not None:
+                within_limits = cfg.trim_vertical_limits[0] <= z <= cfg.trim_vertical_limits[1]
+                include_stopline = include_stopline and within_limits
+
+            if include_stopline:
+                stopline = Stopline(
+                    actor_id=opendrive_id, agent_type=agent_type, x=float(center[0]), y=float(center[1]),
+                    length=1.0, width=float(np.linalg.norm(left - right)),
+                    orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
+                )
+                stoplines.append(dataclasses.asdict(stopline))
     traffic_signs = [('stop_sign', x) for x in road_network._iai_stop_signs] +\
                     [('yield_sign', x) for x in road_network._iai_yield_signs]
     for agent_type, (xy, orientation, length, width, opendrive_id) in traffic_signs:
         length = 1.0  # We could also adjust width and placement based on lanelet information
-        stopline = Stopline(
-            actor_id=opendrive_id, agent_type=agent_type, x=float(xy[0]), y=float(xy[1]),
-            length=float(length), width=float(width), orientation=float(orientation),
-        )
-        stoplines.append(dataclasses.asdict(stopline))
+        x, y, z = float(xy[0]), float(xy[1]), float(xy[2])
+
+        include_stopline = True
+        if cfg.center is not None and cfg.trim_radius is not None:
+            within_radius = (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 <= cfg.trim_radius ** 2
+            include_stopline = include_stopline and within_radius
+        if cfg.trim_vertical_limits is not None:
+            within_limits = cfg.trim_vertical_limits[0] <= z <= cfg.trim_vertical_limits[1]
+            include_stopline = include_stopline and within_limits
+
+        if include_stopline:
+            stopline = Stopline(
+                actor_id=opendrive_id, agent_type=agent_type, x=x, y=y,
+                length=float(length), width=float(width), orientation=float(orientation),
+            )
+            stoplines.append(dataclasses.asdict(stopline))
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
@@ -224,8 +287,12 @@ def convert_map(cfg: MapConversionConfig) -> None:
     logger.info(f'Writing road mesh to {mesh_path}')
     combined_mesh.save(mesh_path)
 
+    if cfg.center is None:
+        center = combined_mesh.center.squeeze(0).numpy().tolist()
+    else:
+        center = list(cfg.center)
+
     # Write metadata
-    center = combined_mesh.center.squeeze(0).numpy().tolist()
     map_cfg = MapConfig(
         name=location, center=center, lanelet_map_origin=geo_reference.origin,
         iai_location_name=f'{cfg.domain}:{location}' if cfg.domain else None,
@@ -250,7 +317,11 @@ def convert_map(cfg: MapConversionConfig) -> None:
     traffic_controls = traffic_controls_from_map_config(map_cfg)
     controls_mesh = renderer.make_traffic_controls_mesh(traffic_controls).to(renderer.device)
     renderer.add_static_meshes([controls_mesh])
-    map_image = renderer.render_static_meshes(res=res, fov=800)
+    camera_xy = torch.tensor(center).to(driving_surface_mesh.verts.dtype).to(device)
+    camera_sc = torch.stack([torch.zeros_like(camera_xy[..., 0]), torch.ones_like(camera_xy[..., 0])], dim=-1)
+    map_image = renderer.render_static_meshes(
+        res=res, fov=cfg.visualization_fov, camera_xy=camera_xy, camera_sc=camera_sc
+    )
     viz_path = os.path.join(cfg.dir_path, 'visualization.png')
     logger.info(f'Saving visualization to {viz_path}')
     imageio.imsave(

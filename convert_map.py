@@ -45,6 +45,8 @@ class MapConversionConfig:
     dir_path: str
     domain: Optional[str] = None
     lane_marking_join_threshold: float = 0.1
+    visualization_fov: float = 800
+    center: Optional[Tuple[float, float]] = None  # world center in local coordinates - by default road mesh center
 
 @dataclasses.dataclass
 class GeoOffset:
@@ -224,8 +226,12 @@ def convert_map(cfg: MapConversionConfig) -> None:
     logger.info(f'Writing road mesh to {mesh_path}')
     combined_mesh.save(mesh_path)
 
+    if cfg.center is None:
+        center = combined_mesh.center.squeeze(0).numpy().tolist()
+    else:
+        center = list(cfg.center)
+
     # Write metadata
-    center = combined_mesh.center.squeeze(0).numpy().tolist()
     map_cfg = MapConfig(
         name=location, center=center, lanelet_map_origin=geo_reference.origin,
         iai_location_name=f'{cfg.domain}:{location}' if cfg.domain else None,
@@ -250,7 +256,11 @@ def convert_map(cfg: MapConversionConfig) -> None:
     traffic_controls = traffic_controls_from_map_config(map_cfg)
     controls_mesh = renderer.make_traffic_controls_mesh(traffic_controls).to(renderer.device)
     renderer.add_static_meshes([controls_mesh])
-    map_image = renderer.render_static_meshes(res=res, fov=800)
+    camera_xy = torch.tensor(center).to(driving_surface_mesh.verts.dtype).to(device)
+    camera_sc = torch.stack([torch.zeros_like(camera_xy[..., 0]), torch.ones_like(camera_xy[..., 0])], dim=-1)
+    map_image = renderer.render_static_meshes(
+        res=res, fov=cfg.visualization_fov, camera_xy=camera_xy, camera_sc=camera_sc
+    )
     viz_path = os.path.join(cfg.dir_path, 'visualization.png')
     logger.info(f'Saving visualization to {viz_path}')
     imageio.imsave(

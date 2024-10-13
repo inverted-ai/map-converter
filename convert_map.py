@@ -47,6 +47,8 @@ class MapConversionConfig:
     lane_marking_join_threshold: float = 0.1
     visualization_fov: float = 800
     center: Optional[Tuple[float, float]] = None  # world center in local coordinates - by default road mesh center
+    trim_radius: Optional[float] = None  # trim the map to this radius around the center
+
 
 @dataclasses.dataclass
 class GeoOffset:
@@ -103,6 +105,26 @@ def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
         return GeoReference(latitude, longitude)
     else:
         return None
+
+
+def trim_map(lanelet_map, center, radius):
+    """
+    Trims a lanelet map to a circular neighbourhood around a given center.
+    """
+    trimmed_map = lanelet2.core.LaneletMap()
+    center = lanelet2.core.Point3d(lanelet2.core.getId(), center[0], center[1], 0)
+    for lanelet in lanelet_map.laneletLayer:
+        left_boundary = [p for p in lanelet.leftBound if lanelet2.geometry.distance(center, p) <= radius]
+        right_boundary = [p for p in lanelet.rightBound if lanelet2.geometry.distance(center, p) <= radius]
+        if len(left_boundary) > 0 and len(right_boundary) > 0:
+            left_boundary = lanelet2.core.LineString3d(lanelet.leftBound.id, left_boundary)
+            right_boundary = lanelet2.core.LineString3d(lanelet.rightBound.id, right_boundary)
+            trimmed_lanelet = lanelet2.core.Lanelet(lanelet.id, left_boundary, right_boundary)
+            # trimmed_lanelet.attributes['type'] = lanelet.attributes['type']
+            # trimmed_lanelet.attributes['subtype'] = lanelet.attributes['subtype']
+            # trimmed_lanelet.attributes['is_intersection'] = lanelet.attributes['is_intersection']
+            trimmed_map.add(trimmed_lanelet)
+    return trimmed_map
 
 
 class CustomTransfomer:
@@ -182,6 +204,13 @@ def convert_map(cfg: MapConversionConfig) -> None:
         logger.info(f'Writing converted Lanelet2 map to {osm_path}')
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))
 
+    # Trim the map if requested
+    if cfg.trim_radius is not None:
+        assert cfg.center is not None, "Must specify center for trimming"
+        lanelet_map = lanelet2.io.load(osm_path, projector)
+        trimmed_map = trim_map(lanelet_map, center=cfg.center, radius=cfg.trim_radius)
+        lanelet2.io.write(osm_path, trimmed_map, projector)
+
     # Export stoplines
     stoplines = []
     for traffic_light in lanelet_network.traffic_lights:
@@ -202,11 +231,14 @@ def convert_map(cfg: MapConversionConfig) -> None:
                     [('yield_sign', x) for x in road_network._iai_yield_signs]
     for agent_type, (xy, orientation, length, width, opendrive_id) in traffic_signs:
         length = 1.0  # We could also adjust width and placement based on lanelet information
+        x,y = float(xy[0]), float(xy[1])
         stopline = Stopline(
-            actor_id=opendrive_id, agent_type=agent_type, x=float(xy[0]), y=float(xy[1]),
+            actor_id=opendrive_id, agent_type=agent_type, x=x, y=y,
             length=float(length), width=float(width), orientation=float(orientation),
         )
-        stoplines.append(dataclasses.asdict(stopline))
+        if cfg.trim_radius is None or cfg.center is None or\
+                (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 <= cfg.trim_radius ** 2:
+            stoplines.append(dataclasses.asdict(stopline))
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')

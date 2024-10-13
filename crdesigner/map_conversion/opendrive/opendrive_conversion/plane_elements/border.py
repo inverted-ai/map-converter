@@ -18,6 +18,7 @@ class Border:
         self.width_coefficients = []
 
         self.reference = None
+        self.elevations = None  # a sequence of polynomials describing the elevation profile, as in opendrive
 
     def _get_width_index(self, s_pos: float, is_last_pos: bool) -> float:
         """Get the index of the width which applies at position s_pos.
@@ -100,3 +101,21 @@ class Border:
         coord = ref_coord + np.array([distance * math.cos(ortho), distance * math.sin(ortho)])
 
         return coord, tang_angle, curv, max_geometry_length
+
+    def calc_elevation(self, s_pos) -> float:
+        if self.elevations is None:
+            return 0.0
+        selected_elevation = None
+        for elevation in self.elevations:
+            if elevation.start_pos > s_pos:
+                break
+            selected_elevation = elevation
+        if selected_elevation is None:
+            return 0.0
+        rel_s = s_pos - selected_elevation.start_pos
+        monomial = 1.0
+        result = 0.0
+        for coeff in selected_elevation.polynomial_coefficients:
+            result += coeff * monomial
+            monomial *= rel_s
+        return result

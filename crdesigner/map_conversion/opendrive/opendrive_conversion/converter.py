@@ -101,6 +101,7 @@ class OpenDriveConverter:
                 # outer_parametric_lane_border =
 
                 lane_borders.append(OpenDriveConverter._create_outer_lane_border(lane_borders, lane, coeff_factor))
+                lane_borders[-1].elevations = reference_border.elevations
 
                 # check the center line to save the inner linemarkings of the lanes around the center line
                 inner_linemarking = None

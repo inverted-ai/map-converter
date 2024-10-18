@@ -297,6 +297,9 @@ class ParametricLane:
             else:
                 left_vertices.append(inner_pos)
                 right_vertices.append(outer_pos)
+            elevation = self.border_group.inner_border.calc_elevation(s + self.border_group.inner_border_offset)
+            left_vertices[-1] = np.concatenate([left_vertices[-1], np.array([elevation])])
+            right_vertices[-1] = np.concatenate([right_vertices[-1], np.array([elevation])])
 
             # version with sampling
             # if s >= self.length:

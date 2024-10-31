@@ -97,6 +97,8 @@ class Object:
             "island",
             "guidepost",
             "roadpainting",
+            "IPGRoad Mount",
+            "fence"
         ]
         if value == "-1":
             value = "none"

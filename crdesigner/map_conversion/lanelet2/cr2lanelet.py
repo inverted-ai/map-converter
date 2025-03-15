@@ -796,6 +796,10 @@ class CR2LaneletConverter:
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
                             subtype = subtype_lanelet + "_" + subtype_adj_right
+                            if lanelet.adj_right_same_direction:
+                                subtype = subtype_lanelet
+                            else:
+                                subtype = subtype_lanelet + "_" + subtype_adj_right
                         else:
                             subtype = subtype_lanelet
                         self.osm.ways[potential_right_way].tag_dict = {"type": type_lanelet, "subtype": subtype}
@@ -846,7 +850,10 @@ class CR2LaneletConverter:
                         if type_adj_left != "unknown":
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
-                            subtype = subtype_adj_left + "_" + subtype_lanelet
+                            if lanelet.adj_left_same_direction:
+                                subtype = subtype_lanelet
+                            else:
+                                subtype = subtype_adj_left + "_" + subtype_lanelet
                         else:
                             subtype = subtype_lanelet
                         self.osm.ways[potential_left_way].tag_dict = {"type": type_lanelet, "subtype": subtype}

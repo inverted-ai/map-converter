@@ -1,5 +1,8 @@
 import os
 import argparse
+import carla
+from carla import Osm2OdrSettings, Osm2Odr
+
 import invertedai as iai
 from typing import Optional, List
 
@@ -15,7 +18,8 @@ from crdesigner.map_conversion.map_conversion_interface import commonroad_to_ope
 def main(
     output_dir: str,
     osm_path: Optional[str] = None,
-    map_list: Optional[List[str]] = None
+    map_list: Optional[List[str]] = None,
+    use_carla: Optional[bool] = False
 ):
     """
     A utility function to create a set of Regions to be passed into :func:`large_initialize` in
@@ -51,33 +55,56 @@ def main(
 
     for osm_map in lanelet2_path_list:
         print(f"Now processing map: {osm_map}")
+        
         try:
-            ###################################################################################
-            #Convert Lanelet2 to CR
-
             map_name = osm_map.split("/")[-1].split(".osm")[0]
             xml_path = f"{output_dir}{map_name}.xml"
-            lanelet2_config.adjacencies = True
-
-            # load lanelet/lanelet2 file, parse it, and convert it to a CommonRoad scenario
-            scenario = lanelet_to_commonroad(osm_map, lanelet2_conf=lanelet2_config)
-
-            # store converted file as CommonRoad scenario
-            writer = CRDesignerFileWriter(
-                scenario=scenario,
-                planning_problem_set=PlanningProblemSet(),
-                author="Sebastian Maierhofer",
-                affiliation="Technical University of Munich",
-                source="CommonRoad Scenario Designer",
-                tags={Tag.URBAN},
-            )
-            writer.write_to_file(xml_path, OverwriteExistingFile.ALWAYS)
-
-            ###################################################################################
-            #Convert CR to XODR
             output_path = f"{output_dir}{map_name}.xodr"
-            commonroad_to_opendrive(xml_path, output_path)
-            
+            if not use_carla:
+                ###################################################################################
+                #Convert Lanelet2 to CR
+                lanelet2_config.adjacencies = True
+
+                # load lanelet/lanelet2 file, parse it, and convert it to a CommonRoad scenario
+                scenario = lanelet_to_commonroad(osm_map, lanelet2_conf=lanelet2_config)
+
+                # store converted file as CommonRoad scenario
+                writer = CRDesignerFileWriter(
+                    scenario=scenario,
+                    planning_problem_set=PlanningProblemSet(),
+                    author="Sebastian Maierhofer",
+                    affiliation="Technical University of Munich",
+                    source="CommonRoad Scenario Designer",
+                    tags={Tag.URBAN},
+                )
+                writer.write_to_file(xml_path, OverwriteExistingFile.ALWAYS)
+
+                ###################################################################################
+                #Convert CR to XODR
+                commonroad_to_opendrive(xml_path, output_path)
+            else:
+
+                # Read the .osm data
+
+                f = open(osm_map, 'r')
+                osm_data = f.read()
+                f.close()
+
+                # Define the desired settings. In this case, default values.
+                settings = carla.Osm2OdrSettings()
+                # settings.center_map = True
+                settings.generate_traffic_lights = True
+                # Set OSM road types to export to OpenDRIVE
+                settings.set_osm_way_types(["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified", "residential"])
+                # Convert to .xodr
+                xodr_data = carla.Osm2Odr.convert(osm_data, settings)
+
+                # save opendrive file
+                f = open(output_path, 'w')
+                f.write(xodr_data)
+                f.close()
+
+
         except Exception as e:
             print(f"{e}")
             print(f"Failed while converting map: {osm_map}")
@@ -102,5 +129,5 @@ if __name__ == '__main__':
     main(
         output_dir=args.output_dir,
         osm_path=args.osm_path if args.osm_path != "None" else None,
-        map_list=['can:yukon_and_2nd', 'can:king_edward_and_columbia', 'can:victoria_drive_and_marine_drive', 'can:victoria_drive_and_41st', 'can:victoria_drive_and_41st_3', 'can:152_street_and_102a_avenue_surrey', 'can:fraser_hwy_and_160_street_surrey', 'usa:district_drive_and_blue_ridge_road_united_states', 'usa:rogers_road_and_heritage_branch_road_united_states', 'can:browns_line_and_coules_court_canada', 'usa:ligon_mill_road_and_south_main_street_united_states', 'usa:capital_boulevard_and_calvary_drive_united_states', 'usa:capital_boulevard_and_oak_forest_drive_united_states', 'usa:perry_creek_road_and_mcguire_drive_united_states', 'usa:west_division_street_and_north_orleans_street_united_states', 'usa:old_knight_road_and_knightdale_boulevard_united_states', 'usa:liles_dean_road_and_wendell_boulevard_united_states', 'usa:foundation_drive_and_forestville_road_united_states', 'usa:lee_street_sw_and_139_united_states', 'usa:langhorn_street_sw_and_139_united_states', 'usa:us_highway_41_and_mlk_jr_drive_sw_united_states', 'usa:w_division_street_and_n_halsted_street_united_states', 'usa:culver_drive_and_irvine_boulevard_united_states', 'usa:irvine_boulevard_and_old_myford_road_united_states', 'usa:exit_lane_to_irvine_boulevard_united_states', 'usa:west_diversity_parkway_and_north_sheridan_road_united_states', 'usa:edinger_avenue_and_brookhurst_street_united_states', 'usa:west_division_street_and_north_humboldt_drive_united_states_1', 'usa:north_lincoln_avenue_and_north_clark_street_united_states', 'grc:leof_iasonidou_and_dim_gounari_greece', 'usa:carroll_way_and_17th_st_united_states', 'can:williams_rd_and_no_2_rd_canada', 'can:e_41st_ave_and_rupert_st_canada', 'can:rupert_st_and_kingsway_canada', 'can:e_41st_ave_and_victoria_dr_canada', 'can:appleby_line_and_dryden_ave_canada', 'can:dundas_st_and_tim_dobbie_dr_canada', 'can:florence_ave_and_yonge_st_canada', 'can:mc_nicoll_ave_and_markham_rd_canada', 'can:dynamic_dr_and_mcnicoll_ave_canada', 'can:avondale_ave_and_bales_ave_canada', 'can:cherry_blossom_rd_and_fountain_st_n_canada', 'can:ironstone_dr_and_appleby_line_canada', 'can:wilson_dr_and_main_st_e_canada', 'can:harrison_ct_and_appleby_line_canada', 'can:upper_middle_rd_and_country_club_dr_canada', 'can:n_service_rd_and_appleby_line_canada', 'can:ontario_st_s_and_main_st_e_canada']
+        use_carla=True,
     )

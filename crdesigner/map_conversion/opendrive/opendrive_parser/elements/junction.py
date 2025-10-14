@@ -148,6 +148,9 @@ class Connection:
 
     @contactPoint.setter
     def contactPoint(self, value):
+        if value == 'none':
+            print('Invalid contact point "none". Will skip')
+            return
         if value not in ["start", "end"]:
             raise AttributeError("Contact point can only be start or end.")
 

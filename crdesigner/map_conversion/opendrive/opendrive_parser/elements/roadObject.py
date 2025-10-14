@@ -254,6 +254,9 @@ class Object:
 
     @orientation.setter
     def orientation(self, value):
+        if value == "undefined":
+            print("Invalid orientation value 'undefined'. Will set to 'none' instead")
+            value = "none"
         if value not in ["+", "-", "none"]:
             raise AttributeError("Value is not a valid orientation!")
         self._orientation = str(value)

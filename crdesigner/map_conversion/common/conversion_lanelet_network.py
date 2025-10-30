@@ -1005,6 +1005,12 @@ class ConversionLaneletNetwork(LaneletNetwork):
                 # Find closest lanelet to traffic signal
                 pos_1 = traffic_sign.position
                 pos_2 = lanelet.center_vertices[0][..., :pos_1.shape[-1]]
+                if pos_2.shape[0] == 2 and pos_1.shape[0] == 3:
+                    # pad pos_2 z dimension using pos_1
+                    pos_2 = np.concatenate([pos_2, pos_1[-1:]], axis=0)
+                elif pos_1.shape[0] == 2 and pos_2.shape[0] ==3:
+                    # pad pos_1 z dimension using pos_2
+                    pos_1 = np.concatenate([pos_1, pos_2[-1:]], axis=0)
                 dist = np.linalg.norm(pos_1 - pos_2)
                 if dist < min_distance:
                     min_distance = dist

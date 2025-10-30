@@ -168,6 +168,24 @@ def get_traffic_signals(road: Road) -> Tuple[List[TrafficLight], List[TrafficSig
                     stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
                     stop_lines.append(stop_line)
                     continue
+                if signal.type in ["17170432", "17235968"]:
+                    position_1, position_2 = calculate_stop_line_position(
+                        road.lanes.lane_sections, signal, position, tangent
+                    )
+                    stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
+                    stop_line.orientation = tangent
+                    width = ((position_1[0]-position_2[0])**2 + (position_1[1]-position_2[1])**2)**0.5
+                    stop_line.length = 1
+                    stop_line.width = width
+                    stop_line.xy = [(position_1[0]+position_2[0]) / 2, (position_1[1]+position_2[1]) / 2, 0]
+                    stop_line.id = signal.id
+                    if signal.type == "17170432":
+                        stop_line.iai_type = 'stop_sign'
+                    else:
+                        stop_line.iai_type = 'yield_sign'
+                    stop_lines.append(stop_line)
+                    continue
+
 
                 element_id = extract_traffic_element_id(signal.type, str(signal.subtype), TrafficSignIDZamunda)
 
@@ -203,6 +221,19 @@ def get_traffic_signals(road: Road) -> Tuple[List[TrafficLight], List[TrafficSig
                 )  # TODO remove for new CR-Format
                 traffic_light.opendrive_id = signal.id
                 traffic_lights.append(traffic_light)
+
+                position_1, position_2 = calculate_stop_line_position(
+                        road.lanes.lane_sections, signal, position, tangent
+                    )
+                stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
+                stop_line.orientation = tangent
+                width = ((position_1[0]-position_2[0])**2 + (position_1[1]-position_2[1])**2)**0.5
+                stop_line.length = 1
+                stop_line.width = width
+                stop_line.xy = [(position_1[0]+position_2[0]) / 2, (position_1[1]+position_2[1]) / 2, 0]
+                stop_line.id = signal.id
+                stop_line.iai_type = 'traffic_light'
+                stop_lines.append(stop_line)
             else:
                 continue
 

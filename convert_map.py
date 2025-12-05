@@ -252,7 +252,11 @@ def convert_map(cfg: MapConversionConfig) -> None:
                     [('yield_sign', x) for x in road_network._iai_yield_signs]
     for agent_type, (xy, orientation, length, width, opendrive_id) in traffic_signs:
         length = 1.0  # We could also adjust width and placement based on lanelet information
-        x, y, z = float(xy[0]), float(xy[1]), float(xy[2])
+        if len(xy) > 2:
+            z = float(xy[2])
+        else:
+            z = 0.0
+        x, y = float(xy[0]), float(xy[1])
 
         include_stopline = True
         if cfg.center is not None and cfg.trim_radius is not None:

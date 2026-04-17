@@ -1004,11 +1004,14 @@ class ConversionLaneletNetwork(LaneletNetwork):
             for lanelet in self.lanelets:
                 # Find closest lanelet to traffic signal
                 pos_1 = traffic_sign.position
+                if pos_1.shape[0] == 3:
+                    pos_1 = pos_1[:2]
                 pos_2 = lanelet.center_vertices[0][..., :pos_1.shape[-1]]
                 dist = np.linalg.norm(pos_1 - pos_2)
                 if dist < min_distance:
                     min_distance = dist
                     id_for_adding = lanelet.lanelet_id
+
             if id_for_adding is None:
                 warnings.warn(
                     "For traffic sign with ID {} no referencing lanelet was found!".format(traffic_sign.traffic_sign_id)

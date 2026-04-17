@@ -844,7 +844,7 @@ class ConversionLaneletNetwork(LaneletNetwork):
                         # Lanelet cannot have more traffic lights than number of successors
                         if len(lane.successor) > len(lane.traffic_lights):
                             pos_1 = traffic_light.position
-                            pos_2 = lane.center_vertices[-1]
+                            pos_2 = lane.center_vertices[-1][..., :2]
                             dist = np.linalg.norm(pos_1 - pos_2)
                             if dist < min_distance:
                                 min_distance = dist
@@ -926,8 +926,8 @@ class ConversionLaneletNetwork(LaneletNetwork):
                             for index, traffic_light_id in enumerate(traffic_light_ids):
                                 traffic_light = self.find_traffic_light_by_id(traffic_light_id)
                                 traffic_light_position = traffic_light.position
-                                lanelet_left_position = target_lanelet.left_vertices[-1]
-                                lanelet_right_position = target_lanelet.right_vertices[-1]
+                                lanelet_left_position = target_lanelet.left_vertices[-1][..., :2]
+                                lanelet_right_position = target_lanelet.right_vertices[-1][..., :2]
                                 distance_from_right = np.linalg.norm(lanelet_right_position - traffic_light_position)
                                 distance_from_left = np.linalg.norm(lanelet_left_position - traffic_light_position)
                                 if distance_from_left < distance_from_right and "left" in list(
@@ -953,8 +953,8 @@ class ConversionLaneletNetwork(LaneletNetwork):
                                 traffic_light = self.find_traffic_light_by_id(traffic_light_id)
                                 # Check if traffic light is to the left of the lanelet or to the right of the lanelet
                                 traffic_light_position = traffic_light.position
-                                lanelet_left_position = target_lanelet.left_vertices[-1]
-                                lanelet_right_position = target_lanelet.right_vertices[-1]
+                                lanelet_left_position = target_lanelet.left_vertices[-1][..., :2]
+                                lanelet_right_position = target_lanelet.right_vertices[-1][..., :2]
                                 distance_from_right = np.linalg.norm(lanelet_right_position - traffic_light_position)
                                 distance_from_left = np.linalg.norm(lanelet_left_position - traffic_light_position)
                                 if distance_from_left < distance_from_right:
@@ -975,8 +975,8 @@ class ConversionLaneletNetwork(LaneletNetwork):
                                 traffic_light = self.find_traffic_light_by_id(traffic_light_id)
                                 # Check if traffic light is to the left of the lanelet or to the right of the lanelet
                                 traffic_light_position = traffic_light.position
-                                lanelet_left_position = target_lanelet.left_vertices[-1]
-                                lanelet_right_position = target_lanelet.right_vertices[-1]
+                                lanelet_left_position = target_lanelet.left_vertices[-1][..., :2]
+                                lanelet_right_position = target_lanelet.right_vertices[-1][..., :2]
                                 distance_from_right = np.linalg.norm(lanelet_right_position - traffic_light_position)
                                 distance_from_left = np.linalg.norm(lanelet_left_position - traffic_light_position)
                                 if distance_from_left < distance_from_right:
@@ -1004,7 +1004,7 @@ class ConversionLaneletNetwork(LaneletNetwork):
             for lanelet in self.lanelets:
                 # Find closest lanelet to traffic signal
                 pos_1 = traffic_sign.position
-                pos_2 = lanelet.center_vertices[0]
+                pos_2 = lanelet.center_vertices[0][..., :pos_1.shape[-1]]
                 dist = np.linalg.norm(pos_1 - pos_2)
                 if dist < min_distance:
                     min_distance = dist
@@ -1034,8 +1034,8 @@ class ConversionLaneletNetwork(LaneletNetwork):
                 for incoming in intersection.incomings:
                     for lanelet in incoming.incoming_lanelets:
                         lane = self.find_lanelet_by_id(lanelet)
-                        lanelet_position_left = lane.left_vertices[-1]
-                        lanelet_position_right = lane.right_vertices[-1]
+                        lanelet_position_left = lane.left_vertices[-1][..., :2]
+                        lanelet_position_right = lane.right_vertices[-1][..., :2]
                         stop_line_position_end = stop_line.start
                         stop_line_position_start = stop_line.end
                         if (

@@ -774,6 +774,8 @@ def parse_opendrive_junction(opendrive: OpenDrive, junction: etree.ElementTree):
             connecting_road = connection.get("linkedRoad")
         new_connection.connectingRoad = connecting_road
         new_connection.contactPoint = connection.get("contactPoint")
+        if new_connection.contactPoint == 'none':
+            continue
 
         for laneLink in connection.findall("laneLink"):
             new_lane_link = JunctionConnectionLaneLink()

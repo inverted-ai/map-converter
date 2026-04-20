@@ -28,6 +28,9 @@ from torchdrivesim.mesh import BirdviewMesh
 from torchdrivesim.rendering import renderer_from_config, RendererConfig
 from torchdrivesim.map import traffic_controls_from_map_config
 from torchdrivesim.utils import Resolution
+from torchdrivesim.rendering import RendererConfig, renderer_from_config
+from torchdrivesim.mesh import BirdviewRGBMeshGenerator
+from torchdrivesim.utils import Resolution
 
 from crdesigner.common.config.general_config import GeneralConfig
 from crdesigner.common.config.lanelet2_config import lanelet2_config
@@ -272,6 +275,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
                 length=float(length), width=float(width), orientation=float(orientation),
             )
             stoplines.append(dataclasses.asdict(stopline))
+    traffic_lights = [('traffic_light', x) for x in road_network._iai_traffic_lights]
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
@@ -308,6 +312,29 @@ def convert_map(cfg: MapConversionConfig) -> None:
     metadata_path = os.path.join(cfg.dir_path, 'metadata.json')
     logger.info(f'Writing metadata to {metadata_path}')
     store_map_config(map_cfg, metadata_path)
+
+
+
+    # device = 'cuda'
+    # driving_surface_mesh = map_cfg.road_mesh.to(device)
+    # stoplines = map_cfg.stoplines
+    # lanelet_map = map_cfg.lanelet_map
+
+    # traffic_controls = traffic_controls_from_map_config(map_cfg)
+    # driving_surface_mesh = map_cfg.road_mesh.to(device)
+    # renderer_cfg = RendererConfig(left_handed_coordinates=False)
+    # renderer = renderer_from_config(renderer_cfg)
+    # mesh_generator = BirdviewRGBMeshGenerator(driving_surface_mesh, renderer.color_map, renderer.rendering_levels,
+    #                                             traffic_controls=traffic_controls).to(device)
+                                                
+    # image_path = '/home/rlyu/map_image.png'
+    # camera_xy = torch.zeros(1, 1, 2, device=device)
+    # camera_sc = torch.ones(1, 1, 2, device=device)
+    # camera_sc[:, :, 1] = 0
+    # map_image = renderer.render_frame(mesh_generator.generate(num_cameras=1), camera_xy=camera_xy, camera_sc=camera_sc, res=Resolution(1024, 1024), fov=500)
+    # os.makedirs(os.path.dirname(image_path), exist_ok=True)
+    # imageio.imsave(image_path, map_image[0].permute(1, 2, 0).cpu().numpy().astype(np.uint8))
+
 
     # Visualize results
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

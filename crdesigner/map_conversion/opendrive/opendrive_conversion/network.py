@@ -154,6 +154,7 @@ class Network:
         self._stop_lines = []
         self._iai_stop_signs = []
         self._iai_yield_signs = []
+        self._iai_traffic_lights = []
         self._crosswalks = []
         self._country_ID = None
 
@@ -294,6 +295,15 @@ class Network:
                         self._iai_yield_signs.append(stopline)
                     else:
                         assert False
+            for traffic_sign_stopline in stop_lines:
+                stopline = (traffic_sign_stopline.xy, traffic_sign_stopline.orientation, traffic_sign_stopline.length, traffic_sign_stopline.width, traffic_sign_stopline.id)
+                if traffic_sign_stopline.iai_type == "stop_sign":
+                    self._iai_stop_signs.append(stopline)
+                elif  traffic_sign_stopline.iai_type == "yield_sign":
+                    self._iai_yield_signs.append(stopline)
+                else:
+                    self._iai_traffic_lights.append(stopline)
+
 
         for traffic_light in self._traffic_lights:
             if hasattr(traffic_light, 'opendrive_id'):

@@ -192,7 +192,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         # "sidewalk",
         # "shoulder",
         # "crosswalk",
-        # "bidirectional",
+        "bidirectional",
     ]
     road_network = Network()
     road_network.load_opendrive(opendrive)

@@ -5,29 +5,16 @@ This script produces the required files for TorchDriveSim in the `dir_path` fold
 """
 import dataclasses
 import glob
-import json
 import os
 import re
 import sys
 import logging
 from typing import Tuple, Optional
-
-import imageio
 import math
-import numpy as np
 from pathlib import Path
-
-import torch.cuda
 from lxml import etree
 from omegaconf import OmegaConf
-
 import lanelet2
-from torchdrivesim.map import Stopline, MapConfig, store_map_config, resolve_paths_to_absolute
-from torchdrivesim.lanelet2 import LaneletMap, load_lanelet_map, road_mesh_from_lanelet_map, lanelet_map_to_lane_mesh
-from torchdrivesim.mesh import BirdviewMesh
-from torchdrivesim.rendering import renderer_from_config, RendererConfig
-from torchdrivesim.map import traffic_controls_from_map_config
-from torchdrivesim.utils import Resolution
 
 from crdesigner.common.config.general_config import GeneralConfig
 from crdesigner.common.config.lanelet2_config import lanelet2_config
@@ -43,9 +30,6 @@ logger = logging.getLogger(__name__)
 @dataclasses.dataclass
 class MapConversionConfig:
     dir_path: str
-    domain: Optional[str] = None
-    lane_marking_join_threshold: float = 0.1
-    visualization_fov: float = 800
     center: Optional[Tuple[float, float]] = None  # world center in local coordinates - by default road mesh center
     trim_radius: Optional[float] = None  # trim the map to this radius around the center
     trim_vertical_limits: Optional[Tuple[float, float]] = None  # lower and upper elevation bounds for trimming
@@ -129,9 +113,6 @@ def trim_map(lanelet_map, center, radius, vertical_limits=None):
             left_boundary = lanelet2.core.LineString3d(lanelet.leftBound.id, left_boundary)
             right_boundary = lanelet2.core.LineString3d(lanelet.rightBound.id, right_boundary)
             trimmed_lanelet = lanelet2.core.Lanelet(lanelet.id, left_boundary, right_boundary)
-            # trimmed_lanelet.attributes['type'] = lanelet.attributes['type']
-            # trimmed_lanelet.attributes['subtype'] = lanelet.attributes['subtype']
-            # trimmed_lanelet.attributes['is_intersection'] = lanelet.attributes['is_intersection']
             trimmed_map.add(trimmed_lanelet)
     return trimmed_map
 
@@ -196,11 +177,6 @@ def convert_map(cfg: MapConversionConfig) -> None:
     ]
     road_network = Network()
     road_network.load_opendrive(opendrive)
-    # for index in range(len(road_network._traffic_lights)):
-    #     road_network._traffic_lights[index]._traffic_light_id = abs(
-    #         road_network._traffic_lights[index].traffic_light_id
-    #     )
-    # We leave everything in the original OpenDRIVE inertial coordinate frame
     lanelet_network = road_network.export_lanelet_network(transformer=None, filter_types=open_drive_config.filter_types)
 
     # Export CommonRoad to Lanelet2
@@ -220,117 +196,6 @@ def convert_map(cfg: MapConversionConfig) -> None:
         trimmed_map = trim_map(lanelet_map, center=cfg.center, radius=cfg.trim_radius,
                                vertical_limits=cfg.trim_vertical_limits)
         lanelet2.io.write(osm_path, trimmed_map, projector)
-
-    # Export stoplines
-    stoplines = []
-    for traffic_light in lanelet_network.traffic_lights:
-        if not hasattr(traffic_light, 'iai_stoplines'):
-            continue
-        agent_type = 'traffic_light'
-        opendrive_id = traffic_light.opendrive_id
-        for left, right in traffic_light.iai_stoplines:
-            center = (left + right) / 2
-            right_to_left = left - right
-            x, y, z = float(center[0]), float(center[1]), float(center[2])
-
-            include_stopline = True
-            if cfg.center is not None and cfg.trim_radius is not None:
-                within_radius = (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 <= cfg.trim_radius ** 2
-                include_stopline = include_stopline and within_radius
-            if cfg.trim_vertical_limits is not None:
-                within_limits = cfg.trim_vertical_limits[0] <= z <= cfg.trim_vertical_limits[1]
-                include_stopline = include_stopline and within_limits
-
-            if include_stopline:
-                stopline = Stopline(
-                    actor_id=opendrive_id, agent_type=agent_type, x=float(center[0]), y=float(center[1]),
-                    length=1.0, width=float(np.linalg.norm(left - right)),
-                    orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
-                )
-                stoplines.append(dataclasses.asdict(stopline))
-    traffic_signs = [('stop_sign', x) for x in road_network._iai_stop_signs] +\
-                    [('yield_sign', x) for x in road_network._iai_yield_signs]
-    for agent_type, (xy, orientation, length, width, opendrive_id) in traffic_signs:
-        length = 1.0  # We could also adjust width and placement based on lanelet information
-        if len(xy) > 2:
-            z = float(xy[2])
-        else:
-            z = 0.0
-        x, y = float(xy[0]), float(xy[1])
-
-        include_stopline = True
-        if cfg.center is not None and cfg.trim_radius is not None:
-            within_radius = (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 <= cfg.trim_radius ** 2
-            include_stopline = include_stopline and within_radius
-        if cfg.trim_vertical_limits is not None:
-            within_limits = cfg.trim_vertical_limits[0] <= z <= cfg.trim_vertical_limits[1]
-            include_stopline = include_stopline and within_limits
-
-        if include_stopline:
-            stopline = Stopline(
-                actor_id=opendrive_id, agent_type=agent_type, x=x, y=y,
-                length=float(length), width=float(width), orientation=float(orientation),
-            )
-            stoplines.append(dataclasses.asdict(stopline))
-    stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
-    with open(stoplines_path, 'w') as f:
-        logger.info(f'Writing extracted stoplines to {stoplines_path}')
-        json.dump(stoplines, f, indent=4)
-
-    # Export road mesh
-    mesh_path = os.path.join(cfg.dir_path, f"{location}_mesh.json")
-    lanelet_map = lanelet2.io.load(osm_path, projector)
-    logger.info(f'Computing road mesh')
-    road_mesh = road_mesh_from_lanelet_map(lanelet_map)
-    road_mesh = BirdviewMesh.set_properties(road_mesh, category='road').to(road_mesh.device)
-    lane_mesh = lanelet_map_to_lane_mesh(
-        lanelet_map, left_handed=False,
-        left_right_marking_join_threshold=cfg.lane_marking_join_threshold
-    )
-    combined_mesh = lane_mesh.merge(road_mesh)
-    logger.info(f'Writing road mesh to {mesh_path}')
-    combined_mesh.save(mesh_path)
-
-    if cfg.center is None:
-        center = combined_mesh.center.squeeze(0).numpy().tolist()
-    else:
-        center = list(cfg.center)
-
-    # Write metadata
-    map_cfg = MapConfig(
-        name=location, center=center, lanelet_map_origin=geo_reference.origin,
-        iai_location_name=f'{cfg.domain}:{location}' if cfg.domain else None,
-        left_handed_coordinates=False,
-        lanelet_path=os.path.abspath(osm_path),
-        mesh_path=mesh_path,
-        stoplines_path=stoplines_path,
-    )
-    metadata_path = os.path.join(cfg.dir_path, 'metadata.json')
-    logger.info(f'Writing metadata to {metadata_path}')
-    store_map_config(map_cfg, metadata_path)
-
-    # Visualize results
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    res = Resolution(2048, 2048)
-    map_cfg = resolve_paths_to_absolute(map_cfg, root=cfg.dir_path)
-    driving_surface_mesh = map_cfg.road_mesh.to(device)
-    renderer_cfg = RendererConfig(left_handed_coordinates=map_cfg.left_handed_coordinates)
-    renderer = renderer_from_config(
-        renderer_cfg, device=device, static_mesh=driving_surface_mesh
-    )
-    traffic_controls = traffic_controls_from_map_config(map_cfg)
-    controls_mesh = renderer.make_traffic_controls_mesh(traffic_controls).to(renderer.device)
-    renderer.add_static_meshes([controls_mesh])
-    camera_xy = torch.tensor(center).to(driving_surface_mesh.verts.dtype).to(device)
-    camera_sc = torch.stack([torch.zeros_like(camera_xy[..., 0]), torch.ones_like(camera_xy[..., 0])], dim=-1)
-    map_image = renderer.render_static_meshes(
-        res=res, fov=cfg.visualization_fov, camera_xy=camera_xy, camera_sc=camera_sc
-    )
-    viz_path = os.path.join(cfg.dir_path, 'visualization.png')
-    logger.info(f'Saving visualization to {viz_path}')
-    imageio.imsave(
-        viz_path, map_image[0].cpu().numpy().astype(np.uint8)
-    )
 
 
 if __name__ == '__main__':

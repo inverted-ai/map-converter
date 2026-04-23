@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class MapConversionConfig:
-    dir_path: str
+    xodr_path: str
     center: Optional[Tuple[float, float]] = None  # world center in local coordinates - by default road mesh center
     trim_radius: Optional[float] = None  # trim the map to this radius around the center
     trim_vertical_limits: Optional[Tuple[float, float]] = None  # lower and upper elevation bounds for trimming
@@ -133,15 +133,10 @@ class CustomTransfomer:
         return transformed.lat, transformed.lon
 
 
-def convert_map(cfg: MapConversionConfig) -> None:
+def convert_map(cfg: MapConversionConfig) -> str:
     # Find and parse OpenDRIVE file
-    xodr_files = glob.glob(os.path.join(cfg.dir_path, '*.xodr'))
-    if not xodr_files:
-        logger.error(f'No .xodr files found in {cfg.dir_path} - aborting')
-        return
-    opendrive_path = xodr_files[0]
+    opendrive_path = cfg.xodr_path
     logger.info(f'Using {opendrive_path} as input')
-    location = os.path.basename(opendrive_path)[:-5]
     opendrive = parse_opendrive(Path(opendrive_path))
 
     # Construct Lanelet2 projector
@@ -184,7 +179,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
     commonroad_config.proj_string_cr = geo_reference.proj_string  # not currently used - see CustomTransformer
     l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
     osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector, geo_offset))
-    osm_path = os.path.join(cfg.dir_path, f"{location}.osm")
+    osm_path = cfg.xodr_path.split('.')[0] + '.osm'
     with open(osm_path, "wb") as file_out:
         logger.info(f'Writing converted Lanelet2 map to {osm_path}')
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))
@@ -196,12 +191,4 @@ def convert_map(cfg: MapConversionConfig) -> None:
         trimmed_map = trim_map(lanelet_map, center=cfg.center, radius=cfg.trim_radius,
                                vertical_limits=cfg.trim_vertical_limits)
         lanelet2.io.write(osm_path, trimmed_map, projector)
-
-
-if __name__ == '__main__':
-    cfg: MapConversionConfig = OmegaConf.structured(
-        MapConversionConfig(**OmegaConf.from_dotlist(sys.argv[1:]))
-    )
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(logging.StreamHandler())
-    convert_map(cfg)
+    return osm_path

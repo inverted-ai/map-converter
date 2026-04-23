@@ -1,21 +1,22 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
 
-[project]
+[tool.poetry]
 name = "map-converter"
 version = "0.1.0"
-dependencies = [
-    "torchdrivesim>=0.2.2",
-    "lanelet2",
-    "commonroad-io",
-    "lxml",
-    "pyproj",
-    "mgrs",
+description = ""
+authors = []
+packages = [
+    { include = "convert_map.py" },
+    { include = "crdesigner" },
 ]
 
-[tool.setuptools]
-py-modules = ["convert_map"]
-
-[tool.setuptools.packages.find]
-include = ["crdesigner*"]
+[tool.poetry.dependencies]
+python = "^3.10"
+torchdrivesim = ">=0.2.2"
+lanelet2 = "*"
+commonroad-io = "*"
+lxml = "*"
+pyproj = "*"
+mgrs = "*"

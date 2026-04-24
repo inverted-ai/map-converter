@@ -179,7 +179,7 @@ def convert_map(cfg: MapConversionConfig) -> str:
     commonroad_config.proj_string_cr = geo_reference.proj_string  # not currently used - see CustomTransformer
     l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
     osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector, geo_offset))
-    osm_path = cfg.xodr_path.split('.')[0] + '.osm'
+    osm_path = os.path.splitext(cfg.xodr_path)[0] + '.osm' 
     with open(osm_path, "wb") as file_out:
         logger.info(f'Writing converted Lanelet2 map to {osm_path}')
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))

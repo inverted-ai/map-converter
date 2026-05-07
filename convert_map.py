@@ -22,6 +22,25 @@ from crdesigner.map_conversion.lanelet2.cr2lanelet import CR2LaneletConverter
 from crdesigner.map_conversion.opendrive.opendrive_parser.parser import parse_opendrive
 from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.opendrive_conversion.network import Network
+from crdesigner.map_conversion.common.conversion_lanelet_network import ConversionLaneletNetwork
+
+# Prevent bidirectional lanelets from being concatenated with adjacent junction connectors.
+# Without this, a bidirectional road (going, e.g., SE) gets merged with a junction connector
+# that has swapped inner/outer boundaries (going NW), producing crossed 65-vertex geometry.
+_original_check_concat = ConversionLaneletNetwork.check_concatenation_potential
+
+def _no_concat_for_bidir(self, lanelet, adjacent_direction):
+    if lanelet.user_bidirectional:
+        return None
+    # Also skip if any successor is bidirectional — concatenating into a bidir lanelet
+    # swaps its inner/outer boundaries relative to the predecessor, producing crossed geometry.
+    for succ_id in lanelet.successor:
+        succ = self.find_lanelet_by_id(succ_id)
+        if succ and succ.user_bidirectional:
+            return None
+    return _original_check_concat(self, lanelet, adjacent_direction)
+
+ConversionLaneletNetwork.check_concatenation_potential = _no_concat_for_bidir
 
 
 logger = logging.getLogger(__name__)
@@ -133,6 +152,105 @@ class CustomTransfomer:
         return transformed.lat, transformed.lon
 
 
+def _fix_bidirectional_topology(lanelet_network, tolerance: float = 5.0):
+    """
+    Fix incorrect predecessor/successor connections for bidirectional lanelets.
+
+    When a road connects to a bidirectional lane at that lane's END (e.g. contactPoint=end
+    in the xodr successor link), the converter incorrectly registers it as a predecessor
+    of the forward-direction lanelet.  The predecessor's endpoint ends up near the
+    bidirectional lanelet's END rather than its START, which causes cr2lanelet to share
+    the wrong OSM nodes and produces a criss-cross shape in the output.
+
+    We remove such connections here so that:
+    - predecessors always terminate geometrically near the bidirectional lane's START, and
+    - successors always originate geometrically near the bidirectional lane's END.
+
+    The one_way=no tag (added separately) lets the routing engine traverse the bidirectional
+    lane in the reverse direction without explicit reverse-direction topology links.
+    """
+    for lanelet in lanelet_network.lanelets:
+        if not lanelet.user_bidirectional:
+            continue
+
+        la_start = lanelet.left_vertices[0][:2]
+        la_end = lanelet.left_vertices[-1][:2]
+
+        wrong_preds = []
+        for pred_id in list(lanelet.predecessor):
+            pred = lanelet_network.find_lanelet_by_id(pred_id)
+            if pred is None:
+                continue
+            pred_end = pred.left_vertices[-1][:2]
+            d_to_start = math.dist(pred_end, la_start)
+            d_to_end = math.dist(pred_end, la_end)
+            if d_to_end < tolerance and d_to_end < d_to_start:
+                wrong_preds.append(pred_id)
+
+        for pred_id in wrong_preds:
+            pred = lanelet_network.find_lanelet_by_id(pred_id)
+            lanelet.predecessor.remove(pred_id)
+            if pred is not None and lanelet.lanelet_id in pred.successor:
+                pred.successor.remove(lanelet.lanelet_id)
+
+        wrong_succs = []
+        for succ_id in list(lanelet.successor):
+            succ = lanelet_network.find_lanelet_by_id(succ_id)
+            if succ is None:
+                continue
+            succ_start = succ.left_vertices[0][:2]
+            d_to_end = math.dist(succ_start, la_end)
+            d_to_start = math.dist(succ_start, la_start)
+            if d_to_start < tolerance and d_to_start < d_to_end:
+                wrong_succs.append(succ_id)
+
+        for succ_id in wrong_succs:
+            succ = lanelet_network.find_lanelet_by_id(succ_id)
+            lanelet.successor.remove(succ_id)
+            if succ is not None and lanelet.lanelet_id in succ.predecessor:
+                succ.predecessor.remove(lanelet.lanelet_id)
+
+        # Detect "reverse connector" predecessors: a lanelet whose START is near bidir.END
+        # and whose END is near bidir.START.  These are physically redundant roads that
+        # traverse the bidirectional lane's space in the opposite direction.  We remove them
+        # from the network entirely — the bidir one_way=no handles reverse routing.
+        reverse_connector_preds = []
+        for pred_id in list(lanelet.predecessor):
+            pred = lanelet_network.find_lanelet_by_id(pred_id)
+            if pred is None:
+                continue
+            pred_start = pred.left_vertices[0][:2]
+            pred_end = pred.left_vertices[-1][:2]
+            if (math.dist(pred_start, la_end) < tolerance and
+                    math.dist(pred_end, la_start) < tolerance):
+                reverse_connector_preds.append(pred_id)
+
+        for pred_id in reverse_connector_preds:
+            pred = lanelet_network.find_lanelet_by_id(pred_id)
+            lanelet.predecessor.remove(pred_id)
+            # Remove back-references from the reverse connector's own predecessors
+            if pred is not None:
+                for pp_id in list(pred.predecessor):
+                    pp = lanelet_network.find_lanelet_by_id(pp_id)
+                    if pp is not None and pred_id in pp.successor:
+                        pp.successor.remove(pred_id)
+            # Remove the reverse connector lanelet entirely so it won't be rendered
+            lanelet_network.remove_lanelet(pred_id)
+
+
+def _tag_bidirectional_relations(osm_tree):
+    """Add one_way=no to every lanelet relation that has any one_way:* = no tag."""
+    for rel in osm_tree.findall('.//relation'):
+        tags = {t.get('k'): t.get('v') for t in rel.findall('tag')}
+        if tags.get('type') != 'lanelet':
+            continue
+        has_bidirectional_tag = any(
+            k.startswith('one_way:') and v == 'no' for k, v in tags.items()
+        )
+        if has_bidirectional_tag and 'one_way' not in tags:
+            rel.append(etree.Element('tag', k='one_way', v='no'))
+
+
 def convert_map(cfg: MapConversionConfig) -> str:
     # Find and parse OpenDRIVE file
     opendrive_path = cfg.xodr_path
@@ -174,12 +292,19 @@ def convert_map(cfg: MapConversionConfig) -> str:
     road_network.load_opendrive(opendrive)
     lanelet_network = road_network.export_lanelet_network(transformer=None, filter_types=open_drive_config.filter_types)
 
+    # Fix incorrect predecessor/successor connections for bidirectional lanelets
+    _fix_bidirectional_topology(lanelet_network)
+
     # Export CommonRoad to Lanelet2
     commonroad_config = GeneralConfig()
     commonroad_config.proj_string_cr = geo_reference.proj_string  # not currently used - see CustomTransformer
     l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
     osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector, geo_offset))
-    osm_path = os.path.splitext(cfg.xodr_path)[0] + '.osm' 
+
+    # Add one_way=no to all bidirectional lanelet relations
+    _tag_bidirectional_relations(osm)
+
+    osm_path = os.path.splitext(cfg.xodr_path)[0] + '.osm'
     with open(osm_path, "wb") as file_out:
         logger.info(f'Writing converted Lanelet2 map to {osm_path}')
         file_out.write(etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True))

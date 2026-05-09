@@ -152,42 +152,42 @@ class CustomTransfomer:
         return transformed.lat, transformed.lon
 
 
-def _fix_reversed_left_boundaries(lanelet_network, repair: bool = True, min_gap: float = 1.0):
-    """
-    Detect and fix lanelets whose left_vertices order is reversed relative to right_vertices.
+# def _fix_reversed_left_boundaries(lanelet_network, repair: bool = True, min_gap: float = 1.0):
+#     """
+#     Detect and fix lanelets whose left_vertices order is reversed relative to right_vertices.
 
-    Symptom in the OSM output: the way for a lanelet's left bound runs against the lanelet's
-    travel direction, producing crossed/sheared polygons.  We've seen this on positive-ID
-    OpenDRIVE lanes (those that travel opposite to their road's reference line) where the
-    OpenDRIVE→CommonRoad step reverses right_vertices but leaves left_vertices in
-    reference-line order.
+#     Symptom in the OSM output: the way for a lanelet's left bound runs against the lanelet's
+#     travel direction, producing crossed/sheared polygons.  We've seen this on positive-ID
+#     OpenDRIVE lanes (those that travel opposite to their road's reference line) where the
+#     OpenDRIVE→CommonRoad step reverses right_vertices but leaves left_vertices in
+#     reference-line order.
 
-    Detection: cross-section consistency.  For a correctly-ordered lanelet,
-    dist(left[0], right[0]) + dist(left[-1], right[-1]) is much smaller than
-    dist(left[0], right[-1]) + dist(left[-1], right[0]).  If the inequality flips by more
-    than `min_gap` metres, left_vertices is reversed.
-    """
-    flagged = []
-    for lanelet in lanelet_network.lanelets:
-        if len(lanelet.left_vertices) < 2 or len(lanelet.right_vertices) < 2:
-            continue
-        l0, l1 = lanelet.left_vertices[0][:2], lanelet.left_vertices[-1][:2]
-        r0, r1 = lanelet.right_vertices[0][:2], lanelet.right_vertices[-1][:2]
-        d_aligned = math.dist(l0, r0) + math.dist(l1, r1)
-        d_swapped = math.dist(l0, r1) + math.dist(l1, r0)
-        if d_aligned - d_swapped > min_gap:
-            flagged.append(lanelet.lanelet_id)
-            logger.warning(
-                f'Lanelet {lanelet.lanelet_id}: left_vertices reversed relative to '
-                f'right_vertices (aligned={d_aligned:.2f} swapped={d_swapped:.2f})'
-            )
-            if repair:
-                lanelet.left_vertices = lanelet.left_vertices[::-1]
-                if lanelet.center_vertices is not None and len(lanelet.center_vertices) >= 2:
-                    c0, c1 = lanelet.center_vertices[0][:2], lanelet.center_vertices[-1][:2]
-                    if math.dist(c0, r1) + math.dist(c1, r0) < math.dist(c0, r0) + math.dist(c1, r1):
-                        lanelet.center_vertices = lanelet.center_vertices[::-1]
-    return flagged
+#     Detection: cross-section consistency.  For a correctly-ordered lanelet,
+#     dist(left[0], right[0]) + dist(left[-1], right[-1]) is much smaller than
+#     dist(left[0], right[-1]) + dist(left[-1], right[0]).  If the inequality flips by more
+#     than `min_gap` metres, left_vertices is reversed.
+#     """
+#     flagged = []
+#     for lanelet in lanelet_network.lanelets:
+#         if len(lanelet.left_vertices) < 2 or len(lanelet.right_vertices) < 2:
+#             continue
+#         l0, l1 = lanelet.left_vertices[0][:2], lanelet.left_vertices[-1][:2]
+#         r0, r1 = lanelet.right_vertices[0][:2], lanelet.right_vertices[-1][:2]
+#         d_aligned = math.dist(l0, r0) + math.dist(l1, r1)
+#         d_swapped = math.dist(l0, r1) + math.dist(l1, r0)
+#         if d_aligned - d_swapped > min_gap:
+#             flagged.append(lanelet.lanelet_id)
+#             logger.warning(
+#                 f'Lanelet {lanelet.lanelet_id}: left_vertices reversed relative to '
+#                 f'right_vertices (aligned={d_aligned:.2f} swapped={d_swapped:.2f})'
+#             )
+#             if repair:
+#                 lanelet.left_vertices = lanelet.left_vertices[::-1]
+#                 if lanelet.center_vertices is not None and len(lanelet.center_vertices) >= 2:
+#                     c0, c1 = lanelet.center_vertices[0][:2], lanelet.center_vertices[-1][:2]
+#                     if math.dist(c0, r1) + math.dist(c1, r0) < math.dist(c0, r0) + math.dist(c1, r1):
+#                         lanelet.center_vertices = lanelet.center_vertices[::-1]
+#     return flagged
 
 
 def _fix_bidirectional_topology(lanelet_network, tolerance: float = 5.0):
@@ -332,7 +332,7 @@ def convert_map(cfg: MapConversionConfig) -> str:
 
     # Fix lanelets whose left_vertices ordering disagrees with right_vertices
     # (must run before the bidirectional topology fix, which uses left_vertices endpoints)
-    _fix_reversed_left_boundaries(lanelet_network)
+    # _fix_reversed_left_boundaries(lanelet_network)
 
     # Fix incorrect predecessor/successor connections for bidirectional lanelets
     _fix_bidirectional_topology(lanelet_network)
@@ -359,3 +359,12 @@ def convert_map(cfg: MapConversionConfig) -> str:
                                vertical_limits=cfg.trim_vertical_limits)
         lanelet2.io.write(osm_path, trimmed_map, projector)
     return osm_path
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("xodr_path")
+
+    args = parser.parse_args()
+    convert_map(MapConversionConfig(xodr_path=args.xodr_path))

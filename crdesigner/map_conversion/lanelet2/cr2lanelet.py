@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from commonroad.common.common_lanelet import LaneletType, LineMarking
+from commonroad.scenario.area import Area
 from commonroad.scenario.lanelet import Lanelet
 from commonroad.scenario.scenario import Location, Scenario
 from commonroad.scenario.traffic_light import TrafficLight
@@ -15,6 +16,7 @@ from crdesigner.common.config.gui_config import lanelet2_default
 from crdesigner.common.config.lanelet2_config import Lanelet2Config, lanelet2_config
 from crdesigner.map_conversion.common.utils import generate_unique_id
 from crdesigner.map_conversion.lanelet2.lanelet2 import (
+    Multipolygon,
     Node,
     OSMLanelet,
     RegulatoryElement,
@@ -70,11 +72,31 @@ def _line_marking_to_type_subtype_vertices(line_marking: LineMarking) -> [str, s
     if line_marking is LineMarking.BROAD_SOLID:
         lanelet2_type = "line_thick"
         subtype = "solid"
+    if line_marking is LineMarking.CURB:
+        lanelet2_type = "curbstone"
+        subtype = "high"
+    if line_marking is LineMarking.LOWERED_CURB:
+        lanelet2_type = "curbstone"
+        subtype = "low"
+    if line_marking is LineMarking.DASHED_SOLID:
+        lanelet2_type = "line_thick"
+        subtype = "dashed_solid"
+    if line_marking is LineMarking.SOLID_DASHED:
+        lanelet2_type = "line_thick"
+        subtype = "solid_dashed"
+    if line_marking is LineMarking.SOLID_SOLID:
+        lanelet2_type = "line_thick"
+        subtype = "solid_solid"
+    if line_marking is LineMarking.DASHED_DASHED:
+        lanelet2_type = "line_thick"
+        subtype = "dashed_dashed"
 
     return lanelet2_type, subtype
 
 
-def _extract_and_convert_subtype_name(cr_subtypes: List[str], l2_subtypes: List[str]) -> [str, bool]:
+def _extract_and_convert_subtype_name(
+    cr_subtypes: List[str], l2_subtypes: List[str]
+) -> [str, bool]:
     """
     Function that extracts the most specific lanelet type and, if needed, converts its name as it could slightly differ
     between formats.
@@ -132,7 +154,9 @@ class CR2LaneletConverter:
     Class to convert CommonRoad lanelet to the OSM representation.
     """
 
-    def __init__(self, config: Lanelet2Config = lanelet2_config, cr_config: GeneralConfig = general_config):
+    def __init__(
+        self, config: Lanelet2Config = lanelet2_config, cr_config: GeneralConfig = general_config
+    ):
         """
         Initialization of CR2LaneletConverter
 
@@ -169,7 +193,9 @@ class CR2LaneletConverter:
             self.scenario_translation = (geo_trans.x_translation, geo_trans.y_translation)
             # TODO: z rotation and scaling are currently ignored
             if geo_trans.z_rotation != 0.0 or geo_trans.scaling != 1:
-                warnings.warn("<CR2LaneletConverter>: z_rotation and scaling are not considered during transformation")
+                warnings.warn(
+                    "<CR2LaneletConverter>: z_rotation and scaling are not considered during transformation"
+                )
         if proj_string_from is None:
             proj_string_from = self._cr_config.proj_string_cr
         crs_from = CRS(proj_string_from)
@@ -218,11 +244,19 @@ class CR2LaneletConverter:
         for traffic_light in scenario.lanelet_network.traffic_lights:
             self._convert_traffic_light(traffic_light)
 
+        # convert areas
+        for area in scenario.lanelet_network.areas:
+            self._convert_area(area)
+
         # map the traffic signs and the referred lanelets (yield+right_of_way) to a 'right_of_way_relation' object
         self._add_right_of_way_relation()
 
         # map the traffic lights and the referred lanelets to a 'right_of_way_relation' object
         self._add_regulatory_element_for_traffic_lights()
+
+        # append the lane_change flag to osm ways if the autoware flag is set to True
+        if self._config.autoware is True:
+            self._append_lane_change_tags()
 
         return self.osm.serialize_to_xml()
 
@@ -283,7 +317,9 @@ class CR2LaneletConverter:
                 else:
                     z = z[0]
 
-                lat_sign, lon_sign = self.transformer.transform(self.origin_utm[0] + x, self.origin_utm[1] + y)
+                lat_sign, lon_sign = self.transformer.transform(
+                    self.origin_utm[0] + x, self.origin_utm[1] + y
+                )
                 for way in self.osm.ways:
                     if self.osm.find_way_by_id(way).tag_dict.get("type") == "traffic_light":
                         n_lon = self.osm.find_node_by_id(self.osm.find_way_by_id(way).nodes[0]).lon
@@ -297,6 +333,8 @@ class CR2LaneletConverter:
                 # map the end of the lanelet to the ref_line
                 # maybe map the stop line also? Lanelets from examples didn't have stopLines so double check if needed
                 x, y = self._get_shared_last_nodes_from_other_lanelets(ll)
+                if x is None or y is None:
+                    x, y = self.last_nodes.get(ll.lanelet_id, (None, None))
                 way_tl = Way(self.id_count, [x, y])
                 self.osm.add_way(way_tl)
                 way_list = [way_tl.id_]
@@ -322,6 +360,26 @@ class CR2LaneletConverter:
                 )
                 self.osm.add_way_relation(new_way_rel)
 
+    def _convert_area(self, area: Area):
+        """
+        Converts a CommonRoad area to the Lanelet2 multipolygon.
+
+        :param area: area to be converted.
+        """
+        outer_list = list()
+        for border in area.border:
+            nodes = self._create_nodes_from_vertices(border.border_vertices)
+            type, subtype = _line_marking_to_type_subtype_vertices(border.line_marking)
+            way = Way(self.id_count, nodes, {"subtype": subtype, "type": type})
+            self.osm.add_way(way)
+            outer_list.append(way.id_)
+        tag_dict = {}
+        if area.area_types:
+            for area_type in area.area_types:
+                tag_dict["subtype"] = str(area_type.value)
+        multipolygon = Multipolygon(self.id_count, outer_list, tag_dict)
+        self.osm.add_multipolygon(multipolygon)
+
     def _convert_traffic_light(self, light: TrafficLight):
         """
         Add traffic light to the lanelet2 format
@@ -344,11 +402,13 @@ class CR2LaneletConverter:
             self.origin_utm[0] + light.position[0], self.origin_utm[1] + light.position[1]
         )
         lat2, lon2 = self.transformer.transform(
-            self.origin_utm[0] + light.position[0] + 0.1, self.origin_utm[1] + light.position[1] + 0.1
+            self.origin_utm[0] + light.position[0] + 0.1,
+            self.origin_utm[1] + light.position[1] + 0.1,
         )
         if not autoware:
             lat3, lon3 = self.transformer.transform(
-                self.origin_utm[0] + light.position[0] - 0.1, self.origin_utm[1] + light.position[1] - 0.1
+                self.origin_utm[0] + light.position[0] - 0.1,
+                self.origin_utm[1] + light.position[1] - 0.1,
             )
             id3 = self.id_count
 
@@ -361,10 +421,16 @@ class CR2LaneletConverter:
             localx1, localy1 = light.position[0], light.position[1]
             localx2, localy2 = light.position[0] - 0.1, light.position[1] + 0.1
             localx3, localy3 = light.position[0] - 0.1, light.position[1] - 0.1
-        self.osm.add_node(Node(id1, lat1, lon1, z, autoware=autoware, local_x=localx1, local_y=localy1))
-        self.osm.add_node(Node(id2, lat2, lon2, z, autoware=autoware, local_x=localx2, local_y=localy2))
+        self.osm.add_node(
+            Node(id1, lat1, lon1, z, autoware=autoware, local_x=localx1, local_y=localy1)
+        )
+        self.osm.add_node(
+            Node(id2, lat2, lon2, z, autoware=autoware, local_x=localx2, local_y=localy2)
+        )
         if not autoware:
-            self.osm.add_node(Node(id3, lat3, lon3, z, autoware=autoware, local_x=localx3, local_y=localy3))
+            self.osm.add_node(
+                Node(id3, lat3, lon3, z, autoware=autoware, local_x=localx3, local_y=localy3)
+            )
 
         # get the first light color as subtype
         traffic_light_subtype = ""
@@ -378,7 +444,11 @@ class CR2LaneletConverter:
                 Way(
                     traffic_light_id,
                     [id1, id2],
-                    tag_dict={"subtype": traffic_light_subtype, "type": "traffic_light", "height": "1.2"},
+                    tag_dict={
+                        "subtype": traffic_light_subtype,
+                        "type": "traffic_light",
+                        "height": "1.2",
+                    },
                 )
             )
         else:
@@ -419,12 +489,16 @@ class CR2LaneletConverter:
                     for traffic_sign_id in ll.traffic_signs:
                         # if 'position' returns 2 values, *z will be empty. Else, it will be an array with remaining
                         # values
-                        x, y, *z = self.lanelet_network.find_traffic_sign_by_id(traffic_sign_id).position
+                        x, y, *z = self.lanelet_network.find_traffic_sign_by_id(
+                            traffic_sign_id
+                        ).position
                         if len(z) == 0:
                             z = 0
                         else:
                             z = z[0]
-                        lat_sign, lon_sign = self.transformer.transform(self.origin_utm[0] + x, self.origin_utm[1] + y)
+                        lat_sign, lon_sign = self.transformer.transform(
+                            self.origin_utm[0] + x, self.origin_utm[1] + y
+                        )
                         # have to map the signs based on the position,
                         # as the same 2 signs do not have the same ID in L2 and CR format
                         if n_lon == str(lon_sign) and n_lat == str(lat_sign) and n_ele == str(z):
@@ -439,8 +513,8 @@ class CR2LaneletConverter:
                                     and self.osm.find_way_rel_by_id(way_rel).left_way == left_way_id
                                 ):
                                     # found the corresponding way_rel, append to the lanelet
-                                    refers, yield_ways, right_of_ways, ref_line = self._append_from_sign(
-                                        ll, way, way_rel, dict_stop_lines
+                                    refers, yield_ways, right_of_ways, ref_line = (
+                                        self._append_from_sign(ll, way, way_rel, dict_stop_lines)
                                     )
         # do not add right_of_way_rel if there are no signs
         if len(refers) > 0:
@@ -486,12 +560,18 @@ class CR2LaneletConverter:
                     z_end = stop_line_end[2]
 
                 # create nodes from the points and add them to the osm
-                node_start = Node(self.id_count, lat_start, lon_start, z_start, autoware=self._config.autoware)
-                node_end = Node(self.id_count, lat_end, lon_end, z_end, autoware=self._config.autoware)
+                node_start = Node(
+                    self.id_count, lat_start, lon_start, z_start, autoware=self._config.autoware
+                )
+                node_end = Node(
+                    self.id_count, lat_end, lon_end, z_end, autoware=self._config.autoware
+                )
                 self.osm.add_node(node_start)
                 self.osm.add_node(node_end)
                 # create a way from newly created nodes and add it to the osm
-                stop_line_way = Way(self.id_count, [node_start.id_, node_end.id_], tag_dict={"type": "stop_line"})
+                stop_line_way = Way(
+                    self.id_count, [node_start.id_, node_end.id_], tag_dict={"type": "stop_line"}
+                )
                 self.osm.add_way(stop_line_way)
                 # map the way with the lanelet
                 dict_stop_lines[ll.lanelet_id] = stop_line_way.id_
@@ -522,9 +602,9 @@ class CR2LaneletConverter:
         for country in self._config.supported_countries:
             if sign_found is True:
                 break
-            for countrySign in country:
-                if subtype == str(countrySign.value):
-                    sign_name = countrySign.name
+            for country_sign in country:
+                if subtype == str(country_sign.value):
+                    sign_name = country_sign.name
                     sign_found = True
         # no need to add the speed limit sign to the way of rel
         if sign_name != "MAX_SPEED":
@@ -558,7 +638,8 @@ class CR2LaneletConverter:
         # since 2 nodes are needed to represent the sign in the l2 format (only 1 in the cr format)
         # create another node that is close to the first one
         lat_2, lon_2 = self.transformer.transform(
-            self.origin_utm[0] + sign.position[0] + 0.25, self.origin_utm[1] + sign.position[1] + 0.25
+            self.origin_utm[0] + sign.position[0] + 0.25,
+            self.origin_utm[1] + sign.position[1] + 0.25,
         )
         id2 = self.id_count
 
@@ -583,7 +664,9 @@ class CR2LaneletConverter:
         virtual = sign.virtual
 
         # extract the country name of the sign, so we can map it to a dictionary
-        sign_country_name = str(type(sign.traffic_sign_elements[0].traffic_sign_element_id).__name__)
+        sign_country_name = str(
+            type(sign.traffic_sign_elements[0].traffic_sign_element_id).__name__
+        )
 
         # map the supported countries to their 2 letter prefixs
         country_prefix_dictionary = self._config.supported_countries_prefixes
@@ -595,7 +678,11 @@ class CR2LaneletConverter:
             Way(
                 traffic_sign_wayid,
                 [id1, id2],
-                tag_dict={"subtype": subtype + str(val), "type": "traffic_sign", "virtual": str(virtual)},
+                tag_dict={
+                    "subtype": subtype + str(val),
+                    "type": "traffic_sign",
+                    "virtual": str(virtual),
+                },
             )
         )
 
@@ -617,14 +704,18 @@ class CR2LaneletConverter:
 
         if not left_way_id:
             left_way = Way(self.id_count, left_nodes)
-            lanelet2_type, subtype = _line_marking_to_type_subtype_vertices(lanelet.line_marking_left_vertices)
+            lanelet2_type, subtype = _line_marking_to_type_subtype_vertices(
+                lanelet.line_marking_left_vertices
+            )
             if lanelet2_type != "unknown":
                 left_way.tag_dict = {"type": lanelet2_type, "subtype": subtype}
             self.osm.add_way(left_way)
             left_way_id = left_way.id_
         if not right_way_id:
             right_way = Way(self.id_count, right_nodes)
-            lanelet2_type, subtype = _line_marking_to_type_subtype_vertices(lanelet.line_marking_right_vertices)
+            lanelet2_type, subtype = _line_marking_to_type_subtype_vertices(
+                lanelet.line_marking_right_vertices
+            )
             if lanelet2_type != "unknown":
                 right_way.tag_dict = {"type": lanelet2_type, "subtype": subtype}
             self.osm.add_way(right_way)
@@ -636,14 +727,18 @@ class CR2LaneletConverter:
             lanelet_types.append(type_enum.value)
 
         # extracting and converting the most specific lanelet type
-        subtype, subtype_in = _extract_and_convert_subtype_name(lanelet_types, self._config.supported_lanelet2_subtypes)
+        subtype, subtype_in = _extract_and_convert_subtype_name(
+            lanelet_types, self._config.supported_lanelet2_subtypes
+        )
 
         # append left and right way
         self.left_ways[lanelet.lanelet_id] = left_way_id
         self.right_ways[lanelet.lanelet_id] = right_way_id
 
         # create the way relation
-        way_rel = WayRelation(self.id_count, left_way_id, right_way_id, tag_dict={"type": "lanelet"})
+        way_rel = WayRelation(
+            self.id_count, left_way_id, right_way_id, tag_dict={"type": "lanelet"}
+        )
 
         # convert the speed signs
         self._convert_speed_sign(lanelet, way_rel)
@@ -664,7 +759,9 @@ class CR2LaneletConverter:
         # add the way relation to the osm
         self.osm.add_way_relation(way_rel)
 
-    def _create_nodes(self, lanelet: Lanelet, left_way_id: int, right_way_id: int) -> Tuple[List[str], List[str]]:
+    def _create_nodes(
+        self, lanelet: Lanelet, left_way_id: int, right_way_id: int
+    ) -> Tuple[List[str], List[str]]:
         """
         Create new nodes for the ways of the lanelet.
         Add them to OSM and return a list of the node ids.
@@ -680,8 +777,12 @@ class CR2LaneletConverter:
         left_nodes, right_nodes = [], []
         start_index = 0
         end_index = len(lanelet.left_vertices)
-        pot_first_left_node, pot_first_right_node = self._get_shared_first_nodes_from_other_lanelets(lanelet)
-        pot_last_left_node, pot_last_right_node = self._get_shared_last_nodes_from_other_lanelets(lanelet)
+        pot_first_left_node, pot_first_right_node = (
+            self._get_shared_first_nodes_from_other_lanelets(lanelet)
+        )
+        pot_last_left_node, pot_last_right_node = self._get_shared_last_nodes_from_other_lanelets(
+            lanelet
+        )
 
         if pot_first_left_node:
             start_index = 1
@@ -696,7 +797,9 @@ class CR2LaneletConverter:
         else:
             first_left_node = pot_first_left_node
             last_left_node = pot_last_left_node
-            left_nodes = self._create_nodes_from_vertices(lanelet.left_vertices[start_index:end_index])
+            left_nodes = self._create_nodes_from_vertices(
+                lanelet.left_vertices[start_index:end_index]
+            )
         if right_way_id:
             first_right_node: Optional[str]
             last_right_node: Optional[str]
@@ -706,7 +809,9 @@ class CR2LaneletConverter:
         else:
             first_right_node = pot_first_right_node
             last_right_node = pot_last_right_node
-            right_nodes = self._create_nodes_from_vertices(lanelet.right_vertices[start_index:end_index])
+            right_nodes = self._create_nodes_from_vertices(
+                lanelet.right_vertices[start_index:end_index]
+            )
 
         if first_left_node:
             left_nodes.insert(0, first_left_node)
@@ -742,13 +847,23 @@ class CR2LaneletConverter:
         """
         nodes = []
         for vertex in vertices:
-            lat, lon = self.transformer.transform(self.origin_utm[0] + vertex[0], self.origin_utm[1] + vertex[1])
+            lat, lon = self.transformer.transform(
+                self.origin_utm[0] + vertex[0], self.origin_utm[1] + vertex[1]
+            )
             ele = 0  # z-coordinate value
-            if len(vertex) > 2:  # if vertex returns z-coordinate (along with x and y), take it into account
+            if (
+                len(vertex) > 2
+            ):  # if vertex returns z-coordinate (along with x and y), take it into account
                 ele = vertex[2]
             if self._config.use_local_coordinates:
                 node = Node(
-                    self.id_count, lat, lon, ele, autoware=self._config.autoware, local_x=vertex[0], local_y=vertex[1]
+                    self.id_count,
+                    lat,
+                    lon,
+                    ele,
+                    autoware=self._config.autoware,
+                    local_x=vertex[0],
+                    local_y=vertex[1],
                 )
             else:
                 node = Node(self.id_count, lat, lon, ele, autoware=self._config.autoware)
@@ -772,9 +887,13 @@ class CR2LaneletConverter:
             if potential_right_way:
                 adj_right = self.lanelet_network.find_lanelet_by_id(lanelet.adj_right)
                 vertices = (
-                    adj_right.left_vertices if lanelet.adj_right_same_direction else adj_right.right_vertices[::-1]
+                    adj_right.left_vertices
+                    if lanelet.adj_right_same_direction
+                    else adj_right.right_vertices[::-1]
                 )
-                if _vertices_are_equal(lanelet.right_vertices, vertices, self._config.ways_are_equal_tolerance):
+                if _vertices_are_equal(
+                    lanelet.right_vertices, vertices, self._config.ways_are_equal_tolerance
+                ):
                     # if the shared way is found, we update its tag_dict with lanelet line markings
 
                     # extract the relevant line marking, so we can convert it to L2 format
@@ -788,7 +907,9 @@ class CR2LaneletConverter:
                     type_lanelet, subtype_lanelet = _line_marking_to_type_subtype_vertices(
                         lanelet.line_marking_right_vertices
                     )
-                    type_adj_right, subtype_adj_right = _line_marking_to_type_subtype_vertices(adj_right_line_marking)
+                    type_adj_right, subtype_adj_right = _line_marking_to_type_subtype_vertices(
+                        adj_right_line_marking
+                    )
 
                     # update the tag dict accordingly
                     if type_lanelet != "unknown":
@@ -796,15 +917,23 @@ class CR2LaneletConverter:
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
                             subtype = subtype_lanelet + "_" + subtype_adj_right
+
+                            # dashed_dashed does not exist in L2 format
                             if subtype == "dashed_dashed":
                                 subtype = "dashed"
                         else:
                             subtype = subtype_lanelet
-                        self.osm.ways[potential_right_way].tag_dict = {"type": type_lanelet, "subtype": subtype}
+                        self.osm.ways[potential_right_way].tag_dict = {
+                            "type": type_lanelet,
+                            "subtype": subtype,
+                        }
                     else:
                         if type_adj_right != "unknown":
                             subtype = subtype_adj_right
-                            self.osm.ways[potential_right_way].tag_dict = {"type": type_adj_right, "subtype": subtype}
+                            self.osm.ways[potential_right_way].tag_dict = {
+                                "type": type_adj_right,
+                                "subtype": subtype,
+                            }
 
                     # if both lanelet types are unknown (cr default), a tag_dict is not created
                     return potential_right_way
@@ -826,8 +955,14 @@ class CR2LaneletConverter:
                 potential_left_way = self.left_ways.get(lanelet.adj_left)
             if potential_left_way:
                 adj_left = self.lanelet_network.find_lanelet_by_id(lanelet.adj_left)
-                vertices = adj_left.right_vertices if lanelet.adj_left_same_direction else adj_left.left_vertices[::-1]
-                if _vertices_are_equal(lanelet.left_vertices, vertices, self._config.ways_are_equal_tolerance):
+                vertices = (
+                    adj_left.right_vertices
+                    if lanelet.adj_left_same_direction
+                    else adj_left.left_vertices[::-1]
+                )
+                if _vertices_are_equal(
+                    lanelet.left_vertices, vertices, self._config.ways_are_equal_tolerance
+                ):
                     # if the shared way is found, we update its tag_dict with lanelet line markings
 
                     # extract the relevant CR line marking, so we can convert it to L2 format
@@ -841,7 +976,9 @@ class CR2LaneletConverter:
                     type_lanelet, subtype_lanelet = _line_marking_to_type_subtype_vertices(
                         lanelet.line_marking_left_vertices
                     )
-                    type_adj_left, subtype_adj_left = _line_marking_to_type_subtype_vertices(adj_left_line_marking)
+                    type_adj_left, subtype_adj_left = _line_marking_to_type_subtype_vertices(
+                        adj_left_line_marking
+                    )
 
                     # update the tag dict accordingly
                     if type_lanelet != "unknown":
@@ -849,15 +986,23 @@ class CR2LaneletConverter:
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
                             subtype = subtype_adj_left + "_" + subtype_lanelet
+
+                            # dashed_dashed does not exist in L2 format
                             if subtype == "dashed_dashed":
                                 subtype = "dashed"
                         else:
                             subtype = subtype_lanelet
-                        self.osm.ways[potential_left_way].tag_dict = {"type": type_lanelet, "subtype": subtype}
+                        self.osm.ways[potential_left_way].tag_dict = {
+                            "type": type_lanelet,
+                            "subtype": subtype,
+                        }
                     else:
                         if type_adj_left != "unknown":
                             subtype = subtype_adj_left
-                            self.osm.ways[potential_left_way].tag_dict = {"type": type_adj_left, "subtype": subtype}
+                            self.osm.ways[potential_left_way].tag_dict = {
+                                "type": type_adj_left,
+                                "subtype": subtype,
+                            }
 
                     # if both lanelet types are unknown (cr default), a tag_dict is not created
                     return potential_left_way
@@ -887,7 +1032,9 @@ class CR2LaneletConverter:
                         return first_left_node, first_right_node
         return None, None
 
-    def _get_shared_last_nodes_from_other_lanelets(self, lanelet: Lanelet) -> Tuple[Union[str, None], Union[str, None]]:
+    def _get_shared_last_nodes_from_other_lanelets(
+        self, lanelet: Lanelet
+    ) -> Tuple[Union[str, None], Union[str, None]]:
         """
         Get already created nodes from other lanelets which could also
         be used by this lanelet as last nodes.
@@ -922,7 +1069,10 @@ class CR2LaneletConverter:
         for traffic_sign in lanelet.traffic_signs:
             for sign in self.lanelet_network.traffic_signs:
                 if sign.traffic_sign_id == traffic_sign:
-                    if list(sign.traffic_sign_elements)[0].traffic_sign_element_id.name == "MAX_SPEED":
+                    if (
+                        list(sign.traffic_sign_elements)[0].traffic_sign_element_id.name
+                        == "MAX_SPEED"
+                    ):
                         # found a max speed sign, create a reg. element
                         speed_sign_id = self.id_count
                         speed_sign_ids.append(speed_sign_id)
@@ -939,3 +1089,32 @@ class CR2LaneletConverter:
                         )
         for speed_sign_id in speed_sign_ids:
             way_rel.regulatory_elements.append(str(speed_sign_id))
+
+    def _append_lane_change_tags(self):
+        """
+        Function that appends the lane change tags to osm ways based on the linemarking of the way.
+        Possibility of a lane change has been copied from the Lanelet2 documentation.
+        The lane change tags are being used by Autoware.
+        """
+        ways = list(self.osm.ways.values())
+        for way in ways:
+            if way.tag_dict:
+                if "subtype" in way.tag_dict:
+                    subtype = way.tag_dict["subtype"]
+                    if subtype == "dashed" or subtype == "dashed_dashed":
+                        way.tag_dict["lane_change"] = "yes"
+                    elif subtype == "dashed_solid":
+                        way.tag_dict["lane_change"] = "left->right: yes"
+                    elif subtype == "solid_dashed":
+                        way.tag_dict["lane_change"] = "right->left: yes"
+                    elif (
+                        way.tag_dict["type"] != "traffic_light"
+                        and way.tag_dict["type"] != "traffic_sign"
+                    ):
+                        way.tag_dict["lane_change"] = "no"
+                    else:
+                        # if the line marking does not exist, lane change is not possible
+                        way.tag_dict["lane_change"] = "no"
+            else:
+                # if the line marking does not exist, lane change is not possible
+                way.tag_dict["lane_change"] = "no"

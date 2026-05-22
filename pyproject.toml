@@ -1,0 +1,118 @@
+[tool.poetry]
+name = "commonroad-scenario-designer"
+version = "0.8.5"
+description = "Toolbox for Map Conversion and Scenario Creation for Autonomous Vehicles"
+authors = ["Cyber-Physical Systems Group, Technical University of Munich <commonroad@lists.lrz.de>"]
+license = "GPL-3.0"
+readme = "README.md"
+keywords= ["autonomous", "automated", "vehicles", "driving", "motion", "planning", "simulation", "map", "scenario"]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+#    "Operating System :: MacOS",
+#    "Operating System :: Microsoft :: Windows"
+]
+packages = [{include = "crdesigner"}]
+repository = "https://github.com/CommonRoad/commonroad-scenario-designer"
+homepage = "https://commonroad.in.tum.de/tools/scenario-designer"
+
+[tool.poetry.urls]
+Documentation = "https://cps.pages.gitlab.lrz.de/commonroad/commonroad-scenario-designer/"
+Forum = "https://github.com/CommonRoad/commonroad-scenario-designer/discussions"
+Source = "https://github.com/CommonRoad/commonroad-scenario-designer"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+crdesigner = 'crdesigner.ui.command_line:cli'
+
+[tool.poetry.dependencies]
+python = "^3.10,<3.14"
+commonroad-io = ">=2024.2, <=2024.3"
+commonroad-clcs = ">=2025.1"
+commonroad-drivability-checker = "^2025.1"
+commonroad-sumo = ">=2025.1.3"
+pyqt6 = ">=6.6.0"
+matplotlib = ">=3.6.0"
+numpy = [
+    {version = ">=1.26.1", python = "<3.13"},
+    {version = ">=2.1.0", python = ">=3.13"}
+]
+scipy = [
+    {version = ">=1.11.3", python = "<3.13"},
+    {version = ">=1.13.0", python = ">=3.13"}
+]
+lxml = "^6.0.2"
+pyproj = "^3.4.1"
+utm = "^0.7.0"
+mgrs = ">=1.4.5"
+shapely = ">=2.0.1"
+ordered-set = "^4.1.0"
+iso3166 = "^2.1.1"
+networkx = "^3.0"
+omegaconf = "^2.3.0"
+pyyaml = "^6.0"
+pygeodesy = "^23.3.23"
+mercantile = "^1.2.1"
+urllib3 = "^2.0.3"
+typer = "^0.9.0"
+typing-extensions = "^4.8.0"
+antlr4-python3-runtime = "4.9.3"
+pymetis = ">=2020.1"
+similaritymeasures = ">=0.4.4"
+kdtree = "^0.16"
+pandas = "^2.0.2"
+requests = "^2.31.0 "
+pyclothoids = "^0.1.5"
+# asam-qc-opendrive = { version = "^1.0", python = "^3.10" }
+
+[tool.poetry.group.dev]
+optional = true
+
+[tool.poetry.group.dev.dependencies]
+pip-licenses = "^4.3.4"
+ruff = "^0.6.0"
+pre-commit = "^4.0.1"
+
+[tool.poetry.group.tests]
+optional = true
+
+[tool.poetry.group.tests.dependencies]
+pytest = "^7.2.2"
+coverage = "^7.2.2"
+pytest-qt = "^4.2.0"
+parameterized = "^0.8.1"
+
+[tool.poetry.group.tutorials]
+optional = true
+
+[tool.poetry.group.tutorials.dependencies]
+jupyter = "^1.0.0"
+
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+mkdocstrings-python = "^1.8.0"
+mkdocs-material = "^9.5.12"
+
+[tool.coverage.run]
+source = ["crdesigner"]
+
+[tool.ruff]
+line-length = 100
+indent-width = 4
+format.quote-style = "double"
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]

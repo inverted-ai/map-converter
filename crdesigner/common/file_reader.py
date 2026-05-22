@@ -35,7 +35,6 @@ class CRDesignerFileReader(CommonRoadFileReader):
         Get the map verification parameters of the file reader.
 
         :return: map verification parameter
-        :rtype: map verification parameters
         """
         return self._mapver_params
 
@@ -44,7 +43,10 @@ class CRDesignerFileReader(CommonRoadFileReader):
         self._mapver_params = mapver_params_value
 
     def open(
-        self, verify_repair_scenario: bool = False, target_projection: str = None, lanelet_assignment: bool = False
+        self,
+        verify_repair_scenario: bool = False,
+        target_projection: str = None,
+        lanelet_assignment: bool = False,
     ) -> Tuple[Scenario, PlanningProblemSet]:
         """
         Opens and loads CommonRoad scenario and planning problem set from file.

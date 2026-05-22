@@ -19,7 +19,9 @@ from crdesigner.verification_repairing.verification.hol.satisfaction import (
 class TestAll(unittest.TestCase):
     def verify(self, formula_ids: List[FormulaID]):
         for sc_name in self.network_names:
-            sc, _ = CRDesignerFileReader(str(self.network_path) + "/test_maps/" + sc_name + ".xml").open()
+            sc, _ = CRDesignerFileReader(
+                str(self.network_path) + "/test_maps/" + sc_name + ".xml"
+            ).open()
             config = MapVerParams()
             config.verification.formulas = formula_ids
             sc, _ = verify_and_repair_scenario(sc, config)
@@ -45,6 +47,7 @@ class TestAll(unittest.TestCase):
             "paper_test_maps/DEU_Reutlingen-1_1_T-1",
             "DEU_AachenBendplatz-1",
             "DEU_TrafficLightTest-1",  # traffic light cycle has no ID-> unique ID check fails if cycle in overall set
+            "merging_lanelets_utm_3d",
         ]
         self.network_path = Path(__file__).parent
         self.base_formula_ids = []
@@ -55,19 +58,25 @@ class TestAll(unittest.TestCase):
 
     def test_path_collection(self):
         self.assertEqual(
-            9,
+            10,
             len(
                 collect_scenario_paths(
-                    Path(f"{os.path.dirname(os.path.realpath(__file__))}/../map_verification/test_maps"), subdir=False
+                    Path(
+                        f"{os.path.dirname(os.path.realpath(__file__))}/../map_verification/test_maps"
+                    ),
+                    subdir=False,
                 )
             ),
         )
 
         self.assertEqual(
-            12,
+            13,
             len(
                 collect_scenario_paths(
-                    Path(f"{os.path.dirname(os.path.realpath(__file__))}/../map_verification/test_maps"), subdir=True
+                    Path(
+                        f"{os.path.dirname(os.path.realpath(__file__))}/../map_verification/test_maps"
+                    ),
+                    subdir=True,
                 )
             ),
         )

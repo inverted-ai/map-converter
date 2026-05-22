@@ -16,10 +16,7 @@ def elements_equal(e1: etree.Element, e2: etree.Element) -> bool:
 
     :param e1: tree 1
     :param e2: tree 2
-    :returns: true if they are equal in tag, text, tail,
-    attrib and if children are equal, else false
-    :rtype: bool
-
+    :returns: true if they are equal in tag, text, tail, attrib and if children are equal, else false
     """
 
     if e1.tag != e2.tag and e1.text is not None and e2.text is not None:
@@ -121,7 +118,9 @@ def child_elements_equal(e1: etree.Element, e2: etree.Element) -> bool:
     return True
 
 
-def one_permutation_matches(list1: List[etree.Element], permutations: Iterable[List[etree.Element]]):
+def one_permutation_matches(
+    list1: List[etree.Element], permutations: Iterable[List[etree.Element]]
+):
     """Check whether list1 is equal to one of the permutations.
 
     Args:

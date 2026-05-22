@@ -9,17 +9,15 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from crdesigner.common.config.gui_config import gui_config
 from crdesigner.common.file_reader import CRDesignerFileReader
-from crdesigner.ui.gui.utilities.gui_sumo_simulation import SUMO_AVAILABLE
-
-if SUMO_AVAILABLE:
-    pass
 
 
 def file_new(mwindow):
     """
     Function passed to the fileNewAction to create the action in the menu bar.
     """
-    scenario = Scenario(0.1, affiliation="Technical University of Munich", source="CommonRoad Scenario Designer")
+    scenario = Scenario(
+        0.1, affiliation="Technical University of Munich", source="CommonRoad Scenario Designer"
+    )
     net = LaneletNetwork()
     scenario.replace_lanelet_network(net)
     mwindow.scenario_model.set_scenario(scenario)
@@ -53,12 +51,15 @@ def open_path(mwindow, path):
             commonroad_reader = CRDesignerFileReader(path, file_format=FileFormat.PROTOBUF)
         else:
             commonroad_reader = CRDesignerFileReader(path, file_format=FileFormat.XML)
-        scenario, pps = commonroad_reader.open(verify_repair_scenario=gui_config.verify_repair_scenario)
+        scenario, pps = commonroad_reader.open(
+            verify_repair_scenario=gui_config.verify_repair_scenario
+        )
     except Exception as e:
         QMessageBox.warning(
             mwindow.mwindow_ui,
             "CommonRoad XML error",
-            "There was an error during the loading of the selected CommonRoad file.\n\n" + "Syntax Error: {}".format(e),
+            "There was an error during the loading of the selected CommonRoad file.\n\n"
+            + "Syntax Error: {}".format(e),
             QMessageBox.StandardButton.Ok,
         )
         return
@@ -74,13 +75,7 @@ def _open_scenario(mwindow, new_scenario, filename="new_scenario"):
         mwindow.crdesigner_console_wrapper.text_browser.append("loading aborted")
         return
     mwindow.filename = filename
-    if SUMO_AVAILABLE:
-        mwindow.animated_viewer_wrapper.cr_viewer.open_scenario(
-            mwindow.obstacle_toolbox.sumo_simulation.config, new_file_added=True
-        )
-        mwindow.obstacle_toolbox.sumo_simulation.scenario = mwindow.scenario_model.get_current_scenario()
-    else:
-        mwindow.animated_viewer_wrapper.cr_viewer.open_scenario(new_file_added=True)
+    mwindow.animated_viewer_wrapper.cr_viewer.open_scenario(new_file_added=True)
     mwindow.animated_viewer_wrapper.update_view()
     update_to_new_scenario(mwindow)
 

@@ -3,7 +3,7 @@ import copy
 from commonroad.common.validity import ValidTypes
 from commonroad.geometry.shape import Circle, Polygon, Rectangle, Shape
 from commonroad.planning.planning_problem import PlanningProblemSet
-from commonroad.scenario.lanelet import LaneletNetwork
+from commonroad.scenario.lanelet import Lanelet, LaneletNetwork
 from commonroad.scenario.scenario import Scenario
 from pyproj import CRS, Transformer
 
@@ -18,7 +18,9 @@ def transform_shape(shape: Shape, transformer: Transformer) -> Shape:
     """
     shape_copy = copy.deepcopy(shape)
     if isinstance(shape_copy, Rectangle) or isinstance(shape_copy, Circle):
-        shape_copy.center[0], shape_copy.center[1] = transformer.transform(shape_copy.center[0], shape_copy.center[1])
+        shape_copy.center[0], shape_copy.center[1] = transformer.transform(
+            shape_copy.center[0], shape_copy.center[1]
+        )
     elif isinstance(shape_copy, Polygon):
         for vertex in shape_copy.vertices:
             vertex[0], vertex[1] = transformer.transform(vertex[0], vertex[1])
@@ -49,7 +51,8 @@ def project_planning_problem_set(
                     planning_problem.initial_state.position[0],
                     planning_problem.initial_state.position[1],
                 ) = transformer.transform(
-                    planning_problem.initial_state.position[0], planning_problem.initial_state.position[1]
+                    planning_problem.initial_state.position[0],
+                    planning_problem.initial_state.position[1],
                 )
             if isinstance(planning_problem.initial_state.position, Shape):
                 planning_problem.initial_state.position = transform_shape(
@@ -85,21 +88,7 @@ def project_lanelet_network(
     transformer = Transformer.from_proj(crs_from, crs_to)
 
     for lanelet in lanelet_network.lanelets:
-        for left_vertex in lanelet.left_vertices:
-            left_vertex[0], left_vertex[1] = transformer.transform(left_vertex[0], left_vertex[1])
-        for right_vertex in lanelet.right_vertices:
-            right_vertex[0], right_vertex[1] = transformer.transform(right_vertex[0], right_vertex[1])
-        for center_vertex in lanelet.center_vertices:
-            center_vertex[0], center_vertex[1] = transformer.transform(center_vertex[0], center_vertex[1])
-
-        # transform stop line coordinates
-        if lanelet.stop_line is not None:
-            lanelet.stop_line.start[0], lanelet.stop_line.start[1] = transformer.transform(
-                lanelet.stop_line.start[0], lanelet.stop_line.start[1]
-            )
-            lanelet.stop_line.end[0], lanelet.stop_line.end[1] = transformer.transform(
-                lanelet.stop_line.end[0], lanelet.stop_line.end[1]
-            )
+        project_lanelet(lanelet, transformer)
 
     # transform traffic light coordinates
     for tl in lanelet_network.traffic_lights:
@@ -116,6 +105,31 @@ def project_lanelet_network(
                 vertex[0], vertex[1] = transformer.transform(vertex[0], vertex[1])
 
     return lanelet_network
+
+
+def project_lanelet(lanelet: Lanelet, transformer: Transformer):
+    """
+    Function that performs a projection onto the lanelet.
+
+    :param lanelet: Lanelet that needs to be projected.
+    :param transformer: Transformer which should be applied.
+    """
+    for left_vertex in lanelet.left_vertices:
+        left_vertex[0], left_vertex[1] = transformer.transform(left_vertex[0], left_vertex[1])
+    for right_vertex in lanelet.right_vertices:
+        right_vertex[0], right_vertex[1] = transformer.transform(right_vertex[0], right_vertex[1])
+    for center_vertex in lanelet.center_vertices:
+        center_vertex[0], center_vertex[1] = transformer.transform(
+            center_vertex[0], center_vertex[1]
+        )
+    # transform stop line coordinates
+    if lanelet.stop_line is not None:
+        lanelet.stop_line.start[0], lanelet.stop_line.start[1] = transformer.transform(
+            lanelet.stop_line.start[0], lanelet.stop_line.start[1]
+        )
+        lanelet.stop_line.end[0], lanelet.stop_line.end[1] = transformer.transform(
+            lanelet.stop_line.end[0], lanelet.stop_line.end[1]
+        )
 
 
 def project_obstacles(scenario: Scenario, proj_string_from: str, proj_string_to: str) -> Scenario:
@@ -138,11 +152,15 @@ def project_obstacles(scenario: Scenario, proj_string_from: str, proj_string_to:
         if obstacle.initial_state:
             if obstacle.initial_state.position:
                 if isinstance(obstacle.initial_state.position, ValidTypes.ARRAY):
-                    obstacle.initial_state.position[0], obstacle.initial_state.position[1] = transformer.transform(
-                        obstacle.initial_state.position[0], obstacle.initial_state.position[1]
+                    obstacle.initial_state.position[0], obstacle.initial_state.position[1] = (
+                        transformer.transform(
+                            obstacle.initial_state.position[0], obstacle.initial_state.position[1]
+                        )
                     )
                 if isinstance(obstacle.initial_state.position, Shape):
-                    obstacle.initial_state.position = transform_shape(obstacle.initial_state.position, transformer)
+                    obstacle.initial_state.position = transform_shape(
+                        obstacle.initial_state.position, transformer
+                    )
 
         if obstacle.prediction:
             if obstacle.prediction.occupancy_set:
@@ -166,7 +184,10 @@ def project_obstacles(scenario: Scenario, proj_string_from: str, proj_string_to:
 
 
 def project_scenario_and_pps(
-    scenario: Scenario, planning_problem_set: PlanningProblemSet, proj_string_from: str, proj_string_to: str
+    scenario: Scenario,
+    planning_problem_set: PlanningProblemSet,
+    proj_string_from: str,
+    proj_string_to: str,
 ) -> [Scenario, PlanningProblemSet]:
     """
     Function that performs a projection onto the entire scenario and a planning problem set.
@@ -188,6 +209,8 @@ def project_scenario_and_pps(
     project_obstacles(scenario_copy, proj_string_from, proj_string_to)
 
     # project the planning problem set
-    planning_problem_set = project_planning_problem_set(planning_problem_set, proj_string_from, proj_string_to)
+    planning_problem_set = project_planning_problem_set(
+        planning_problem_set, proj_string_from, proj_string_to
+    )
 
     return scenario_copy, planning_problem_set

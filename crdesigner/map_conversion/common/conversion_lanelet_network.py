@@ -1,17 +1,14 @@
-"""Module to enhance LaneletNetwork class,
-so it can be used for conversion from the opendrive format."""
-
 import itertools
 import logging
 import warnings
 from queue import Queue
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import shapely
 from commonroad.scenario.intersection import Intersection, IntersectionIncomingElement
 from commonroad.scenario.lanelet import LaneletNetwork, StopLine
-from commonroad.scenario.traffic_light import TrafficLight, TrafficLightDirection
+from commonroad.scenario.traffic_light import TrafficLight
 from commonroad.scenario.traffic_sign import TrafficSign
 from pyproj import Transformer
 from shapely.validation import make_valid
@@ -31,7 +28,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
     This class is being used in OpenDrive and Lanelet2 format conversions
     """
 
-    def __init__(self, config: OpenDriveConfig = open_drive_config, transformer: Optional[Transformer] = None):
+    def __init__(
+        self, config: OpenDriveConfig = open_drive_config, transformer: Optional[Transformer] = None
+    ):
         """
         Initializes a ConversionLaneletNetwork
 
@@ -43,11 +42,10 @@ class ConversionLaneletNetwork(LaneletNetwork):
         self._old_lanelet_ids = {}
         self._transformer = transformer
 
-    def old_lanelet_ids(self) -> dict:
+    def old_lanelet_ids(self) -> Dict[str, int]:
         """Get the old lanelet ids.
 
         :return: Dict containing all old lanelet IDs.
-        :rtype: dict
         """
         return self._old_lanelet_ids
 
@@ -61,7 +59,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
         del self._lanelets[lanelet_id]
         if remove_references:
             for lanelet in self.lanelets:
-                lanelet.predecessor[:] = [pred for pred in lanelet.predecessor if pred != lanelet_id]
+                lanelet.predecessor[:] = [
+                    pred for pred in lanelet.predecessor if pred != lanelet_id
+                ]
 
                 lanelet.successor[:] = [succ for succ in lanelet.successor if succ != lanelet_id]
                 if lanelet.adj_right == lanelet_id:
@@ -108,14 +108,24 @@ class ConversionLaneletNetwork(LaneletNetwork):
 
         for lanelet in self.lanelets:
             lanelet.description = lanelet.lanelet_id
-            self.remove_lanelet(lanelet.lanelet_id)
-            lanelet.lanelet_id = convert_to_new_lanelet_id(lanelet.lanelet_id, self._old_lanelet_ids)
-            lanelet.predecessor = [convert_to_new_lanelet_id(x, self._old_lanelet_ids) for x in lanelet.predecessor]
-            lanelet.successor = [convert_to_new_lanelet_id(x, self._old_lanelet_ids) for x in lanelet.successor]
+            self.remove_lanelet(str(lanelet.lanelet_id))
+            lanelet.lanelet_id = convert_to_new_lanelet_id(
+                str(lanelet.lanelet_id), self._old_lanelet_ids
+            )
+            lanelet.predecessor = [
+                convert_to_new_lanelet_id(x, self._old_lanelet_ids) for x in lanelet.predecessor
+            ]
+            lanelet.successor = [
+                convert_to_new_lanelet_id(x, self._old_lanelet_ids) for x in lanelet.successor
+            ]
             if lanelet.adj_left is not None:
-                lanelet.adj_left = convert_to_new_lanelet_id(lanelet.adj_left, self._old_lanelet_ids)
+                lanelet.adj_left = convert_to_new_lanelet_id(
+                    str(lanelet.adj_left), self._old_lanelet_ids
+                )
             if lanelet.adj_right is not None:
-                lanelet.adj_right = convert_to_new_lanelet_id(lanelet.adj_right, self._old_lanelet_ids)
+                lanelet.adj_right = convert_to_new_lanelet_id(
+                    str(lanelet.adj_right), self._old_lanelet_ids
+                )
             self.add_lanelet(lanelet)
 
         new_lanelet_ids_assigned = {}
@@ -138,8 +148,10 @@ class ConversionLaneletNetwork(LaneletNetwork):
             lanelet.successor[:] = [succ for succ in lanelet.successor if succ in lanelet_ids]
             if lanelet.adj_left not in lanelet_ids:
                 lanelet.adj_left = None
+                lanelet.adj_left_same_direction = False
             if lanelet.adj_right not in lanelet_ids:
                 lanelet.adj_right = None
+                lanelet.adj_right_same_direction = False
 
     def delete_zero_width_parametric_lanes(self):
         """Remove all ParametricLaneGroup which have zero width at every point from this network."""
@@ -175,9 +187,13 @@ class ConversionLaneletNetwork(LaneletNetwork):
         """
 
         for lanelet in self.lanelets:
-            lanelet.predecessor[:] = [new_id if pred == old_id else pred for pred in lanelet.predecessor]
+            lanelet.predecessor[:] = [
+                new_id if pred == old_id else pred for pred in lanelet.predecessor
+            ]
 
-            lanelet.successor[:] = [new_id if succ == old_id else succ for succ in lanelet.successor]
+            lanelet.successor[:] = [
+                new_id if succ == old_id else succ for succ in lanelet.successor
+            ]
 
             if lanelet.adj_right == old_id:
                 lanelet.adj_right = new_id
@@ -185,14 +201,13 @@ class ConversionLaneletNetwork(LaneletNetwork):
             if lanelet.adj_left == old_id:
                 lanelet.adj_left = new_id
 
-    def concatenate_possible_lanelets(self) -> dict:
+    def concatenate_possible_lanelets(self) -> Dict[str, str]:
         """Iterate trough lanelets in network and concatenate possible lanelets together.
 
         Check for each lanelet if it can be concatenated with its successor and if its neighbors can be concatenated
         as well. If yes, do the concatenation.
 
         :return: A dictionary containing the replacement IDs.
-        :rtype: dict
         """
         concatenate_lanelets = []
         for lanelet in self.lanelets:
@@ -226,7 +241,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
 
         return replacement_ids
 
-    def _concatenate_lanelet_pairs_group(self, lanelet_pairs: List[Tuple[str, str]]) -> Dict[str, str]:
+    def _concatenate_lanelet_pairs_group(
+        self, lanelet_pairs: List[Tuple[str, str]]
+    ) -> Dict[str, str]:
         """Concatenate a group of lanelet_pairs, with setting correctly the new lanelet_ids
         at neighbors.
 
@@ -246,7 +263,7 @@ class ConversionLaneletNetwork(LaneletNetwork):
 
             # each reference to lanelet_2 should point to lanelet_id
             # of new_lanelet instead
-            self.update_lanelet_id_references(lanelet_2.lanelet_id, lanelet_1.lanelet_id)
+            self.update_lanelet_id_references(str(lanelet_2.lanelet_id), str(lanelet_1.lanelet_id))
             # update dict to show which lanelet_id changed to which
             new_lanelet_ids[pair[1]] = pair[0]
 
@@ -263,16 +280,25 @@ class ConversionLaneletNetwork(LaneletNetwork):
         js_targets = []
         for lanelet in self.lanelets:
             lanelet_split, lanelet_join = False, False
-            if not lanelet.predecessor and np.allclose(lanelet.left_vertices[0], lanelet.right_vertices[0], rtol=0):
+            if not lanelet.predecessor and np.allclose(
+                lanelet.left_vertices[0], lanelet.right_vertices[0], rtol=0
+            ):
                 lanelet_split = True
 
-            if not lanelet.successor and np.allclose(lanelet.left_vertices[-1], lanelet.right_vertices[-1], rtol=0):
+            if not lanelet.successor and np.allclose(
+                lanelet.left_vertices[-1], lanelet.right_vertices[-1], rtol=0
+            ):
                 lanelet_join = True
 
             if lanelet_join or lanelet_split:
                 js_targets.append(
                     _JoinSplitTarget(
-                        self, lanelet, lanelet_split, lanelet_join, self._transformer, self._config.precision
+                        self,
+                        lanelet,
+                        lanelet_split,
+                        lanelet_join,
+                        self._transformer,
+                        self._config.precision,
                     )
                 )
 
@@ -281,7 +307,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
             js_target.move_borders()
             js_target.add_adjacent_predecessor_or_successor()
 
-    def predecessor_is_neighbor_of_neighbors_predecessor(self, lanelet: "ConversionLanelet") -> bool:
+    def predecessor_is_neighbor_of_neighbors_predecessor(
+        self, lanelet: "ConversionLanelet"
+    ) -> bool:
         """Checks if neighbors of predecessor are the successor of the adjacent neighbors
         of the lanelet.
 
@@ -318,7 +346,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
             predecessor = self.find_lanelet_by_id(predecessor_id)
             predecessor.successor.append(lanelet.lanelet_id)
 
-    def set_adjacent_left(self, lanelet: ConversionLanelet, adj_left_id: str, same_direction: bool = True) -> bool:
+    def set_adjacent_left(
+        self, lanelet: ConversionLanelet, adj_left_id: str, same_direction: bool = True
+    ) -> bool:
         """Set the adj_left of a lanelet to a new value.
 
         Update also the lanelet which is the new adjacent left to
@@ -328,7 +358,6 @@ class ConversionLaneletNetwork(LaneletNetwork):
         :param adj_left_id: New value for update.
         :param same_direction: New adjacent lanelet has same direction as lanelet.
         :return: True if operation successful, else False.
-        :rtype: bool
         """
         new_adj = self.find_lanelet_by_id(adj_left_id)
         if not new_adj:
@@ -343,7 +372,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
             new_adj.adj_left_same_direction = False
         return True
 
-    def set_adjacent_right(self, lanelet: ConversionLanelet, adj_right_id: str, same_direction: bool = True) -> bool:
+    def set_adjacent_right(
+        self, lanelet: ConversionLanelet, adj_right_id: str, same_direction: bool = True
+    ) -> bool:
         """Set the adj_right of a lanelet to a new value.
 
         Update also the lanelet which is the new adjacent right to
@@ -393,9 +424,27 @@ class ConversionLaneletNetwork(LaneletNetwork):
         ):
             return None
 
-        neighbor_ok = self.successor_is_neighbor_of_neighbors_successor(lanelet)
-        if not neighbor_ok:
+        if not self.successor_is_neighbor_of_neighbors_successor(lanelet):
             return None
+
+        # in some CARLA maps sidewalk lanelets point together
+        # (lanelets have completely wrong successors) -> skip merging
+        for suc in lanelet.successor:
+            if (
+                np.linalg.norm(
+                    lanelet.left_vertices[-1] - self.find_lanelet_by_id(suc).left_vertices[0]
+                )
+                > 1
+            ):
+                return None
+        for pre in lanelet.predecessor:
+            if (
+                np.linalg.norm(
+                    lanelet.left_vertices[0] - self.find_lanelet_by_id(pre).left_vertices[-1]
+                )
+                > 1
+            ):
+                return None
 
         if adjacent_direction == "left":
             mergeable_lanelets.append((lanelet.lanelet_id, lanelet.successor[0]))
@@ -405,7 +454,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
                 next_neighbor = self.find_lanelet_by_id(lanelet.adj_left)
                 new_direction = "left"
             else:
-                next_neighbor = self.find_lanelet_by_id(self.find_lanelet_by_id(lanelet.adj_left).predecessor[0])
+                next_neighbor = self.find_lanelet_by_id(
+                    self.find_lanelet_by_id(lanelet.adj_left).predecessor[0]
+                )
                 new_direction = "right"
 
         else:
@@ -416,7 +467,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
                 next_neighbor = self.find_lanelet_by_id(lanelet.adj_right)
                 new_direction = "right"
             else:
-                next_neighbor = self.find_lanelet_by_id(self.find_lanelet_by_id(lanelet.adj_right).predecessor[0])
+                next_neighbor = self.find_lanelet_by_id(
+                    self.find_lanelet_by_id(lanelet.adj_right).predecessor[0]
+                )
                 new_direction = "left"
 
         recursive_merge = self.check_concatenation_potential(next_neighbor, new_direction)
@@ -498,9 +551,7 @@ class ConversionLaneletNetwork(LaneletNetwork):
         left adjacent neighbor of the lanelet.
 
         :param lanelet: Lanelet to check specified relation for.
-        :type lanelet: :class:`ConversionLanelet`
         :return: True if this neighbor requirement is fulfilled.
-        :rtype: bool
         """
         successor = self.find_lanelet_by_id(lanelet.successor[0])
         adj_left = self.find_lanelet_by_id(lanelet.adj_left)
@@ -519,14 +570,14 @@ class ConversionLaneletNetwork(LaneletNetwork):
             return successor.adj_left is None
         return True
 
-    def create_intersection(self, intersection_map, intersection_id):
+    def create_intersection(
+        self, intersection_map: Dict[int, List[int]], all_incoming_lanelets: Set[int]
+    ):
         """
         Creates an intersection inside the lanelet network object
 
         :param intersection_map: Information about the successors of a lanelet in a junction.
-        :type intersection_map: dict
-        :param intersection_id: The unique id used to reference the intersection.
-        :type intersection_id: int
+        :param all_incoming_lanelets: Set of all incoming lanelets in the intersection.
         """
         # If different incoming lanelets have same successors, combine into set
         incoming_lanelet_ids = self.combine_common_incoming_lanelets(intersection_map)
@@ -542,8 +593,12 @@ class ConversionLaneletNetwork(LaneletNetwork):
             successor_straight = set()
 
             for incoming_lane in incoming_lanelet_set:
-                self.set_intersection_lanelet_type(incoming_lane, intersection_map)
-                successor_directions = self.get_successor_directions(self.find_lanelet_by_id(incoming_lane))
+                self.set_intersection_lanelet_type(
+                    incoming_lane, intersection_map, all_incoming_lanelets
+                )
+                successor_directions = self.get_successor_directions(
+                    self.find_lanelet_by_id(incoming_lane)
+                )
                 for successor, direction in successor_directions.items():
                     if direction == "right":
                         successor_right.add(successor)
@@ -555,9 +610,15 @@ class ConversionLaneletNetwork(LaneletNetwork):
                         successor_straight.add(successor)
                         successors.append(successor)
                     else:
-                        warnings.warn("Incorrect direction assigned to successor of incoming lanelet in intersection")
+                        warnings.warn(
+                            "Incorrect direction assigned to successor of incoming lanelet in intersection"
+                        )
             intersection_incoming_lane = IntersectionIncomingElement(
-                generate_unique_id(), set(incoming_lanelet_set), successor_right, successor_straight, successor_left
+                generate_unique_id(),
+                set(incoming_lanelet_set),
+                successor_right,
+                successor_straight,
+                successor_left,
             )
 
             intersection_incoming_lanes.append(intersection_incoming_lane)
@@ -569,24 +630,31 @@ class ConversionLaneletNetwork(LaneletNetwork):
             self.find_left_of(intersection.incomings)
             self.add_intersection(intersection)
 
-    def set_intersection_lanelet_type(self, incoming_lane, intersection_map):
+    def set_intersection_lanelet_type(
+        self,
+        incoming_lane: int,
+        intersection_map: Dict[int, List[int]],
+        incoming_lanelet_ids: Set[int],
+    ):
         """Set the lanelet type of all the lanelets inside an intersection to Intersection from the enum class
 
         :param incoming_lane: ID of incoming lanelet
-        :type incoming_lane: int
         :param intersection_map: Dictionary that contains all the incomings of a particular intersection.
-        :type intersection_map: dict
+        :param incoming_lanelet_ids: Set of all incoming lanelets in the intersection.
         """
         for successor_incoming in self.find_lanelet_by_id(incoming_lane).successor:
             successor_incoming_lanelet = self.find_lanelet_by_id(successor_incoming)
-            # successor_incoming_lanelet.lanelet_type = "intersection"
-            # TODO assign only to main intersection lanelets not to incomings or other lanelets,
-            #  e.g., check KA-Suedtangente scenario
+            successor_incoming_lanelet.lanelet_type = "intersection"
             # Also check if the successor of a incoming successor intersects with another successor of an incoming
-            self.check_lanelet_type_for_successor_of_successor(successor_incoming_lanelet, intersection_map)
+            self.check_lanelet_type_for_successor_of_successor(
+                successor_incoming_lanelet, intersection_map, incoming_lanelet_ids
+            )
 
     def check_lanelet_type_for_successor_of_successor(
-        self, successor_incoming_lanelet: ConversionLanelet, intersection_map: dict
+        self,
+        successor_incoming_lanelet: ConversionLanelet,
+        intersection_map: Dict[int, List[int]],
+        incoming_lanelet_ids: Set[int],
     ):
         """
         Check if the successor of an incoming successor in an intersection is also a part of the lanelet.
@@ -595,26 +663,31 @@ class ConversionLaneletNetwork(LaneletNetwork):
 
         :param successor_incoming_lanelet: Lanelet for which we require to test if it is a part of a particular
             intersection
-        :type successor_incoming_lanelet: :class:`ConversionLanelet`
         :param intersection_map: Dict of the particular intersection for which the test is being conducted.
-        :type intersection_map: dict
+        :param incoming_lanelet_ids: Set of all incoming lanelets in the intersection.
         """
         for successor_successor_incoming in successor_incoming_lanelet.successor:
-            successor_successor_incoming_lanelet = self.find_lanelet_by_id(successor_successor_incoming)
-            if self.check_if_lanelet_in_intersection(successor_successor_incoming_lanelet, intersection_map):
+            successor_successor_incoming_lanelet = self.find_lanelet_by_id(
+                successor_successor_incoming
+            )
+            if (
+                self.check_if_lanelet_in_intersection(
+                    successor_successor_incoming_lanelet, intersection_map
+                )
+                and successor_successor_incoming_lanelet.lanelet_id not in incoming_lanelet_ids
+            ):
                 successor_successor_incoming_lanelet.lanelet_type = "intersection"
 
-    def check_if_lanelet_in_intersection(self, lanelet: ConversionLanelet, intersection_map: dict) -> bool:
+    def check_if_lanelet_in_intersection(
+        self, lanelet: ConversionLanelet, intersection_map: Dict[int, List[int]]
+    ) -> bool:
         """
         Check if a particular lanelet intersects any of the lanelets that are part of a particular intersection
         using the shapely crosses method.
 
         :param lanelet: Lanelet which is being tested for being part of the intersection.
-        :type lanelet: :class:`ConversionLanelet`
         :param intersection_map: Dict of the particular intersection for which the test is being conducted.
-        :type intersection_map: dict
         :return: True if any intersection found, otherwise False.
-        :rtype: bool
         """
         for incoming_lane in intersection_map.keys():
             for successor in self.find_lanelet_by_id(incoming_lane).successor:
@@ -626,7 +699,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
                     if not successor_lane_polygon.shapely_object.is_valid:
                         make_valid(successor_lane_polygon.shapely_object)
                     try:
-                        if successor_lane_polygon.shapely_object.intersects(lanelet_polygon.shapely_object):
+                        if successor_lane_polygon.shapely_object.intersects(
+                            lanelet_polygon.shapely_object
+                        ):
                             return True
                     except shapely.errors.GEOSException:
                         logging.error(
@@ -638,25 +713,26 @@ class ConversionLaneletNetwork(LaneletNetwork):
                         continue
         return False
 
-    def check_if_successor_is_intersecting(self, intersection_map, successors_list) -> bool:
+    def check_if_successor_is_intersecting(
+        self, intersection_map: Dict[int, List[int]], successors_list: List[int]
+    ) -> bool:
         """
         Check if successors of an incoming intersect with successors of other incoming of the intersection
         using the shapely crosses method.
 
         :param intersection_map: Dict of the particular intersection for which the test is being conducted.
-        :type intersection_map: dict
         :param successors_list: List of all the successors of an intersection
-        :type successors_list: list
         :return: True if successors of an incoming intersect with successors of other incoming of the intersection,
             otherwise False.
-        :rtype: bool
         """
         for incoming_lane in intersection_map.keys():
             for incoming_successor in self.find_lanelet_by_id(incoming_lane).successor:
                 for successor in successors_list:
                     if successor not in self.find_lanelet_by_id(incoming_lane).successor:
                         successor_lane_polygon = self.find_lanelet_by_id(successor).polygon
-                        incoming_successor_lane_polygon = self.find_lanelet_by_id(incoming_successor).polygon
+                        incoming_successor_lane_polygon = self.find_lanelet_by_id(
+                            incoming_successor
+                        ).polygon
                         if successor_lane_polygon.shapely_object.intersects(
                             incoming_successor_lane_polygon.shapely_object
                         ):
@@ -678,8 +754,12 @@ class ConversionLaneletNetwork(LaneletNetwork):
         # calculate all incoming angle from the reference incoming vector
         for index in range(1, len(incomings)):
             new_v = (
-                self.find_lanelet_by_id(list(incomings[index].incoming_lanelets)[0]).center_vertices[-1]
-                - self.find_lanelet_by_id(list(incomings[index].incoming_lanelets)[0]).center_vertices[-2]
+                self.find_lanelet_by_id(
+                    list(incomings[index].incoming_lanelets)[0]
+                ).center_vertices[-1]
+                - self.find_lanelet_by_id(
+                    list(incomings[index].incoming_lanelets)[0]
+                ).center_vertices[-2]
             )
             angle = geometry.get_angle(ref, new_v)
             if angle < 0:
@@ -694,7 +774,10 @@ class ConversionLaneletNetwork(LaneletNetwork):
             angle = angles[index][1] - angles[prev][1]
             if angle < 0:
                 angle += 360
-            if self._config.lane_segment_angle < angle <= 180 - self._config.lane_segment_angle and angle < min_angle:
+            if (
+                self._config.lane_segment_angle < angle <= 180 - self._config.lane_segment_angle
+                and angle < min_angle
+            ):
                 # is left of the previous incoming
                 is_left_of = angles[prev][0]
                 data_index = angles[index][0]
@@ -713,12 +796,13 @@ class ConversionLaneletNetwork(LaneletNetwork):
                 else:
                     prev -= 1
 
-    def combine_common_incoming_lanelets(self, intersection_map: dict) -> List[Tuple]:
+    def combine_common_incoming_lanelets(
+        self, intersection_map: Dict[int, List[int]]
+    ) -> List[List[int]]:
         """
         Returns a list of tuples which are pairs of adj incoming lanelets and the union of their successors
 
         :param intersection_map: Dict containing the information regarding a particular intersection.
-        :type intersection_map: dict
         :return: List of tuples that are pairs of adjacent incoming lanelets and the union of their successors
         """
         incoming_lane_ids = intersection_map.keys()
@@ -753,16 +837,17 @@ class ConversionLaneletNetwork(LaneletNetwork):
             intersection_incoming_set.sort()
             combined_incoming_lane_ids.append(intersection_incoming_set)
             combined_incoming_lane_ids.sort()
-        combined_incoming_lane_ids = list(k for k, _ in itertools.groupby(combined_incoming_lane_ids))
+        combined_incoming_lane_ids = list(
+            k for k, _ in itertools.groupby(combined_incoming_lane_ids)
+        )
         return combined_incoming_lane_ids
 
-    def get_successor_directions(self, incoming_lane: ConversionLanelet) -> dict:
+    def get_successor_directions(self, incoming_lane: ConversionLanelet) -> Dict[int, str]:
         """
         Find all directions of an incoming lane's successors
 
         :param incoming_lane: incoming lane from intersection
         :return: Dict containing the directions "left", "right" or "through"
-        :rtype: dict
         """
         straight_threshold_angel = self._config.intersection_straight_threshold
         assert 0 < straight_threshold_angel < 90
@@ -794,7 +879,11 @@ class ConversionLaneletNetwork(LaneletNetwork):
 
         # if 3 successors we assume the directions
         if len(sorted_angels) == 3:
-            directions = {sorted_keys[0]: "left", sorted_keys[1]: "straight", sorted_keys[2]: "right"}
+            directions = {
+                sorted_keys[0]: "left",
+                sorted_keys[1]: "straight",
+                sorted_keys[2]: "right",
+            }
 
         # if 2 successors we assume that they both cannot have the same direction
         if len(sorted_angels) == 2:
@@ -834,9 +923,10 @@ class ConversionLaneletNetwork(LaneletNetwork):
 
         :param traffic_lights: List of all the traffic lights in the lanelet network.
         """
+        incoming_lanelet_ids = self.map_inc_lanelets_to_intersections.keys()
         for traffic_light in traffic_lights:
             min_distance = float("inf")
-            id_for_adding = None
+            id_for_candidate = None
             for intersection in self.intersections:
                 for incoming in intersection.incomings:
                     for lanelet in incoming.incoming_lanelets:
@@ -848,8 +938,38 @@ class ConversionLaneletNetwork(LaneletNetwork):
                             dist = np.linalg.norm(pos_1 - pos_2)
                             if dist < min_distance:
                                 min_distance = dist
-                                id_for_adding = lanelet
-            if id_for_adding is None:
+                                id_for_candidate = lanelet
+            id_for_adding = set()
+            if id_for_candidate is None:
+                for lanelet in self.lanelets:
+                    if (
+                        traffic_light.traffic_light_id in lanelet.traffic_lights
+                        and lanelet.lanelet_id in incoming_lanelet_ids
+                    ):
+                        id_for_adding.add(lanelet.lanelet_id)
+                    elif (
+                        traffic_light.traffic_light_id in lanelet.traffic_lights
+                        and lanelet.lanelet_id not in incoming_lanelet_ids
+                    ):
+                        lanelet.traffic_lights = set()
+                        for pre in lanelet.predecessor:
+                            if pre in incoming_lanelet_ids:
+                                id_for_adding.add(pre)
+                if len(id_for_adding) == 0:
+                    min_distance = float("inf")
+                    for lanelet in incoming_lanelet_ids:
+                        lane = self.find_lanelet_by_id(lanelet)
+                        # Lanelet cannot have more traffic lights than number of successors
+                        if len(lane.successor) > len(lane.traffic_lights):
+                            pos_1 = traffic_light.position
+                            pos_2 = lane.center_vertices[-1]
+                            dist = np.linalg.norm(pos_1 - pos_2)
+                            if dist < min_distance:
+                                min_distance = dist
+                                id_for_adding.add(lanelet)
+            else:
+                id_for_adding.add(id_for_candidate)
+            if len(id_for_adding) == 0:
                 warnings.warn(
                     "For traffic light with ID {} no referencing lanelet was found!".format(
                         traffic_light.traffic_light_id
@@ -857,7 +977,7 @@ class ConversionLaneletNetwork(LaneletNetwork):
                 )
                 self.add_traffic_light(traffic_light, set())
             else:
-                self.add_traffic_light(traffic_light, {id_for_adding})
+                self.add_traffic_light(traffic_light, id_for_adding)
 
         # Traffic light directions are assigned once all traffic lights are assigned to lanelets so that it can be
         # determined how directions need to be divided (i.e. the decision between left to one light and straight to
@@ -1014,7 +1134,9 @@ class ConversionLaneletNetwork(LaneletNetwork):
 
             if id_for_adding is None:
                 warnings.warn(
-                    "For traffic sign with ID {} no referencing lanelet was found!".format(traffic_sign.traffic_sign_id)
+                    "For traffic sign with ID {} no referencing lanelet was found!".format(
+                        traffic_sign.traffic_sign_id
+                    )
                 )
                 self.add_traffic_sign(traffic_sign, set())
             else:
@@ -1042,11 +1164,15 @@ class ConversionLaneletNetwork(LaneletNetwork):
                         stop_line_position_end = stop_line.start
                         stop_line_position_start = stop_line.end
                         if (
-                            np.linalg.norm(lanelet_position_right - stop_line_position_start) < min_start
-                            and np.linalg.norm(lanelet_position_left - stop_line_position_end) < min_end
+                            np.linalg.norm(lanelet_position_right - stop_line_position_start)
+                            < min_start
+                            and np.linalg.norm(lanelet_position_left - stop_line_position_end)
+                            < min_end
                         ):
                             lane_to_add_stop_line = lane
-                            min_start = np.linalg.norm(lanelet_position_right - stop_line_position_start)
+                            min_start = np.linalg.norm(
+                                lanelet_position_right - stop_line_position_start
+                            )
                             min_end = np.linalg.norm(lanelet_position_left - stop_line_position_end)
             if lane_to_add_stop_line is None:
                 warnings.warn("No lanelet was matched with a stop line")
@@ -1116,7 +1242,6 @@ class _JoinSplitTarget:
         """Lanelet splits at start.
 
         :return: True if lanelet splits from other lanelet at start.
-        :rtype: bool
         """
         return self._mode >= 1
 
@@ -1125,7 +1250,6 @@ class _JoinSplitTarget:
         """Lanelet joins at end.
 
         :return: True if lanelet joins to other lanelet at end.
-        :rtype: bool
         """
         return self._mode != 1
 
@@ -1134,7 +1258,6 @@ class _JoinSplitTarget:
         """Lanelet splits at start and joins at end.
 
         :return: True if it has a join and a split
-        :rtype: bool
         """
         return self.split and self.join
 
@@ -1142,7 +1265,6 @@ class _JoinSplitTarget:
         """Only single lanelet can be used for join/split.
 
         :return: True if only one can be used.
-        :rtype: bool
         """
         return self._single_lanelet_operation and self.split_and_join
 
@@ -1158,7 +1280,6 @@ class _JoinSplitTarget:
         """Calculate length of interval where join/split changes the border.
 
         :return: Length of interval.
-        :rtype: float
         """
         length = 0
         for js_pair in self._js_pairs:
@@ -1237,7 +1358,9 @@ class _JoinSplitTarget:
                 [0, length],
                 [width_start, width_end],
             )
-            js_pair.move_border(width=distance, linking_side=self.linking_side, transformer=self._transformer)
+            js_pair.move_border(
+                width=distance, linking_side=self.linking_side, transformer=self._transformer
+            )
             running_pos += pos_end - pos_start
 
     def _move_borders_if_split_and_join(self):
@@ -1268,8 +1391,12 @@ class _JoinSplitTarget:
         # take first half of lanelet which does the split
         # take second half of lanelet which does the join
         half_length = int(left_vertices[:, 0].size / 2)
-        lanelet.left_vertices = np.vstack((left_vertices[:half_length, :], lanelet.left_vertices[half_length:, :]))
-        lanelet.right_vertices = np.vstack((right_vertices[:half_length, :], lanelet.right_vertices[half_length:, :]))
+        lanelet.left_vertices = np.vstack(
+            (left_vertices[:half_length, :], lanelet.left_vertices[half_length:, :])
+        )
+        lanelet.right_vertices = np.vstack(
+            (right_vertices[:half_length, :], lanelet.right_vertices[half_length:, :])
+        )
         lanelet.center_vertices = np.vstack(
             (center_vertices[:half_length, :], lanelet.center_vertices[half_length:, :])
         )
@@ -1306,7 +1433,9 @@ class _JoinSplitTarget:
             else:
                 break
 
-    def _add_join_split_pair(self, lanelet: ConversionLanelet, adjacent_lanelet: ConversionLanelet) -> bool:
+    def _add_join_split_pair(
+        self, lanelet: ConversionLanelet, adjacent_lanelet: ConversionLanelet
+    ) -> bool:
         """Add a pair of lanelet and adjacent lanelet to self._js_pairs.
 
         Decide if it is advisable to add another pair to increase join/split area.
@@ -1323,7 +1452,9 @@ class _JoinSplitTarget:
                 split_and_join=self.split_and_join,
                 reference_width=adjacent_lanelet.calc_width_at_start(),
             )
-            self._js_pairs.append(_JoinSplitPair(lanelet, adjacent_lanelet, [0, change_pos], self.precision))
+            self._js_pairs.append(
+                _JoinSplitPair(lanelet, adjacent_lanelet, [0, change_pos], self.precision)
+            )
             self.change_width = [change_width]
             # one for join at the end of the lanelet
             change_pos, change_width = lanelet.optimal_join_split_values(
@@ -1332,12 +1463,18 @@ class _JoinSplitTarget:
                 reference_width=adjacent_lanelet.calc_width_at_end(),
             )
             self._js_pairs.append(
-                _JoinSplitPair(lanelet, adjacent_lanelet, [change_pos, lanelet.length], self.precision)
+                _JoinSplitPair(
+                    lanelet, adjacent_lanelet, [change_pos, lanelet.length], self.precision
+                )
             )
             self.change_width.append(change_width)
             return True
 
-        adjacent_width = adjacent_lanelet.calc_width_at_start() if self.split else adjacent_lanelet.calc_width_at_end()
+        adjacent_width = (
+            adjacent_lanelet.calc_width_at_start()
+            if self.split
+            else adjacent_lanelet.calc_width_at_end()
+        )
         change_pos, change_width = lanelet.optimal_join_split_values(
             is_split=self.split,
             split_and_join=self.split_and_join,
@@ -1348,12 +1485,16 @@ class _JoinSplitTarget:
             return True
         self.change_width = change_width
         if self.split:
-            self._js_pairs.append(_JoinSplitPair(lanelet, adjacent_lanelet, [0, change_pos], self.precision))
+            self._js_pairs.append(
+                _JoinSplitPair(lanelet, adjacent_lanelet, [0, change_pos], self.precision)
+            )
             if np.isclose(lanelet.length, change_pos):
                 return False
         else:
             self._js_pairs.append(
-                _JoinSplitPair(lanelet, adjacent_lanelet, [change_pos, lanelet.length], self.precision)
+                _JoinSplitPair(
+                    lanelet, adjacent_lanelet, [change_pos, lanelet.length], self.precision
+                )
             )
             if np.isclose(0, change_pos):
                 return False
@@ -1363,16 +1504,19 @@ class _JoinSplitTarget:
         """Determine which is the adjacent lanelet to the main lanelet.
 
         :return: The corresponding adjacent lanelet
-        :rtype: :class:`ConversionLanelet`
         """
         lanelet = self.main_lanelet
         potential_adjacent_lanelets = Queue()
         checked_lanelets = 0
         if lanelet.adj_left is not None and lanelet.adj_left_same_direction:
-            potential_adjacent_lanelets.put({"lanelet_id": lanelet.adj_left, "linking_side": "right"})
+            potential_adjacent_lanelets.put(
+                {"lanelet_id": lanelet.adj_left, "linking_side": "right"}
+            )
             checked_lanelets -= 1
         if lanelet.adj_right is not None and lanelet.adj_right_same_direction:
-            potential_adjacent_lanelets.put({"lanelet_id": lanelet.adj_right, "linking_side": "left"})
+            potential_adjacent_lanelets.put(
+                {"lanelet_id": lanelet.adj_right, "linking_side": "left"}
+            )
             checked_lanelets -= 1
 
         while potential_adjacent_lanelets.qsize() > 0:
@@ -1389,7 +1533,9 @@ class _JoinSplitTarget:
 
         return None
 
-    def _check_next_adjacent_lanelet(self, potential_adjacent_lanelets: Queue) -> Optional[ConversionLanelet]:
+    def _check_next_adjacent_lanelet(
+        self, potential_adjacent_lanelets: Queue
+    ) -> Optional[ConversionLanelet]:
         """Check next lanelet if it can act as adjacent lanelet to the main lanelet.
 
         If not, add its left and right neighbor, if they exist, to the potential_adjacent_lanelets Queue.
@@ -1416,16 +1562,26 @@ class _JoinSplitTarget:
         if return_flag:
             return adj_lanelet
 
-        next_adj_neighbor = adj_lanelet.adj_left if linking_side == "right" else adj_lanelet.adj_right
+        next_adj_neighbor = (
+            adj_lanelet.adj_left if linking_side == "right" else adj_lanelet.adj_right
+        )
         if next_adj_neighbor:
-            potential_adjacent_lanelets.put({"lanelet_id": next_adj_neighbor, "linking_side": linking_side})
+            potential_adjacent_lanelets.put(
+                {"lanelet_id": next_adj_neighbor, "linking_side": linking_side}
+            )
         return None
 
 
 class _JoinSplitPair:
     """Pair of lanelet whose border is changed and its adjacent neighbor."""
 
-    def __init__(self, lanelet, adjacent_lanelet, change_interval, precision: float = open_drive_config.precision):
+    def __init__(
+        self,
+        lanelet,
+        adjacent_lanelet,
+        change_interval,
+        precision: float = open_drive_config.precision,
+    ):
         self.lanelet = lanelet
         self.adjacent_lanelet = adjacent_lanelet
         self.change_interval = change_interval

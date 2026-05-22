@@ -5,10 +5,7 @@ from commonroad.scenario.scenario import Tag
 
 from crdesigner.common.file_writer import CRDesignerFileWriter, OverwriteExistingFile
 from crdesigner.map_conversion.map_conversion_interface import sumo_to_commonroad
-from crdesigner.ui.gui.utilities.gui_sumo_simulation import SUMO_AVAILABLE
-
-if SUMO_AVAILABLE:
-    from crdesigner.map_conversion.sumo_map.sumo2cr import convert_net_to_cr
+from crdesigner.map_conversion.sumo_map.sumo2cr import convert_net_to_cr
 
 input_file = ""  # replace empty string
 
@@ -26,7 +23,8 @@ writer = CRDesignerFileWriter(
     tags={Tag.URBAN},
 )
 writer.write_to_file(
-    os.path.dirname(os.path.realpath(__file__)) + "/" + "ZAM_SUMO-1_1-T1.xml", OverwriteExistingFile.ALWAYS
+    os.path.dirname(os.path.realpath(__file__)) + "/" + "ZAM_SUMO-1_1-T1.xml",
+    OverwriteExistingFile.ALWAYS,
 )
 
 
@@ -45,5 +43,6 @@ writer = CRDesignerFileWriter(
     tags={Tag.URBAN},
 )
 writer.write_to_file(
-    os.path.dirname(os.path.realpath(__file__)) + "/" + "ZAM_SUMO-1_1-T1.xml", OverwriteExistingFile.ALWAYS
+    os.path.dirname(os.path.realpath(__file__)) + "/" + "ZAM_SUMO-1_1-T1.xml",
+    OverwriteExistingFile.ALWAYS,
 )

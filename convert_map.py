@@ -49,7 +49,7 @@ class MapConversionConfig:
     center: Optional[Tuple[float, float]] = None  # world center in local coordinates - by default road mesh center
     trim_radius: Optional[float] = None  # trim the map to this radius around the center
     trim_vertical_limits: Optional[Tuple[float, float]] = None  # lower and upper elevation bounds for trimming
-
+    convert_right_handed: bool = False  # if set to true, convert a left handed map to right handed
 
 @dataclasses.dataclass
 class GeoOffset:
@@ -141,13 +141,16 @@ class CustomTransfomer:
     I could not find a way to construct a pyproj transformer equivalent to the Lanelet2 UtmProjector,
     so I opted to use a wrapper instead.
     """
-    def __init__(self, projector, offset: Optional[GeoOffset] = None):
+    def __init__(self, projector, offset: Optional[GeoOffset] = None, convert_right_handed: bool = False):
         self.projector = projector
         self.offset = offset
+        self.convert_right_handed = convert_right_handed
 
     def transform(self, x, y):
         if self.offset is not None:
             x, y = self.offset.apply_offset(x, y)
+        if self.convert_right_handed:
+            x, y = -x, -y
         transformed = self.projector.reverse(lanelet2.core.BasicPoint3d(x, y, 0))
         return transformed.lat, transformed.lon
 
@@ -207,7 +210,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
     commonroad_config = GeneralConfig()
     commonroad_config.proj_string_cr = geo_reference.proj_string  # not currently used - see CustomTransformer
     l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
-    osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector, geo_offset))
+    osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector, geo_offset, cfg.convert_right_handed))
     osm_path = os.path.join(cfg.dir_path, f"{location}.osm")
     with open(osm_path, "wb") as file_out:
         logger.info(f'Writing converted Lanelet2 map to {osm_path}')

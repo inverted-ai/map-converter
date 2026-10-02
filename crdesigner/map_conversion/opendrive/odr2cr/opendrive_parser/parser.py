@@ -534,7 +534,7 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
                 breakpoint()
             fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
             for lane_idx in range(fromLane, toLane + 1):
-                lane = new_road.lanes.lane_sections[0].getLane(lane_idx)
+                lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
                     breakpoint()
                 if hasattr(lane, 'signal_references'):
@@ -585,7 +585,7 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
                 breakpoint()
             fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
             for lane_idx in range(fromLane, toLane+1):
-                lane = new_road.lanes.lane_sections[0].getLane(lane_idx)
+                lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
                     breakpoint()
                 if hasattr(lane, 'signal_references'):

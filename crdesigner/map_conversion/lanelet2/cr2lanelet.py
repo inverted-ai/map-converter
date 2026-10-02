@@ -6,7 +6,7 @@ import numpy as np
 from commonroad.common.common_lanelet import LaneletType, LineMarking
 from commonroad.scenario.area import Area
 from commonroad.scenario.lanelet import Lanelet
-from commonroad.scenario.scenario import Location, Scenario
+from commonroad.scenario.scenario import Scenario
 from commonroad.scenario.traffic_light import TrafficLight
 from commonroad.scenario.traffic_sign import TrafficSign
 from pyproj import CRS, Transformer
@@ -183,7 +183,7 @@ class CR2LaneletConverter:
         The output projection is set to "ETRF89".
         Additionally, the x and y translation from the scenario object are considered (if provided).
         """
-        loc: Location = scenario.location
+        loc = scenario.location
         proj_string_from = None
         if loc is not None and loc.geo_transformation is not None:
             geo_trans = loc.geo_transformation

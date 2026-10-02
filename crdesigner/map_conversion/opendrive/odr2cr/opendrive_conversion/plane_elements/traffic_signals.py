@@ -183,6 +183,7 @@ def assign_traffic_signals_to_road(
                     traffic_light_cycle=get_default_cycle(),
                     direction=tdir,
                 )  # TODO remove for new CR-Format
+                traffic_light.opendrive_id = signal.id
                 road.add_traffic_light((traffic_light, lanes, signal.s))
                 traffic_lights.append(traffic_light)
             else:

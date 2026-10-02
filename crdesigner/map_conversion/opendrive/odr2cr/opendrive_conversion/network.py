@@ -265,7 +265,7 @@ class Network:
             # stop lines from road objects
             self._stop_lines_from_road(road)
 
-            reference_border.elevations = road.elevationProfile.elevations
+            reference_border.elevations = road.elevation_profile.elevations
 
             # A lane section is the smallest part that can be converted at once
             for lane_section in road.lanes.lane_sections:
@@ -296,9 +296,9 @@ class Network:
                     for incoming in incomings_to_remove:
                         del intersection[incoming]
 
-            # stop lines from traffic signals (legacy)
-            stop_lines_final = []
-            traffic_lights, traffic_signs, stop_lines = get_traffic_signals(road)
+        for traffic_light in self._traffic_lights:
+            if hasattr(traffic_light, 'opendrive_id'):
+                traffic_light.iai_stoplines = light_stoplines[traffic_light.opendrive_id]
 
     def _extract_road_speed_limit(self, road: Road):
         """
@@ -391,29 +391,26 @@ class Network:
                 stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
                 self._stop_lines.append(stop_line)
 
-                stop_sign_names = [
-                    'Stencil_STOP',
-                ]
-                yield_sign_names = [
-                    'Stencil_Yield_Triangles',
-                ]
+            stop_sign_names = [
+                'Stencil_STOP',
+            ]
+            yield_sign_names = [
+                'Stencil_GiveWay',
+                'Stencil_Yield_Triangles',
+            ]
 
-                if road_object.name in stop_sign_names + yield_sign_names:
-                    xy, orientation, _, _ = road.planView.calc(road_object.s, compute_curvature=False)
-                    xy = xy + road_object.t * np.array([- np.sin(orientation), np.cos(orientation)])
-                    if road_object.orientation == "+":
-                        orientation = orientation + np.pi
-                    stopline = (xy, orientation, road_object.validLength, road_object.width, road_object.id)
-                    if road_object.name in stop_sign_names:
-                        self._iai_stop_signs.append(stopline)
-                    elif road_object.name in yield_sign_names:
-                        self._iai_yield_signs.append(stopline)
-                    else:
-                        assert False
-
-        for traffic_light in self._traffic_lights:
-            if hasattr(traffic_light, 'opendrive_id'):
-                traffic_light.iai_stoplines = light_stoplines[traffic_light.opendrive_id]
+            if road_object.name in stop_sign_names + yield_sign_names:
+                xy, orientation, _, _ = road.plan_view.calc(road_object.s, compute_curvature=False)
+                xy = xy + road_object.t * np.array([- np.sin(orientation), np.cos(orientation)])
+                if road_object.orientation == "+":
+                    orientation = orientation + np.pi
+                stopline = (xy, orientation, road_object.validLength, road_object.width, road_object.id)
+                if road_object.name in stop_sign_names:
+                    self._iai_stop_signs.append(stopline)
+                elif road_object.name in yield_sign_names:
+                    self._iai_yield_signs.append(stopline)
+                else:
+                    assert False
 
     def export_lanelet_network(
         self, transformer: Optional[Transformer], filter_types: Optional[List[str]] = None

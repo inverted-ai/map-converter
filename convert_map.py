@@ -271,13 +271,45 @@ class CustomTransfomer:
         return transformed.lat, transformed.lon
 
 
-def convert_map(cfg: MapConversionConfig) -> None:
-    # Find and parse OpenDRIVE file
+@dataclasses.dataclass(slots=True)
+class ParsedXodr:
+    """The parsed OpenDRIVE input and its Lanelet2 geo-reference."""
+
+    location: str
+    opendrive: object
+    geo_reference: GeoReference
+    geo_offset: Optional[GeoOffset]
+    projector: object
+
+
+@dataclasses.dataclass(slots=True)
+class ExportedOsm:
+    """The CommonRoad network built from the input and the ``.osm`` written from it."""
+
+    road_network: Network
+    lanelet_network: LaneletNetwork
+    osm_path: str
+
+
+@dataclasses.dataclass(slots=True)
+class BuiltMesh:
+    """The road + lane-marking mesh and where it was written."""
+
+    combined_mesh: BirdviewMesh
+    mesh_path: str
+
+
+def validate_config(*, cfg: MapConversionConfig) -> Optional[str]:
+    """Return the ``.xodr`` to convert, or ``None`` if ``cfg.dir_path`` holds none."""
     xodr_files = glob.glob(os.path.join(cfg.dir_path, '*.xodr'))
     if not xodr_files:
         logger.error(f'No .xodr files found in {cfg.dir_path} - aborting')
-        return
-    opendrive_path = xodr_files[0]
+        return None
+    return xodr_files[0]
+
+
+def parse_xodr(*, opendrive_path: str) -> ParsedXodr:
+    """Parse the OpenDRIVE file and build the Lanelet2 projector from its geo-reference."""
     logger.info(f'Using {opendrive_path} as input')
     location = os.path.basename(opendrive_path)[:-5]
     opendrive = parse_opendrive(Path(opendrive_path))
@@ -297,7 +329,17 @@ def convert_map(cfg: MapConversionConfig) -> None:
     else:
         geo_offset = None
     projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
+    return ParsedXodr(
+        location=location,
+        opendrive=opendrive,
+        geo_reference=geo_reference,
+        geo_offset=geo_offset,
+        projector=projector,
+    )
 
+
+def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
+    """Convert OpenDRIVE to CommonRoad, then write the Lanelet2 ``.osm`` within the size budget."""
     # Convert OpenDRIVE to CommonRoad
     open_drive_config = OpenDriveConfig()
     open_drive_config.min_delta_s = 1.5
@@ -314,7 +356,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         # "bidirectional",
     ]
     road_network = Network()
-    road_network.load_opendrive(opendrive)
+    road_network.load_opendrive(parsed.opendrive)
     # for index in range(len(road_network._traffic_lights)):
     #     road_network._traffic_lights[index]._traffic_light_id = abs(
     #         road_network._traffic_lights[index].traffic_light_id
@@ -324,7 +366,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
 
     # Export CommonRoad to Lanelet2, iterating tolerance until the OSM fits the size budget.
     commonroad_config = GeneralConfig()
-    commonroad_config.proj_string_cr = geo_reference.proj_string  # not currently used - see CustomTransformer
+    commonroad_config.proj_string_cr = parsed.geo_reference.proj_string  # not currently used - see CustomTransformer
 
     tol = cfg.simplify_tolerance or 0.0
     size_budget_active = tol > 0 and cfg.osm_target_bytes is not None
@@ -339,7 +381,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
                 f'(removed {removed} vertices across {len(lanelet_network.lanelets)} lanelets)'
             )
         l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
-        osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(projector, geo_offset))
+        osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(parsed.projector, parsed.geo_offset))
         osm_bytes = etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True)
         size_mb = len(osm_bytes) / (1024 * 1024)
         if not size_budget_active:
@@ -358,11 +400,15 @@ def convert_map(cfg: MapConversionConfig) -> None:
             f'Raise simplify_max_iterations, raise simplify_tolerance, or relax osm_target_bytes.'
         )
 
-    osm_path = os.path.join(cfg.dir_path, f"{location}.osm")
+    osm_path = os.path.join(cfg.dir_path, f"{parsed.location}.osm")
     logger.info(f'Writing converted Lanelet2 map to {osm_path}')
     with open(osm_path, "wb") as file_out:
         file_out.write(osm_bytes)
+    return ExportedOsm(road_network=road_network, lanelet_network=lanelet_network, osm_path=osm_path)
 
+
+def trim(*, cfg: MapConversionConfig, osm_path: str, projector) -> None:
+    """Rewrite the ``.osm`` trimmed to ``cfg.trim_radius`` around ``cfg.center``, if requested."""
     # Trim the map if requested
     if cfg.trim_radius is not None:
         assert cfg.center is not None, "Must specify center for trimming"
@@ -371,6 +417,15 @@ def convert_map(cfg: MapConversionConfig) -> None:
                                vertical_limits=cfg.trim_vertical_limits)
         lanelet2.io.write(osm_path, trimmed_map, projector)
 
+
+def extract_stoplines(
+    *, cfg: MapConversionConfig, location: str, lanelet_network: LaneletNetwork, road_network: Network
+) -> str:
+    """Write traffic-light, stop-sign and yield-sign stoplines to ``<map>_stoplines.json``.
+
+    Returns:
+        Path of the written stoplines file.
+    """
     # Export stoplines
     stoplines = []
     for traffic_light in lanelet_network.traffic_lights:
@@ -426,7 +481,11 @@ def convert_map(cfg: MapConversionConfig) -> None:
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
         json.dump(stoplines, f, indent=4)
+    return stoplines_path
 
+
+def build_mesh(*, cfg: MapConversionConfig, location: str, osm_path: str, projector) -> BuiltMesh:
+    """Build the road and lane-marking mesh from the written ``.osm`` and save ``<map>_mesh.json``."""
     # Export road mesh
     mesh_path = os.path.join(cfg.dir_path, f"{location}_mesh.json")
     lanelet_map = lanelet2.io.load(osm_path, projector)
@@ -440,9 +499,21 @@ def convert_map(cfg: MapConversionConfig) -> None:
     combined_mesh = lane_mesh.merge(road_mesh)
     logger.info(f'Writing road mesh to {mesh_path}')
     combined_mesh.save(mesh_path)
+    return BuiltMesh(combined_mesh=combined_mesh, mesh_path=mesh_path)
 
+
+def render_and_finish(
+    *,
+    cfg: MapConversionConfig,
+    location: str,
+    geo_reference: GeoReference,
+    osm_path: str,
+    stoplines_path: str,
+    mesh: BuiltMesh,
+) -> None:
+    """Pick the map centre, write ``metadata.json`` and render ``visualization.png``."""
     if cfg.center is None:
-        center = combined_mesh.center.squeeze(0).numpy().tolist()
+        center = mesh.combined_mesh.center.squeeze(0).numpy().tolist()
     else:
         center = list(cfg.center)
 
@@ -452,7 +523,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         iai_location_name=f'{cfg.domain}:{location}' if cfg.domain else None,
         left_handed_coordinates=False,
         lanelet_path=os.path.abspath(osm_path),
-        mesh_path=mesh_path,
+        mesh_path=mesh.mesh_path,
         stoplines_path=stoplines_path,
     )
     metadata_path = os.path.join(cfg.dir_path, 'metadata.json')
@@ -486,6 +557,35 @@ def convert_map(cfg: MapConversionConfig) -> None:
     viz_path = os.path.join(cfg.dir_path, 'visualization.png')
     logger.info(f'Saving visualization to {viz_path}')
     imageio.imsave(viz_path, map_image[0].permute(1, 2, 0).cpu().numpy().astype(np.uint8))
+
+
+def convert_map(cfg: MapConversionConfig) -> None:
+    """Convert the single ``.xodr`` in ``cfg.dir_path`` into the TorchDriveSim artifact set.
+
+    Writes ``<map>.osm``, ``<map>_stoplines.json``, ``<map>_mesh.json``, ``metadata.json`` and
+    ``visualization.png`` into ``cfg.dir_path``.
+    """
+    opendrive_path = validate_config(cfg=cfg)
+    if opendrive_path is None:
+        return
+    parsed = parse_xodr(opendrive_path=opendrive_path)
+    exported = export_osm(cfg=cfg, parsed=parsed)
+    trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
+    stoplines_path = extract_stoplines(
+        cfg=cfg,
+        location=parsed.location,
+        lanelet_network=exported.lanelet_network,
+        road_network=exported.road_network,
+    )
+    mesh = build_mesh(cfg=cfg, location=parsed.location, osm_path=exported.osm_path, projector=parsed.projector)
+    render_and_finish(
+        cfg=cfg,
+        location=parsed.location,
+        geo_reference=parsed.geo_reference,
+        osm_path=exported.osm_path,
+        stoplines_path=stoplines_path,
+        mesh=mesh,
+    )
 
 
 if __name__ == '__main__':

@@ -6,3 +6,4 @@ coverage>=7.2.2,<8
 pytest-qt>=4.2.0,<5
 parameterized>=0.8.1,<0.9
 tomli; python_version < "3.11"
+packaging

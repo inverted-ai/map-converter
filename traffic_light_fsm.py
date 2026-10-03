@@ -90,6 +90,27 @@ def load_metadata(*, map_dir: str) -> dict:
         return json.load(f)
 
 
+def resolve_map_path(*, map_dir: str, name: str) -> str:
+    """Absolute path of a file named in ``metadata.json`` (stored relative to the map directory)."""
+    return name if os.path.isabs(name) else os.path.join(map_dir, name)
+
+
+def utm_projector(*, origin_lat: float, origin_lon: float):
+    """Lanelet2 ``UtmProjector`` at a map's ``lanelet_map_origin``, as every IAI tool loads maps."""
+    import lanelet2
+    from lanelet2.projection import UtmProjector
+
+    return UtmProjector(lanelet2.io.Origin(origin_lat, origin_lon))
+
+
+def vehicle_routing_graph(*, lanelet_map):
+    """Lanelet2 routing graph for vehicles under German traffic rules."""
+    import lanelet2.traffic_rules as tr
+    from lanelet2.routing import RoutingGraph
+
+    return RoutingGraph(lanelet_map, tr.create(tr.Locations.Germany, tr.Participants.Vehicle))
+
+
 def find_stoplines_path(*, map_dir: str) -> str:
     """Locate the ``*_stoplines.json`` file in a map directory."""
     matches = sorted(glob.glob(os.path.join(map_dir, "*_stoplines.json")))
@@ -339,15 +360,10 @@ class LaneletTopology:
 
     def __init__(self, *, osm_path: str, origin_lat: float, origin_lon: float):
         import lanelet2
-        import lanelet2.traffic_rules as tr
-        from lanelet2.routing import RoutingGraph
-
-        from map_quality import utm_projector
 
         projector = utm_projector(origin_lat=origin_lat, origin_lon=origin_lon)
         self._map = lanelet2.io.load(osm_path, projector)
-        rules = tr.create(tr.Locations.Germany, tr.Participants.Vehicle)
-        self._graph = RoutingGraph(self._map, rules)
+        self._graph = vehicle_routing_graph(lanelet_map=self._map)
         self._endpoints = [
             (ll, np.array([ll.centerline[-1].x, ll.centerline[-1].y])) for ll in self._map.laneletLayer
         ]
@@ -499,7 +515,7 @@ def _load_topology(*, map_dir: str, metadata: dict) -> Optional[LaneletTopology]
     if not osm_name or not origin:
         logger.warning("metadata.json lacks lanelet_path/lanelet_map_origin - topology disabled")
         return None
-    osm_path = osm_name if os.path.isabs(osm_name) else os.path.join(map_dir, osm_name)
+    osm_path = resolve_map_path(map_dir=map_dir, name=osm_name)
     if not os.path.exists(osm_path):
         logger.warning("OSM file %s not found - topology disabled", osm_path)
         return None

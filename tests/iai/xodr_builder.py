@@ -59,30 +59,6 @@ class SignalSpec:
 
 
 @dataclasses.dataclass(slots=True)
-class SignalReferenceSpec:
-    """A ``<signalReference>``."""
-
-    id: str
-    s: float
-    t: float = -5.0
-    orientation: str = "+"
-
-
-@dataclasses.dataclass(slots=True)
-class ObjectSpec:
-    """A road ``<object>``."""
-
-    id: str
-    s: float
-    t: float = 0.0
-    type: str = "roadMark"
-    name: str = ""
-    orientation: str = "+"
-    width: float = 3.5
-    length: float = 0.5
-
-
-@dataclasses.dataclass(slots=True)
 class RoadSpec:
     """A straight road from ``(x, y)`` along heading ``hdg``."""
 
@@ -100,8 +76,6 @@ class RoadSpec:
     )  # (s, a, b, c, d)
     rule: Optional[str] = None  # "RHT" / "LHT"
     signals: list[SignalSpec] = dataclasses.field(default_factory=list)
-    signal_references: list[SignalReferenceSpec] = dataclasses.field(default_factory=list)
-    objects: list[ObjectSpec] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(slots=True)
@@ -256,20 +230,13 @@ def _road(*, road: RoadSpec) -> str:
         f'c="{_num(value=c)}" d="{_num(value=d)}"/>'
         for s, a, b, c, d in road.elevation
     )
-    signals = "".join(_signal(signal=sig) for sig in road.signals) + "".join(
-        f'<signalReference {_attrs(s=_num(value=ref.s), t=_num(value=ref.t), id=ref.id, orientation=ref.orientation)}/>'
-        for ref in road.signal_references
-    )
-    objects = "".join(
-        f"<object {_attrs(id=o.id, s=_num(value=o.s), t=_num(value=o.t), type=o.type, name=o.name, orientation=o.orientation, zOffset='0.0', length=_num(value=o.length), width=_num(value=o.width), height='0.0', hdg='0.0', pitch='0.0', roll='0.0')}/>"
-        for o in road.objects
-    )
+    signals = "".join(_signal(signal=sig) for sig in road.signals)
     sections = "".join(_lane_section(section=sec) for sec in road.lane_sections)
     return (
         f"<road {attrs}><link>{link}</link><type s=\"0.0\" type=\"town\"/>"
         f"<planView>{geometry}</planView>"
         f"<elevationProfile>{elevations}</elevationProfile><lateralProfile/>"
-        f"<lanes>{sections}</lanes><objects>{objects}</objects><signals>{signals}</signals></road>"
+        f"<lanes>{sections}</lanes><objects/><signals>{signals}</signals></road>"
     )
 
 

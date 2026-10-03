@@ -5,6 +5,7 @@ converts a synthetic XODR in a subprocess (crdesigner config is process-global) 
 the metrics that follow from the fixture.
 """
 
+import collections
 import os
 import subprocess
 import sys
@@ -12,7 +13,6 @@ import sys
 import lanelet2
 import pytest
 from lanelet2.core import Lanelet, LaneletMap, LineString3d, Point3d, getId
-from lxml import etree
 
 import map_quality as mq
 from tests.iai import xodr_builder as xb
@@ -41,8 +41,9 @@ def _outputs(*, lanelets: list[Lanelet], extra_points: list[Point3d] = ()) -> mq
         metadata={"lanelet_map_origin": [49.0, 8.0], "center": [0.0, 0.0]},
         osm_path="/nonexistent/x.osm",
         osm_bytes=0,
-        osm_root=etree.fromstring(b"<osm/>"),
+        osm_tags=mq.OsmTagCounts(way_types=collections.Counter(), untyped_ways=0, one_way_no=0),
         lanelet_map=lanelet_map,
+        points=mq.point_array(lanelet_map=lanelet_map),
         load_errors=[],
         stoplines=[],
         mesh=None,
@@ -98,13 +99,15 @@ def test_xy_hash_ignores_z_and_ids():
     assert mq.xy_geometry_hash(outputs=_outputs(lanelets=[a])) == mq.xy_geometry_hash(outputs=_outputs(lanelets=[b]))
 
 
-def test_osm_tag_counts():
-    outputs = _outputs(lanelets=[])
-    outputs.osm_root = etree.fromstring(
-        b'<osm><way id="1"><tag k="type" v="traffic_sign"/></way><way id="2"/>'
-        b'<way id="3"><tag k="type" v="line_thin"/></way>'
-        b'<relation id="4"><tag k="type" v="lanelet"/><tag k="one_way" v="no"/></relation></osm>'
+def test_osm_tag_counts(tmp_path):
+    osm = tmp_path / "tags.osm"
+    osm.write_text(
+        '<osm><way id="1"><tag k="type" v="traffic_sign"/></way><way id="2"/>'
+        '<way id="3"><tag k="type" v="line_thin"/></way>'
+        '<relation id="4"><tag k="type" v="lanelet"/><tag k="one_way" v="no"/></relation></osm>'
     )
+    outputs = _outputs(lanelets=[])
+    outputs.osm_tags = mq.osm_tag_counts(osm_path=str(osm))
     outputs.stoplines = [{"agent_type": "stop_sign"}, {"agent_type": "traffic_light"}]
     assert mq.untyped_way_count(outputs=outputs) == 1
     assert mq.one_way_no_count(outputs=outputs) == 1
@@ -134,7 +137,8 @@ def converted_junction(tmp_path_factory) -> str:
 
 
 def test_metrics_on_converted_map(converted_junction):
-    metrics = mq.compute_all(outputs=mq.ConversionOutputs.load(map_dir=converted_junction))
+    metrics, errors = mq.compute_all(outputs=mq.ConversionOutputs.load(map_dir=converted_junction))
+    assert errors == {}
     assert metrics["stoplines_by_agent_type"] == {"traffic_light": 2}
     assert metrics["sign_ways_vs_stoplines"]["light_stoplines"] == 2
     assert metrics["load_error_count"] == 0

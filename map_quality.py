@@ -7,14 +7,13 @@ implementation of each check: nothing else recomputes them.
 Usage as a library::
 
     outputs = ConversionOutputs.load(map_dir="/abs/path/to/converted/map")
-    metrics = compute_all(outputs=outputs)
+    metrics, errors = compute_all(outputs=outputs)
 """
 
 from __future__ import annotations
 
 import collections
 import dataclasses
-import glob
 import hashlib
 import json
 import logging
@@ -22,7 +21,10 @@ import math
 import os
 from typing import Any, Callable, Optional
 
+import numpy as np
 from lxml import etree
+
+from traffic_light_fsm import load_metadata, resolve_map_path, utm_projector, vehicle_routing_graph
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +34,42 @@ Z_CONFLICT_MIN_M = 0.01
 CROSSED_BOUNDS_GAP_M = 1.0
 
 
-def utm_projector(*, origin_lat: float, origin_lon: float):
-    """Lanelet2 ``UtmProjector`` at a map's ``lanelet_map_origin``, as every IAI tool loads maps."""
-    import lanelet2
-    from lanelet2.projection import UtmProjector
+@dataclasses.dataclass(slots=True)
+class OsmTagCounts:
+    """Tag-level counts of a ``.osm`` that lanelet2 does not expose.
 
-    return UtmProjector(lanelet2.io.Origin(origin_lat, origin_lon))
+    Attributes:
+        way_types: ``way`` count per ``type`` tag value.
+        untyped_ways: ``way`` elements without a ``type`` tag.
+        one_way_no: lanelet relations tagged ``one_way=no``.
+    """
+
+    way_types: collections.Counter
+    untyped_ways: int
+    one_way_no: int
+
+
+def osm_tag_counts(*, osm_path: str) -> OsmTagCounts:
+    """Count way types and ``one_way=no`` lanelets in one streaming pass over the ``.osm``."""
+    way_types: collections.Counter = collections.Counter()
+    untyped = 0
+    one_way_no = 0
+    for _, elem in etree.iterparse(osm_path, events=("end",), tag=("way", "relation"), huge_tree=True):
+        tags = {tag.get("k"): tag.get("v") for tag in elem.iter("tag")}
+        if elem.tag == "way":
+            if "type" in tags:
+                way_types[tags["type"]] += 1
+            else:
+                untyped += 1
+        elif tags.get("type") == "lanelet" and tags.get("one_way") == "no":
+            one_way_no += 1
+        elem.clear()
+    return OsmTagCounts(way_types=way_types, untyped_ways=untyped, one_way_no=one_way_no)
+
+
+def point_array(*, lanelet_map) -> np.ndarray:
+    """``(N, 3)`` array of every point's local ``(x, y, z)``."""
+    return np.array([(p.x, p.y, p.z) for p in lanelet_map.pointLayer], dtype=float).reshape(-1, 3)
 
 
 @dataclasses.dataclass(slots=True)
@@ -49,8 +81,9 @@ class ConversionOutputs:
         metadata: Parsed ``metadata.json``.
         osm_path: Absolute path of the Lanelet2 ``.osm``.
         osm_bytes: Size of the ``.osm`` in bytes.
-        osm_root: Parsed ``.osm`` XML, for tag-level counts lanelet2 does not expose.
+        osm_tags: Tag-level counts of the ``.osm``.
         lanelet_map: The ``.osm`` loaded by ``lanelet2.io.loadRobust`` at the metadata origin.
+        points: Local ``(x, y, z)`` of every point in ``lanelet_map``.
         load_errors: Error messages ``loadRobust`` reported.
         stoplines: Parsed ``*_stoplines.json`` rows.
         mesh: The road mesh (``torchdrivesim.mesh.BirdviewMesh``), or ``None`` if absent.
@@ -61,8 +94,9 @@ class ConversionOutputs:
     metadata: dict
     osm_path: str
     osm_bytes: int
-    osm_root: Any
+    osm_tags: OsmTagCounts
     lanelet_map: Any
+    points: np.ndarray
     load_errors: list[str]
     stoplines: list[dict]
     mesh: Any
@@ -83,53 +117,35 @@ class ConversionOutputs:
         """
         import lanelet2
 
-        from traffic_light_fsm import load_metadata
-
         map_dir = os.path.abspath(map_dir)
         metadata = load_metadata(map_dir=map_dir)
-        osm_path = _resolve(map_dir=map_dir, name=metadata["lanelet_path"])
+        osm_path = resolve_map_path(map_dir=map_dir, name=metadata["lanelet_path"])
         origin_lat, origin_lon = metadata["lanelet_map_origin"]
         lanelet_map, load_errors = lanelet2.io.loadRobust(
             osm_path, utm_projector(origin_lat=origin_lat, origin_lon=origin_lon)
         )
         stoplines: list[dict] = []
         if metadata.get("stoplines_path"):
-            with open(_resolve(map_dir=map_dir, name=metadata["stoplines_path"])) as f:
+            with open(resolve_map_path(map_dir=map_dir, name=metadata["stoplines_path"])) as f:
                 stoplines = json.load(f)
         mesh = None
         if metadata.get("mesh_path"):
             from torchdrivesim.mesh import BirdviewMesh
 
-            mesh = BirdviewMesh.load(_resolve(map_dir=map_dir, name=metadata["mesh_path"]))
+            mesh = BirdviewMesh.load(resolve_map_path(map_dir=map_dir, name=metadata["mesh_path"]))
         return cls(
             map_dir=map_dir,
             metadata=metadata,
             osm_path=osm_path,
             osm_bytes=os.path.getsize(osm_path),
-            osm_root=etree.parse(osm_path).getroot(),
+            osm_tags=osm_tag_counts(osm_path=osm_path),
             lanelet_map=lanelet_map,
+            points=point_array(lanelet_map=lanelet_map),
             load_errors=[str(e) for e in load_errors],
             stoplines=stoplines,
             mesh=mesh,
-            visualization_fov=_read_visualization_fov(map_dir=map_dir),
+            visualization_fov=DEFAULT_VISUALIZATION_FOV,
         )
-
-
-def _resolve(*, map_dir: str, name: str) -> str:
-    return name if os.path.isabs(name) else os.path.join(map_dir, name)
-
-
-def _read_visualization_fov(*, map_dir: str) -> float:
-    """FOV recorded in the provenance sidecar, else the converter's historical default."""
-    for path in glob.glob(os.path.join(map_dir, "*_provenance.json")):
-        with open(path) as f:
-            provenance = json.load(f)
-        fov = provenance.get("visualization_fov") or provenance.get("config", {}).get(
-            "visualization_fov"
-        )
-        if fov is not None:
-            return float(fov)
-    return DEFAULT_VISUALIZATION_FOV
 
 
 # --------------------------------------------------------------------------------------
@@ -153,15 +169,10 @@ def routing_edge_pct(*, outputs: ConversionOutputs) -> Optional[float]:
     An edge is a following, previous, left, right, adjacent-left or adjacent-right relation.
     ``None`` for a map without lanelets.
     """
-    import lanelet2.traffic_rules as tr
-    from lanelet2.routing import RoutingGraph
-
     lanelets = list(outputs.lanelet_map.laneletLayer)
     if not lanelets:
         return None
-    graph = RoutingGraph(
-        outputs.lanelet_map, tr.create(tr.Locations.Germany, tr.Participants.Vehicle)
-    )
+    graph = vehicle_routing_graph(lanelet_map=outputs.lanelet_map)
     connected = sum(
         1
         for ll in lanelets
@@ -183,24 +194,24 @@ def seam_handshake_pct(*, outputs: ConversionOutputs) -> Optional[float]:
     shared point ids, so this predicts routability independently of the routing graph.
     ``None`` when the map has no seams.
     """
-    import numpy as np
+    from scipy.spatial import cKDTree
 
     lanelets = list(outputs.lanelet_map.laneletLayer)
     if len(lanelets) < 2:
         return None
-    starts = np.array(
-        [[ll.leftBound[0].x, ll.leftBound[0].y, ll.rightBound[0].x, ll.rightBound[0].y] for ll in lanelets]
-    )
+    left_starts = np.array([(ll.leftBound[0].x, ll.leftBound[0].y) for ll in lanelets])
+    right_starts = np.array([(ll.rightBound[0].x, ll.rightBound[0].y) for ll in lanelets])
+    left_ends = np.array([(ll.leftBound[-1].x, ll.leftBound[-1].y) for ll in lanelets])
+    right_ends = np.array([(ll.rightBound[-1].x, ll.rightBound[-1].y) for ll in lanelets])
+    candidates = cKDTree(left_starts).query_ball_point(left_ends, r=SEAM_TOLERANCE_M)
     seams = 0
     shaken = 0
-    for ll in lanelets:
-        end = np.array([ll.leftBound[-1].x, ll.leftBound[-1].y, ll.rightBound[-1].x, ll.rightBound[-1].y])
-        left_d = np.hypot(starts[:, 0] - end[0], starts[:, 1] - end[1])
-        right_d = np.hypot(starts[:, 2] - end[2], starts[:, 3] - end[3])
-        for j in np.nonzero((left_d <= SEAM_TOLERANCE_M) & (right_d <= SEAM_TOLERANCE_M))[0]:
-            other = lanelets[int(j)]
-            if other.id == ll.id:
+    for i, js in enumerate(candidates):
+        ll = lanelets[i]
+        for j in js:
+            if j == i or np.hypot(*(right_starts[j] - right_ends[i])) > SEAM_TOLERANCE_M:
                 continue
+            other = lanelets[j]
             seams += 1
             if (
                 ll.leftBound[-1].id == other.leftBound[0].id
@@ -217,10 +228,10 @@ def z_conflicts(*, outputs: ConversionOutputs) -> dict[str, float]:
         ``count``: XY positions with conflicting z; ``max_dz``: largest z spread (metres).
     """
     z_by_xy: dict[tuple[int, int], list[float]] = collections.defaultdict(list)
-    for p in outputs.lanelet_map.pointLayer:
-        z_by_xy[(round(p.x * 100), round(p.y * 100))].append(p.z)
+    for x, y, z in outputs.points.tolist():
+        z_by_xy[(round(x * 100), round(y * 100))].append(z)
     spreads = [max(zs) - min(zs) for zs in z_by_xy.values() if len(zs) > 1]
-    conflicting = [s for s in spreads if s > Z_CONFLICT_MIN_M]
+    conflicting = [float(s) for s in spreads if s > Z_CONFLICT_MIN_M]
     return {"count": len(conflicting), "max_dz": max(conflicting, default=0.0)}
 
 
@@ -234,11 +245,10 @@ def sign_ways_vs_stoplines(*, outputs: ConversionOutputs) -> dict[str, int]:
 
     Sign ways with no stop/yield stopline mean traffic controls were drawn but not exported.
     """
-    by_type = collections.Counter(_way_tags(way=w).get("type") for w in outputs.osm_root.iter("way"))
     by_agent = stoplines_by_agent_type(outputs=outputs)
     return {
-        "traffic_sign_ways": by_type.get("traffic_sign", 0),
-        "traffic_light_ways": by_type.get("traffic_light", 0),
+        "traffic_sign_ways": outputs.osm_tags.way_types.get("traffic_sign", 0),
+        "traffic_light_ways": outputs.osm_tags.way_types.get("traffic_light", 0),
         "sign_stoplines": by_agent.get("stop_sign", 0) + by_agent.get("yield_sign", 0),
         "light_stoplines": by_agent.get("traffic_light", 0),
     }
@@ -246,16 +256,12 @@ def sign_ways_vs_stoplines(*, outputs: ConversionOutputs) -> dict[str, int]:
 
 def untyped_way_count(*, outputs: ConversionOutputs) -> int:
     """``.osm`` ways that carry no ``type`` tag."""
-    return sum(1 for w in outputs.osm_root.iter("way") if "type" not in _way_tags(way=w))
+    return outputs.osm_tags.untyped_ways
 
 
 def one_way_no_count(*, outputs: ConversionOutputs) -> int:
     """Lanelets tagged ``one_way=no`` (bidirectional)."""
-    return sum(
-        1
-        for r in outputs.osm_root.iter("relation")
-        if _way_tags(way=r).get("type") == "lanelet" and _way_tags(way=r).get("one_way") == "no"
-    )
+    return outputs.osm_tags.one_way_no
 
 
 def osm_size_bytes(*, outputs: ConversionOutputs) -> int:
@@ -273,7 +279,7 @@ def xy_geometry_hash(*, outputs: ConversionOutputs) -> str:
 
     Unchanged when only elevation, ids or tags change.
     """
-    coords = sorted((round(p.x * 100), round(p.y * 100)) for p in outputs.lanelet_map.pointLayer)
+    coords = sorted((round(x * 100), round(y * 100)) for x, y, _ in outputs.points.tolist())
     return hashlib.sha256(json.dumps(coords).encode()).hexdigest()
 
 
@@ -321,10 +327,6 @@ def mesh_in_frame_fraction(*, outputs: ConversionOutputs) -> Optional[float]:
     return float(((dx <= half) & (dy <= half)).float().mean())
 
 
-def _way_tags(*, way) -> dict[str, str]:
-    return {tag.get("k"): tag.get("v") for tag in way.iter("tag")}
-
-
 METRICS: dict[str, Callable[..., Any]] = {
     "lanelet_count": lanelet_count,
     "load_error_count": load_error_count,
@@ -343,6 +345,18 @@ METRICS: dict[str, Callable[..., Any]] = {
 }
 
 
-def compute_all(*, outputs: ConversionOutputs) -> dict[str, Any]:
-    """Every metric in :data:`METRICS`, keyed by name."""
-    return {name: metric(outputs=outputs) for name, metric in METRICS.items()}
+def compute_all(*, outputs: ConversionOutputs) -> tuple[dict[str, Any], dict[str, str]]:
+    """Every metric in :data:`METRICS`; a metric that raises is recorded, not propagated.
+
+    Returns:
+        ``(metrics, errors)``: values keyed by metric name, and ``"<Class>: <message>"`` for
+        each metric that failed.
+    """
+    metrics: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    for name, metric in METRICS.items():
+        try:
+            metrics[name] = metric(outputs=outputs)
+        except Exception as exc:  # noqa: BLE001 - one broken metric must not hide the others
+            errors[name] = f"{type(exc).__name__}: {exc}"
+    return metrics, errors

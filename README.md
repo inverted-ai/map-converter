@@ -281,7 +281,7 @@ options:
 ## Running the tests
 
 ```bash
-QT_QPA_PLATFORM=offscreen /path/to/map-converter/.venv/bin/python -m pytest /path/to/map-converter/tests
+PYTHONPATH=/path/to/map-converter QT_QPA_PLATFORM=offscreen /path/to/map-converter/.venv/bin/python -m pytest /path/to/map-converter/tests
 ```
 
 `tests/iai/` covers the IAI tools; the rest is the upstream suite. Tests that need the CARLA Town15 map read it

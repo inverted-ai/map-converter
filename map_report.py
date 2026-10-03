@@ -41,14 +41,14 @@ from typing import Any, Optional
 from lxml import etree
 
 import map_quality
+from traffic_light_fsm import load_metadata, resolve_map_path
 
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 XML_COUNTED_TAGS = ("controller", "control", "signal", "signalReference", "object")
 CORE_OUTPUT_SUFFIXES = (".osm", "_stoplines.json", "metadata.json")
-EXCLUDED_OUTPUT_SUFFIXES = ("_provenance.json", ".png", ".xodr", ".log")
-FSM_OUTPUT_SUFFIX = "_traffic_light_controller.json"
+EXCLUDED_OUTPUT_SUFFIXES = (".png", ".xodr", ".log")
 NEVER_MOVES = ("wall_s", "peak_rss_mb")
 FLOAT_MOVE_FRACTION = 0.01
 THUMBNAIL_PX = 384
@@ -103,9 +103,10 @@ def run_child(*, argv: list[str], cwd: str, timeout_s: float, log_prefix: str) -
                 _, status, rusage = os.wait4(proc.pid, 0)
                 break
             time.sleep(POLL_S)
-    proc.returncode = os.waitstatus_to_exitcode(status)
+    # wait4 already reaped the child; tell Popen so it never waits on the pid again.
+    proc.returncode = returncode = os.waitstatus_to_exitcode(status)
     return ChildResult(
-        returncode=None if timed_out else proc.returncode,
+        returncode=None if timed_out else returncode,
         timed_out=timed_out,
         wall_s=round(time.monotonic() - start, 3),
         peak_rss_mb=round(rusage.ru_maxrss / 1024.0, 1),
@@ -259,7 +260,7 @@ def output_digests(*, map_dir: str) -> dict[str, str]:
     digests = {}
     for path in sorted(glob.glob(os.path.join(map_dir, "*"))):
         name = os.path.basename(path)
-        if not os.path.isfile(path) or name.endswith(EXCLUDED_OUTPUT_SUFFIXES + (FSM_OUTPUT_SUFFIX,)):
+        if not os.path.isfile(path) or name.endswith(EXCLUDED_OUTPUT_SUFFIXES):
             continue
         if name.endswith("_mesh.json"):
             digest = canonical_mesh_digest(path=path)
@@ -305,21 +306,6 @@ def fsm_summary(*, controller_path: str) -> dict[str, Any]:
         "max_phases": max((len(groups) for groups in intersections), default=0),
         "grouping_digest": hashlib.sha256(json.dumps(intersections).encode()).hexdigest(),
     }
-
-
-def _fsm_sidecars(*, map_dir: str) -> dict[str, Any]:
-    """Counts from FSM sidecars, where the converter tree writes them."""
-    extra: dict[str, Any] = {}
-    for path in glob.glob(os.path.join(map_dir, "*_fsm_review.json")):
-        with open(path) as f:
-            review = json.load(f)
-        extra["review_flags"] = len(review.get("flagged", [])) if isinstance(review, dict) else None
-    for path in glob.glob(os.path.join(map_dir, "*_signal_groups.json")):
-        with open(path) as f:
-            groups = json.load(f)
-        if isinstance(groups, dict):
-            extra["seeded_intersections"] = groups.get("seeded_intersections")
-    return extra
 
 
 # --------------------------------------------------------------------------------------
@@ -376,11 +362,8 @@ def convert_one(
     except Exception as exc:  # noqa: BLE001 - a report records failures, it never aborts
         record["metric_errors"]["load"] = f"{type(exc).__name__}: {exc}"
         return record
-    for name, metric in map_quality.METRICS.items():
-        try:
-            record["metrics"][name] = metric(outputs=outputs)
-        except Exception as exc:  # noqa: BLE001
-            record["metric_errors"][name] = f"{type(exc).__name__}: {exc}"
+    record["metrics"], record["metric_errors"] = map_quality.compute_all(outputs=outputs)
+    del outputs  # release the loaded map before the FSM child needs the memory
     if with_fsm and record["conversion"]["outcome"] == "ok":
         record["fsm"] = run_fsm(map_dir=map_dir, converter=converter, timeout_s=timeout_s)
     return record
@@ -399,10 +382,9 @@ def run_fsm(*, map_dir: str, converter: str, timeout_s: float) -> dict[str, Any]
         "wall_s": result.wall_s,
         "peak_rss_mb": result.peak_rss_mb,
     }
-    controllers = glob.glob(os.path.join(map_dir, f"*{FSM_OUTPUT_SUFFIX}"))
-    if controllers:
-        fsm.update(fsm_summary(controller_path=controllers[0]))
-    fsm.update(_fsm_sidecars(map_dir=map_dir))
+    controller = load_metadata(map_dir=map_dir).get("traffic_light_controller_path")
+    if controller:
+        fsm.update(fsm_summary(controller_path=resolve_map_path(map_dir=map_dir, name=controller)))
     return fsm
 
 
@@ -527,8 +509,7 @@ def flatten(*, record: dict[str, Any]) -> dict[str, Any]:
     for section in ("conversion", "metrics", "digests", "fsm"):
         if section in record:
             walk(section, record[section])
-    for key in ("input.sha256", "conversion.returncode"):
-        flat.pop(key, None)
+    flat.pop("conversion.returncode", None)
     flat["input.sha256"] = record["input"]["sha256"]
     return flat
 
@@ -685,10 +666,14 @@ DISTRIBUTIONS = (
     ("routing %", lambda m: m.get("metrics", {}).get("routing_edge_pct")),
     ("seam handshake %", lambda m: m.get("metrics", {}).get("seam_handshake_pct")),
     ("z-conflicts", lambda m: (m.get("metrics", {}).get("z_conflicts") or {}).get("count")),
-    ("OSM MB", lambda m: (m.get("metrics", {}).get("osm_size_bytes") or 0) / 1e6 or None),
+    ("OSM MB", lambda m: _scaled(value=m.get("metrics", {}).get("osm_size_bytes"), factor=1e-6)),
     ("conversion s", lambda m: m["conversion"]["wall_s"]),
     ("peak RSS GB", lambda m: m["conversion"]["peak_rss_mb"] / 1024),
 )
+
+
+def _scaled(*, value: Optional[float], factor: float) -> Optional[float]:
+    return value * factor if value else None
 
 
 def _png_data_uri(*, fig) -> str:
@@ -788,7 +773,7 @@ def render_report_html(*, report: dict[str, Any]) -> str:
             f"<td class=n>{_fmt(value=metrics.get('seam_handshake_pct'))}</td>"
             f"<td class=n>{_fmt(value=z.get('count'))}</td>"
             f"<td class=n>{_fmt(value=crossed.get('reversed_bounds'))}/{_fmt(value=crossed.get('invalid_polygons'))}</td>"
-            f"<td class=n>{_fmt(value=sum(stoplines.values()) if stoplines else 0)}</td>"
+            f"<td class=n>{_fmt(value=sum(stoplines.values()))}</td>"
             f"<td class=n>{_fmt(value=m['input']['counts']['controller'])}</td>"
             f"<td class=n>{_fmt(value=fsm.get('intersections'))}</td>"
             f"<td>{_img(path=os.path.join(m['outputs_dir'], 'visualization.png'))}</td>"

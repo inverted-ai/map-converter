@@ -383,6 +383,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """CLI entry point: render the FSM mosaic for one map directory."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = _build_arg_parser().parse_args()
     fsm_config = tlf.FsmConfig(cluster_eps=args.cluster_eps)

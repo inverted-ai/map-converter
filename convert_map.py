@@ -44,18 +44,37 @@ logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class MapConversionConfig:
+    """Options for one ``convert_map.py`` run, given on the command line as ``field=value``.
+
+    Attributes:
+        dir_path: Directory holding exactly one ``.xodr``; all outputs are written here.
+        domain: Prefix for ``iai_location_name`` in ``metadata.json`` (``<domain>:<map>``);
+            unset leaves it null.
+        lane_marking_join_threshold: Distance (m) under which the markings of two neighbouring
+            lanes are drawn as one line in the mesh.
+        visualization_fov: Width (m) of the square area ``visualization.png`` shows.
+        center: Map centre ``[x, y]`` in local metres, written to ``metadata.json`` and used as
+            the render and trim centre; unset uses the mesh centre.
+        trim_radius: Keep only lanelets and stoplines within this many metres of ``center``.
+        trim_vertical_limits: ``[min_z, max_z]``; stoplines outside it are dropped, and with
+            ``trim_radius`` lanelet points outside it are trimmed too.
+        simplify_tolerance: Maximum lateral error (m) of the Douglas-Peucker simplification of
+            lanelet boundaries before export; 0 or None disables it.
+        osm_target_bytes: Size budget for the ``.osm``; the tolerance widens until the file fits
+            and the run fails if it never does. None disables the budget.
+        simplify_max_iterations: Attempts at fitting the size budget.
+        simplify_tolerance_factor: Factor the tolerance grows by per attempt.
+    """
+
     dir_path: str
     domain: Optional[str] = None
     lane_marking_join_threshold: float = 0.1
     visualization_fov: float = 800
-    center: Optional[Tuple[float, float]] = None  # world center in local coordinates - by default road mesh center
-    trim_radius: Optional[float] = None  # trim the map to this radius around the center
-    trim_vertical_limits: Optional[Tuple[float, float]] = None  # lower and upper elevation bounds for trimming
-    # Max lateral error (m) for Douglas-Peucker simplification of lanelet boundaries before OSM export.
-    # 0 or None disables the pass. Raise (e.g. 0.5) for very large maps where file size matters more than curve fidelity.
+    center: Optional[Tuple[float, float]] = None
+    trim_radius: Optional[float] = None
+    trim_vertical_limits: Optional[Tuple[float, float]] = None
+    # Raise (e.g. 0.5) for very large maps where file size matters more than curve fidelity.
     simplify_tolerance: Optional[float] = 0.2
-    # Hard ceiling on the produced .osm size. When set with simplify_tolerance > 0, the converter iteratively
-    # widens the tolerance until the file fits, then raises if still over budget. None disables the size guard.
     osm_target_bytes: Optional[int] = 1000 * 1024 * 1024 #10 * 1024 * 1024
     simplify_max_iterations: int = 1
     simplify_tolerance_factor: float = 2.0
@@ -63,6 +82,8 @@ class MapConversionConfig:
 
 @dataclasses.dataclass
 class GeoOffset:
+    """The OpenDRIVE header ``<offset>``: a translation (m) then a rotation (degrees as stored)."""
+
     x: float
     y: float
     z: float
@@ -70,6 +91,7 @@ class GeoOffset:
 
     @classmethod
     def from_dict(cls, offset_dict: dict):
+        """Build from the parsed header ``offset`` attribute dict."""
         x = float(offset_dict['x'])
         y = float(offset_dict['y'])
         z = float(offset_dict['z'])
@@ -77,6 +99,7 @@ class GeoOffset:
         return cls(x, y, z, hdg)
 
     def apply_offset(self, x, y):
+        """Translate ``(x, y)`` by the offset, then rotate it by ``hdg``."""
         x_translated = x + float(self.x)
         y_translated = y + float(self.y)
         hdg_rad = math.radians(float(self.hdg))
@@ -86,23 +109,29 @@ class GeoOffset:
 
 @dataclasses.dataclass
 class GeoReference:
+    """Latitude/longitude of the map's local origin."""
+
     lat: float
     lon: float
 
     @property
     def origin(self):
+        """``(lat, lon)``, as written to ``metadata.json``'s ``lanelet_map_origin``."""
         return self.lat, self.lon
 
     @property
     def lanelet2_origin(self):
+        """The origin as a ``lanelet2.io.Origin``."""
         return lanelet2.io.Origin(self.lat, self.lon)
 
     @property
     def proj_string(self):
+        """A transverse-Mercator PROJ string centred on the origin."""
         return f'+proj=tmerc +lat_0={self.lat} +lon_0={self.lon}'
-    
+
 
 def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
+    """Origin from a ``+proj=tmerc`` geo-reference string, or ``None`` for any other projection."""
     proj_pattern = r"\+proj=([\w]+)"
     lat_pattern = r"\+lat_0=([-\d.]+)"
     lon_pattern = r"\+lon_0=([-\d.]+)"
@@ -265,6 +294,7 @@ class CustomTransfomer:
         self.offset = offset
 
     def transform(self, x, y):
+        """Local ``(x, y)`` to ``(lat, lon)``, applying the header offset first."""
         if self.offset is not None:
             x, y = self.offset.apply_offset(x, y)
         transformed = self.projector.reverse(lanelet2.core.BasicPoint3d(x, y, 0))

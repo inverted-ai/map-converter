@@ -26,6 +26,8 @@ class LaneSpec:
 
 @dataclasses.dataclass(slots=True)
 class LaneSectionSpec:
+    """A ``<laneSection>`` starting at ``s``."""
+
     s: float
     lanes: list[LaneSpec]
     center_road_mark: str = "broken"
@@ -33,6 +35,8 @@ class LaneSectionSpec:
 
 @dataclasses.dataclass(slots=True)
 class LinkSpec:
+    """A road ``<predecessor>``/``<successor>`` link."""
+
     element_type: str  # "road" or "junction"
     element_id: str
     contact_point: Optional[str] = "start"
@@ -40,6 +44,8 @@ class LinkSpec:
 
 @dataclasses.dataclass(slots=True)
 class SignalSpec:
+    """A ``<signal>``; ``validity`` adds a ``<validity fromLane toLane>`` child."""
+
     id: str
     s: float
     t: float = -5.0
@@ -54,6 +60,8 @@ class SignalSpec:
 
 @dataclasses.dataclass(slots=True)
 class SignalReferenceSpec:
+    """A ``<signalReference>``."""
+
     id: str
     s: float
     t: float = -5.0
@@ -62,6 +70,8 @@ class SignalReferenceSpec:
 
 @dataclasses.dataclass(slots=True)
 class ObjectSpec:
+    """A road ``<object>``."""
+
     id: str
     s: float
     t: float = 0.0
@@ -96,6 +106,8 @@ class RoadSpec:
 
 @dataclasses.dataclass(slots=True)
 class ConnectionSpec:
+    """A junction ``<connection>`` with its ``(from, to)`` lane links."""
+
     id: str
     incoming_road: str
     connecting_road: str
@@ -105,6 +117,8 @@ class ConnectionSpec:
 
 @dataclasses.dataclass(slots=True)
 class JunctionSpec:
+    """A ``<junction>`` with its connections and ``<controller>`` references."""
+
     id: str
     connections: list[ConnectionSpec]
     controllers: list[tuple[str, Optional[int]]] = dataclasses.field(
@@ -114,6 +128,8 @@ class JunctionSpec:
 
 @dataclasses.dataclass(slots=True)
 class ControllerSpec:
+    """A root-level ``<controller>`` and the signal ids it controls."""
+
     id: str
     signal_ids: list[str]
     name: str = ""

@@ -1,3 +1,295 @@
+# Inverted AI map converter
+
+Converts an OpenDRIVE (`.xodr`) map into the files [TorchDriveSim](https://github.com/inverted-ai/torchdrivesim)
+and the Inverted AI API consume: a Lanelet2 map, traffic-control stoplines, a road mesh, map metadata and a
+top-down picture. It also includes tools that generate traffic-light state machines and that measure
+conversions across many maps.
+
+This repository is a fork of [CommonRoad Scenario Designer](https://github.com/CommonRoad/commonroad-scenario-designer)
+v0.8.5; the upstream documentation follows [below](#commonroad-scenario-designer).
+
+## Setup
+
+Linux x86_64, Python 3.10–3.13. The converter runs from a clone; it is **not** pip-installable and is never
+installed into the environment.
+
+```bash
+git clone https://github.com/inverted-ai/map-converter.git /path/to/map-converter
+python3 -m venv /path/to/map-converter/.venv
+/path/to/map-converter/.venv/bin/pip install -r /path/to/map-converter/requirements.txt
+```
+
+Use `requirements-tests.txt` instead to also run the tests. Run every tool with the venv's Python and the
+script's absolute path, from any directory:
+
+```bash
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/convert_map.py dir_path=/path/to/maps/MyMap
+```
+
+Notes:
+- `torchdrivesim` is installed from a pinned GitHub commit: the converter needs a version newer than the
+  latest PyPI release.
+- The PyPI `torch` wheel is built for a recent CUDA. On a machine whose GPU driver is older, the converter
+  prints a CUDA warning and renders on the CPU; the outputs are the same.
+- If your shell sets `PYTHONPATH` (for example by sourcing ROS), unset it for these tools.
+
+## Converting a map
+
+`convert_map.py` takes [OmegaConf dotlist](https://omegaconf.readthedocs.io/en/latest/usage.html#from-a-dot-list)
+arguments, each a field of `MapConversionConfig`:
+
+```bash
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/convert_map.py \
+    dir_path=/path/to/maps/MyMap domain=carla center='[100.0,-20.0]' trim_radius=300
+```
+
+`dir_path` must contain exactly one `.xodr`; its file name (without `.xodr`) becomes the map name `<map>`.
+All outputs are written into `dir_path`.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `dir_path` | required | Directory holding exactly one `.xodr`; all outputs are written here. |
+| `domain` | unset | Prefix for `iai_location_name` in `metadata.json` (`<domain>:<map>`); unset leaves it null. |
+| `lane_marking_join_threshold` | `0.1` | Distance (m) under which the markings of two neighbouring lanes are drawn as one line in the mesh. |
+| `visualization_fov` | `800` | Width (m) of the square area `visualization.png` shows, centred on `center`. |
+| `center` | unset | Map centre `[x, y]` in local metres: written to `metadata.json`, used as the render and trim centre. Unset uses the mesh centre. |
+| `trim_radius` | unset | Keep only lanelets and stoplines within this many metres of `center` (requires `center`). |
+| `trim_vertical_limits` | unset | `[min_z, max_z]`: stoplines outside the band are dropped; with `trim_radius`, lanelet points outside it are trimmed too. |
+| `simplify_tolerance` | `0.2` | Maximum lateral error (m) of the Douglas-Peucker simplification of lanelet boundaries; `0` disables it. |
+| `osm_target_bytes` | `1048576000` | Size budget for the `.osm`: the tolerance widens until the file fits, and the run fails if it never does. Unset disables the budget. |
+| `simplify_max_iterations` | `1` | Attempts at fitting the size budget. |
+| `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
+
+## Output files
+
+| File | Contents | Read by |
+|---|---|---|
+| `<map>.osm` | Lanelet2 map: lanelets, boundary line strings with marking types, traffic-light and sign line strings | TorchDriveSim (`MapConfig.lanelet_map`), routing |
+| `<map>_stoplines.json` | List of `Stopline` rows: `actor_id` (OpenDRIVE signal/object id), `agent_type` (`traffic_light`, `stop_sign` or `yield_sign`), `x`, `y` (local metres), `length`, `width`, `orientation` (radians) | TorchDriveSim traffic controls; `traffic_light_fsm.py` |
+| `<map>_mesh.json` | Road and lane-marking `BirdviewMesh`: `verts`, `faces`, `categories`, `vert_category`, `colors`, `zs` | TorchDriveSim rendering |
+| `metadata.json` | `MapConfig`: `name`, `center`, `lanelet_map_origin` (lat, lon), `left_handed_coordinates`, the three file names above, `traffic_light_controller_path`, `iai_location_name` | `torchdrivesim.map.load_map_config` |
+| `visualization.png` | 2048×2048 top-down render centred on `center`, `visualization_fov` metres wide | People |
+
+`metadata.json` must stay loadable by `MapConfig(**json)`, which rejects unknown keys, so extra information is
+written to separate sidecar files.
+
+Coordinates: everything is in the OpenDRIVE inertial frame in metres; `lanelet_map_origin` is the latitude and
+longitude that frame's origin maps to (Lanelet2 `UtmProjector`).
+
+## Traffic-light state machines
+
+`traffic_light_fsm.py` reads a converted map directory, groups traffic-light stoplines into intersections and
+phase groups, and writes `<map>_traffic_light_controller.json` (one looping state list per intersection). It
+also adds `traffic_light_controller_path` to `metadata.json`.
+
+```bash
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/traffic_light_fsm.py /path/to/maps/MyMap
+```
+
+```text
+usage: traffic_light_fsm.py [-h] [--cluster-eps CLUSTER_EPS]
+                            [--axis-split-threshold AXIS_SPLIT_THRESHOLD]
+                            [--green-base GREEN_BASE]
+                            [--green-per-extra-lane GREEN_PER_EXTRA_LANE] [--green-min GREEN_MIN]
+                            [--green-max GREEN_MAX] [--yellow YELLOW] [--all-red ALL_RED]
+                            [--certainty-threshold CERTAINTY_THRESHOLD]
+                            [--topology-max-hops TOPOLOGY_MAX_HOPS] [--no-topology] [--visualize]
+                            [--px-per-m PX_PER_M] [--max-mosaic-px MAX_MOSAIC_PX]
+                            map_dir
+
+Auto-generate traffic-light finite state machines (FSMs) from converted-map artifacts. This is a
+standalone tool. Given a map directory containing ``metadata.json``, a Lanelet2 ``.osm`` and a
+``*_stoplines.json`` (the artifacts produced by ``convert_map.py``), it clusters traffic-light
+stoplines into intersections, splits each intersection into at most two phase groups, and emits a
+per-intersection FSM in the format consumed by the IAI stack (see
+``maps/Carla_UE4_old/Town15/carla_Town15_light_group_states.json``). The tool never relies on
+OpenDRIVE, CommonRoad, or traffic-light positions: ``actor_id`` is treated as an opaque grouping
+key already present in ``stoplines.json``, and the only geometry it trusts is the stoplines
+themselves. Two strategies are combined: * Geometry (always): cluster by position, sub-group by
+stopline axis (orientation mod pi). * Topology (only where geometry is uncertain): associate
+stoplines to lanelets in the ``.osm`` and use lane connectivity/adjacency to correct the geometric
+guess. Run with ``python traffic_light_fsm.py <map-dir>``.
+
+positional arguments:
+  map_dir               Map directory with metadata.json, .osm and *_stoplines.json
+
+options:
+  -h, --help            show this help message and exit
+  --cluster-eps CLUSTER_EPS
+  --axis-split-threshold AXIS_SPLIT_THRESHOLD
+  --green-base GREEN_BASE
+  --green-per-extra-lane GREEN_PER_EXTRA_LANE
+  --green-min GREEN_MIN
+  --green-max GREEN_MAX
+  --yellow YELLOW
+  --all-red ALL_RED
+  --certainty-threshold CERTAINTY_THRESHOLD
+  --topology-max-hops TOPOLOGY_MAX_HOPS
+  --no-topology         Disable lanelet topology refinement
+  --visualize           Also render a birdview mosaic with intersections/subgroups overlaid
+  --px-per-m PX_PER_M   Visualization pixels per metre (default from VizConfig; only used with
+                        --visualize)
+  --max-mosaic-px MAX_MOSAIC_PX
+                        Visualization max image dimension in pixels (default from VizConfig)
+```
+
+`fsm_visualization.py` renders the whole map with each intersection's phase groups coloured, for review
+(also available as `traffic_light_fsm.py --visualize`):
+
+```bash
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/fsm_visualization.py /path/to/maps/MyMap
+```
+
+```text
+usage: fsm_visualization.py [-h] [--cluster-eps CLUSTER_EPS] [--no-topology] [--px-per-m PX_PER_M]
+                            [--max-mosaic-px MAX_MOSAIC_PX] [--font-size FONT_SIZE]
+                            [--marker-radius-px MARKER_RADIUS_PX]
+                            map_dir
+
+Render a full-map birdview mosaic with traffic-light intersections and phase subgroups. Companion
+to ``traffic_light_fsm.py``. It renders the converted map's road birdview (reusing the same
+``torchdrivesim`` path that ``convert_map.py`` uses for ``visualization.png``) and overlays the
+FSM tool's output so a human can verify the automatic grouping at a glance: * stoplines are drawn
+as markers coloured by their phase subgroup, * a dashed grey convex-hull outline marks each
+intersection's membership, * each traffic-light ``actor_id`` is labelled. For large maps the
+birdview is rendered as a grid of square tiles and stitched into one image, at a fixed pixels-per-
+metre detail capped to a maximum dimension (both tunable in :class:`VizConfig`). Runs standalone
+(``python fsm_visualization.py <map-dir>``) or is invoked by ``traffic_light_fsm.py --visualize``.
+Heavy dependencies (torch, torchdrivesim, PIL) are imported lazily so importing this module stays
+cheap.
+
+positional arguments:
+  map_dir               Map directory with metadata.json, mesh and *_stoplines.json
+
+options:
+  -h, --help            show this help message and exit
+  --cluster-eps CLUSTER_EPS
+  --no-topology         Disable lanelet topology refinement
+  --px-per-m PX_PER_M
+  --max-mosaic-px MAX_MOSAIC_PX
+  --font-size FONT_SIZE
+  --marker-radius-px MARKER_RADIUS_PX
+```
+
+## Removing elements marked for deletion
+
+`prune_osm_deletes.py` applies `action="delete"` markers left by an OSM editor (e.g. JOSM) to a `.osm`,
+removes dangling references, and **overwrites the file in place**; keep a copy first.
+
+```bash
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/prune_osm_deletes.py --path /path/to/maps/MyMap/MyMap.osm
+```
+
+## Measuring conversions: `map_report.py`
+
+Converts every `.xodr` under a folder, one child process per map, and reports which maps converted and how
+well. Use it to triage a batch of new maps, or to compare two converter versions on your own maps.
+
+```bash
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/map_report.py run \
+    --maps /path/to/maps --out /path/to/report_v1 --fsm
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/map_report.py run \
+    --maps /path/to/maps --out /path/to/report_v2 --converter /path/to/other/map-converter
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/map_report.py compare \
+    /path/to/report_v1/report.json /path/to/report_v2/report.json --out /path/to/compare
+```
+
+`run` copies each `.xodr` into `<out>/maps/<relative path>/` and converts it there, so input folders are never
+written to. It writes `report.json` (rewritten after every map, so an interrupted run keeps its progress) and a
+self-contained `report.html`. Per map it records:
+
+- **outcome**: `ok`, `exception` (with the exception class and the innermost `file:line`), `timeout`, or `pdb`
+  (the converter stopped in a debugger);
+- wall time and peak memory of the conversion;
+- input identity: sha256 (duplicates marked), size, header vendor and OpenDRIVE revision, counts of
+  `<controller>`, `<control>`, `<signal>`, `<signalReference>`, `<object>`, and every `roadMark` type, with
+  the types the converter recognises listed in `road_mark_types_handled`;
+- quality metrics (`map_quality.py`):
+
+  | Metric | Meaning |
+  |---|---|
+  | `lanelet_count` | lanelets in the `.osm` |
+  | `load_error_count` | errors Lanelet2 reports while loading the `.osm` |
+  | `routing_edge_pct` | % of lanelets with at least one routing-graph relation (successor, predecessor, left/right neighbour) |
+  | `seam_handshake_pct` | % of lanelet seams (one lanelet's end meets another's start within 0.1 m) whose boundary points are shared; unshared seams break routing |
+  | `z_conflicts` | points at the same position (1 cm) with elevations more than 1 cm apart: `count` and `max_dz` |
+  | `stoplines_by_agent_type` | stoplines per `agent_type` |
+  | `sign_ways_vs_stoplines` | traffic-sign / traffic-light line strings in the `.osm` against the stoplines exported |
+  | `untyped_way_count` | `.osm` ways without a `type` tag |
+  | `osm_size_bytes`, `origin` | `.osm` size, `lanelet_map_origin` |
+  | `xy_geometry_hash` | hash of all point positions (1 cm); changes only when geometry moves |
+  | `crossed_geometry` | lanelets whose bounds run in opposite directions (`reversed_bounds`) or whose polygon self-intersects (`invalid_polygons`) |
+  | `one_way_no_count` | lanelets tagged `one_way=no` |
+  | `mesh_in_frame_fraction` | fraction of mesh vertices inside `visualization.png` |
+
+- a digest of every output file (`_mesh.json` canonicalised, because its category order is not deterministic;
+  `visualization.png` excluded);
+- with `--fsm`, the traffic-light grouping from `traffic_light_fsm.py`: intersections, phase groups, lights and
+  a grouping digest.
+
+`compare` writes `compare.json` and `compare.html` listing every field that moved per map: counts, hashes and
+digests move on any change, decimal metrics when they change by more than 1%; time and memory are shown but
+never count as a move.
+
+```text
+usage: map_report.py run [-h] --maps MAPS --out OUT [--converter CONVERTER] [--map ONLY]
+                         [--timeout-s TIMEOUT_S] [--fsm]
+
+options:
+  -h, --help            show this help message and exit
+  --maps MAPS           Directory searched recursively for .xodr files
+  --out OUT             Output directory for report.json, report.html and maps/
+  --converter CONVERTER
+                        Converter checkout to run (default: this clone)
+  --map ONLY            Only this .xodr (path relative to --maps); repeatable
+  --timeout-s TIMEOUT_S
+                        Per-map timeout in seconds (default 1800)
+  --fsm                 Also run traffic_light_fsm.py on each converted map
+
+usage: map_report.py compare [-h] --out OUT before after
+
+positional arguments:
+  before      report.json of the earlier run
+  after       report.json of the later run
+
+options:
+  -h, --help  show this help message and exit
+  --out OUT   Output directory for compare.json and compare.html
+```
+
+## Supported OpenDRIVE and known limits
+
+- Lanes of type `driving`, `onRamp`, `offRamp`, `exit` and `entry` become lanelets; other lane types are dropped.
+- Traffic lights come from dynamic `<signal>` elements; stop and yield signs from `<object>` elements with
+  CARLA's stencil names. Other vendors' encodings may produce no stoplines.
+- The geo-reference is read from `+proj=tmerc +lat_0=… +lon_0=…`; other projections, or a missing
+  `<geoReference>`, place the map at latitude/longitude (0, 0) with a warning.
+- Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
+  without a marking type.
+- `<controller>` signal groups are not read.
+
+## Troubleshooting
+
+- **A map fails or produces nothing useful**: run `map_report.py run --maps <folder> --out <dir>` on it. The
+  report gives the outcome and, for an exception, the class and the `file:line` where it was raised, together
+  with the input's vendor and element counts.
+- **Map placed at (0, 0)**: the log says `Geo reference not found` or `Unable to parse geo reference`; see the
+  geo-reference limit above.
+- **No stoplines**: compare `<signal>`/`<object>` counts in the report with `stoplines_by_agent_type`.
+- **CUDA warning on start-up**: harmless; see Setup.
+
+## Running the tests
+
+```bash
+QT_QPA_PLATFORM=offscreen /path/to/map-converter/.venv/bin/python -m pytest /path/to/map-converter/tests
+```
+
+`tests/iai/` covers the IAI tools; the rest is the upstream suite. Tests that need the CARLA Town15 map read it
+from `$IAI_MAPS_DIR/Carla_UE4_old/Town15/` (default `/path/to/map-converter/maps`) and are skipped when it is
+absent. Fixtures are synthetic OpenDRIVE built by `tests/iai/xodr_builder.py`.
+
+---
+
 # CommonRoad Scenario Designer
 [![PyPI pyversions](https://img.shields.io/pypi/pyversions/commonroad-scenario-designer.svg)](https://pypi.python.org/pypi/commonroad-scenario-designer/)
 [![PyPI version fury.io](https://badge.fury.io/py/commonroad-scenario-designer.svg)](https://pypi.python.org/pypi/commonroad-scenario-designer/)
@@ -238,16 +530,3 @@ We gratefully acknowledge partial financial support by
 	            We demonstrate the capabilities of the converter by using publicly available maps.},
 }
 ```
-
-# Inverted AI map converter
-
-This is an experimental converter for OpenDRIVE maps to make them compatible
-with the Inverted AI API.
-It is a fork of [CommonRoad Scenario Designer](https://github.com/CommonRoad/commonroad-scenario-designer),
-currently with minimal modifications.
-
-The dependencies are specified in the `requirements.txt` file in the usual way.
-Use the `convert_map.py` script as the entry point.
-
-Note that at the moment the converter only supports a subset of OpenDRIVE features.
-More will be added over time and feature requests accompanied by example .xodr files are welcome.

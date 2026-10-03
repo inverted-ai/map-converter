@@ -9,9 +9,8 @@ import pytest
 import traffic_light_fsm as t
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-TOWN15_STOPLINES = os.path.join(
-    REPO_ROOT, "maps", "Carla_UE4_old", "Town15", "Town15_stoplines.json"
-)
+MAPS_DIR = os.path.abspath(os.environ.get("IAI_MAPS_DIR", os.path.join(REPO_ROOT, "maps")))
+TOWN15_STOPLINES = os.path.join(MAPS_DIR, "Carla_UE4_old", "Town15", "Town15_stoplines.json")
 
 
 def _actor(*, actor_id: int, x: float, y: float, axis: float, lane_count: int = 1) -> t.Actor:

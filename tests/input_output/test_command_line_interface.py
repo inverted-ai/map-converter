@@ -1,8 +1,13 @@
 import os
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
+
+# The "crdesigner" console script only exists after a package install; run the module instead.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CRDESIGNER = [sys.executable, "-m", "crdesigner.ui.command_line"]
 
 
 class TestCommandLineInterface(unittest.TestCase):
@@ -13,8 +18,9 @@ class TestCommandLineInterface(unittest.TestCase):
 
     def test_opendrive(self):
         subprocess.Popen(
-            [
-                "crdesigner",
+            cwd=REPO_ROOT,
+            args=[
+                *CRDESIGNER,
                 "--input-file",
                 os.path.dirname(os.path.realpath(__file__))
                 + "/../map_conversion/test_maps/odr2cr/poly3_and_border_record.xodr",
@@ -34,8 +40,9 @@ class TestCommandLineInterface(unittest.TestCase):
 
     def test_osm(self):
         subprocess.Popen(
-            [
-                "crdesigner",
+            cwd=REPO_ROOT,
+            args=[
+                *CRDESIGNER,
                 "--input-file",
                 os.path.dirname(os.path.realpath(__file__))
                 + "/../map_conversion/test_maps/osm/munich.osm",
@@ -51,8 +58,9 @@ class TestCommandLineInterface(unittest.TestCase):
 
     def test_lanelet2_to_cr(self):
         subprocess.Popen(
-            [
-                "crdesigner",
+            cwd=REPO_ROOT,
+            args=[
+                *CRDESIGNER,
                 "--input-file",
                 os.path.dirname(os.path.realpath(__file__))
                 + "/../map_conversion/test_maps/lanelet2/traffic_priority_lanelets_utm.osm",
@@ -68,8 +76,9 @@ class TestCommandLineInterface(unittest.TestCase):
 
     def test_cr_to_lanelet(self):
         subprocess.Popen(
-            [
-                "crdesigner",
+            cwd=REPO_ROOT,
+            args=[
+                *CRDESIGNER,
                 "--input-file",
                 os.path.dirname(os.path.realpath(__file__))
                 + "/../map_conversion/test_maps/lanelet2/merging_lanelets_utm.xml",
@@ -96,10 +105,10 @@ class TestCommandLineInterface(unittest.TestCase):
     #     self.assertTrue(exists.is_file())
 
     def test_gui(self):
-        process = subprocess.Popen(["crdesigner"])
+        process = subprocess.Popen(cwd=REPO_ROOT, args=[*CRDESIGNER])
         time.sleep(5)
         process.terminate()
-        process = subprocess.Popen(["crdesigner", "gui"])
+        process = subprocess.Popen(cwd=REPO_ROOT, args=[*CRDESIGNER, "gui"])
         time.sleep(10)
         process.terminate()
 
@@ -109,7 +118,7 @@ class TestCommandLineInterface(unittest.TestCase):
             / "map_verification/test_maps/paper_test_maps/DEU_Guetersloh-20_1_T-1.xml"
         )
         path_repaired = path.parent / "DEU_Guetersloh-20_1_T-1-repaired.xml"
-        process = subprocess.Popen(["crdesigner", "--input-file", str(path), "verify-map"])
+        process = subprocess.Popen(cwd=REPO_ROOT, args=[*CRDESIGNER, "--input-file", str(path), "verify-map"])
         time.sleep(30)
         process.terminate()
         self.assertTrue(path_repaired.exists())
@@ -120,7 +129,7 @@ class TestCommandLineInterface(unittest.TestCase):
         path_1 = path / "DEU_Guetersloh-20_1_T-1-repaired.xml"
         path_2 = path / "DEU_BadEssen-3_1_T-1-repaired.xml"
         path_3 = path / "DEU_Reutlingen-1_1_T-1-repaired.xml"
-        process = subprocess.Popen(["crdesigner", "--input-file", str(path), "verify-dir"])
+        process = subprocess.Popen(cwd=REPO_ROOT, args=[*CRDESIGNER, "--input-file", str(path), "verify-dir"])
         time.sleep(30)
         process.terminate()
         self.assertTrue(path_1.exists())

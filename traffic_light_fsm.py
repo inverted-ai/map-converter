@@ -339,11 +339,12 @@ class LaneletTopology:
 
     def __init__(self, *, osm_path: str, origin_lat: float, origin_lon: float):
         import lanelet2
-        from lanelet2.projection import UtmProjector
         import lanelet2.traffic_rules as tr
         from lanelet2.routing import RoutingGraph
 
-        projector = UtmProjector(lanelet2.io.Origin(origin_lat, origin_lon))
+        from map_quality import utm_projector
+
+        projector = utm_projector(origin_lat=origin_lat, origin_lon=origin_lon)
         self._map = lanelet2.io.load(osm_path, projector)
         rules = tr.create(tr.Locations.Germany, tr.Participants.Vehicle)
         self._graph = RoutingGraph(self._map, rules)

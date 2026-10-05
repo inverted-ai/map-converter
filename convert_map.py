@@ -42,6 +42,8 @@ from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.network import Network
 from commonroad.scenario.lanelet import LaneletNetwork
 
+from opendrive_signal_groups import write_signal_groups
+
 
 logger = logging.getLogger(__name__)
 
@@ -658,7 +660,8 @@ def convert_map(cfg: MapConversionConfig) -> None:
     """Convert the single ``.xodr`` in ``cfg.dir_path`` into the TorchDriveSim artifact set.
 
     Writes ``<map>.osm``, ``<map>_stoplines.json``, ``<map>_mesh.json``, ``metadata.json``,
-    ``visualization.png`` and ``<map>_provenance.json`` into ``cfg.dir_path``.
+    ``visualization.png``, ``<map>_signal_groups.json`` and ``<map>_provenance.json`` into
+    ``cfg.dir_path``.
     """
     opendrive_path = validate_config(cfg=cfg)
     if opendrive_path is None:
@@ -671,6 +674,9 @@ def convert_map(cfg: MapConversionConfig) -> None:
         location=parsed.location,
         lanelet_network=exported.lanelet_network,
         road_network=exported.road_network,
+    )
+    write_signal_groups(
+        xodr_path=opendrive_path, out_path=os.path.join(cfg.dir_path, f"{parsed.location}_signal_groups.json")
     )
     mesh = build_mesh(cfg=cfg, location=parsed.location, osm_path=exported.osm_path, projector=parsed.projector)
     render_and_finish(

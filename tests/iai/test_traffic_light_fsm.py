@@ -227,3 +227,152 @@ def test_topology_does_not_break_high_certainty_town15():
     assert topo is not None
     fsms = t.generate_fsms(actors=actors, config=config, topology=topo)
     assert len(fsms) == 8  # topology must not fragment the clean Town15 intersections
+
+
+# --------------------------------------------------------------------------------------
+# XODR structure levels (junctions / controller groups / sequence)
+# --------------------------------------------------------------------------------------
+
+TOWN15_XODR = os.path.join(MAPS_DIR, "Carla_UE4_old", "Town15", "Town15.xodr")
+TOWN15_EXPECTED = sorted(
+    [
+        [[1866, 1868, 1896], [1867]],
+        [[1869, 1871], [1870]],
+        [[1877, 1879], [1878]],
+        [[1880, 1881], [1882, 1883]],
+        [[1884, 1885], [1886, 1887]],
+        [[1888, 1890], [1889]],
+        [[1891, 1893], [1892, 1897]],
+        [[1894, 1895]],
+    ],
+    key=lambda x: min(min(s) for s in x),
+)
+
+
+def _signal_groups(*, membership: dict[str, str], controllers: list[dict] = ()) -> dict:
+    return {
+        "membership": {sid: {"junction": j, "source": "controller"} for sid, j in membership.items()},
+        "controllers": list(controllers),
+    }
+
+
+def _resolved_ids(*, resolved: list[t.IntersectionResult], actors: list[t.Actor]) -> list[list[list[int]]]:
+    out = [sorted(sorted(actors[i].actor_id for i in g) for g in r.groups) for r in resolved]
+    return sorted(out, key=lambda x: min(min(s) for s in x))
+
+
+@pytest.fixture(scope="module")
+def town15_signal_groups(tmp_path_factory) -> dict:
+    """Town15's sidecar, generated through the CLI into a temp dir (never into maps/)."""
+    if not os.path.exists(TOWN15_XODR):
+        pytest.skip("Town15 fixture absent")
+    import json
+    import subprocess
+    import sys
+
+    out = tmp_path_factory.mktemp("town15") / "Town15_signal_groups.json"
+    subprocess.run(
+        [sys.executable, os.path.join(REPO_ROOT, "opendrive_signal_groups.py"), "--xodr", TOWN15_XODR, "--out", str(out)],
+        check=True,
+        capture_output=True,
+    )
+    return json.loads(out.read_text())
+
+
+def test_levels_off_is_todays_distance_clustering():
+    actors = [
+        _actor(actor_id=1, x=0, y=0, axis=0.0),
+        _actor(actor_id=2, x=30, y=0, axis=0.0),
+        _actor(actor_id=3, x=300, y=0, axis=math.pi / 2),
+    ]
+    off = t.FsmConfig(use_xodr_junctions=False)
+    groups = _signal_groups(membership={"1": "A", "2": "B"})
+    assert t.cluster_intersections(actors=actors, config=off) == [[0, 1], [2]]
+    resolved = t.resolve_intersection_groups(actors=actors, config=off, signal_groups=groups)
+    assert [r.actors for r in resolved] == [[0, 1], [2]]
+    assert {r.level for r in resolved} == {"off"}
+
+
+def test_town15_level_a_matches_manual_groupings(town15_signal_groups):
+    actors = t.load_actors(stoplines_path=TOWN15_STOPLINES)
+    resolved = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(), signal_groups=town15_signal_groups)
+    assert _resolved_ids(resolved=resolved, actors=actors) == TOWN15_EXPECTED
+    assert {r.level for r in resolved} == {"junctions"}
+
+
+def test_unassigned_light_joins_junction_within_eps_only():
+    actors = [
+        _actor(actor_id=1, x=0, y=0, axis=0.0),
+        _actor(actor_id=2, x=10, y=0, axis=0.0),
+        _actor(actor_id=3, x=40, y=0, axis=0.0),  # unassigned, 30 m from the junction
+        _actor(actor_id=4, x=500, y=0, axis=0.0),  # unassigned, far away
+    ]
+    membership = {"1": "J1", "2": "J1"}
+    assert t.cluster_intersections(actors=actors, config=t.FsmConfig(), membership=membership) == [[0, 1, 2], [3]]
+
+
+def test_unassigned_chain_never_bridges_two_junctions():
+    actors = [
+        _actor(actor_id=1, x=0, y=0, axis=0.0),
+        _actor(actor_id=2, x=40, y=0, axis=0.0),  # unassigned link
+        _actor(actor_id=3, x=80, y=0, axis=0.0),
+    ]
+    membership = {"1": "J1", "3": "J2"}
+    clusters = t.cluster_intersections(actors=actors, config=t.FsmConfig(), membership=membership)
+    assert len(clusters) == 2
+    assert [0] in clusters or [0, 1] in clusters
+    assert all(not ({0, 2} <= set(c)) for c in clusters)
+
+
+def test_two_close_junctions_are_never_merged(caplog):
+    actors = [_actor(actor_id=1, x=0, y=0, axis=0.0), _actor(actor_id=2, x=5, y=0, axis=0.0)]
+    clusters = t.cluster_intersections(actors=actors, config=t.FsmConfig(), membership={"1": "J1", "2": "J2"})
+    assert clusters == [[0], [1]]
+    assert "Junctions J1 and J2 have lights 5.0 m apart" in caplog.text
+
+
+def test_town15_level_b_gives_three_phases_and_singleton_warning(town15_signal_groups, caplog):
+    actors = t.load_actors(stoplines_path=TOWN15_STOPLINES)
+    config = t.FsmConfig(use_xodr_groups=True)
+    resolved = t.resolve_intersection_groups(actors=actors, config=config, signal_groups=town15_signal_groups)
+    junction_322 = next(r for r in resolved if r.junction == "322")
+    assert junction_322.level == "groups"
+    assert len(junction_322.groups) == 3
+    assert "every XODR controller holds a single light" in caplog.text
+
+
+def test_level_c_orders_phases_by_sequence():
+    actors = [
+        _actor(actor_id=1, x=0, y=0, axis=0.0),
+        _actor(actor_id=2, x=5, y=5, axis=math.pi / 2),
+        _actor(actor_id=3, x=5, y=-5, axis=math.pi / 2),
+    ]
+    groups = _signal_groups(
+        membership={"1": "J", "2": "J", "3": "J"},
+        controllers=[
+            {"id": "a", "signal_ids": ["2", "3"], "sequence": 1},
+            {"id": "b", "signal_ids": ["1"], "sequence": 0},
+        ],
+    )
+    b = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(use_xodr_groups=True), signal_groups=groups)
+    c = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(use_xodr_sequence=True), signal_groups=groups)
+    assert [[actors[i].actor_id for i in g] for g in b[0].groups] == [[2, 3], [1]]  # larger group first
+    assert [[actors[i].actor_id for i in g] for g in c[0].groups] == [[1], [2, 3]]  # by sequence
+    assert c[0].level == "sequence"
+
+
+def test_sequence_alone_forces_groups_and_junctions():
+    levels = t.effective_xodr_levels(config=t.FsmConfig(use_xodr_junctions=False, use_xodr_sequence=True))
+    assert (levels.use_xodr_junctions, levels.use_xodr_groups, levels.use_xodr_sequence) == (True, True, True)
+
+
+def test_no_light_is_dropped_at_any_level(town15_signal_groups):
+    actors = t.load_actors(stoplines_path=TOWN15_STOPLINES)
+    for config in (
+        t.FsmConfig(use_xodr_junctions=False),
+        t.FsmConfig(),
+        t.FsmConfig(use_xodr_groups=True),
+        t.FsmConfig(use_xodr_sequence=True),
+    ):
+        resolved = t.resolve_intersection_groups(actors=actors, config=config, signal_groups=town15_signal_groups)
+        assert sorted(i for r in resolved for g in r.groups for i in g) == list(range(len(actors)))

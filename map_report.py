@@ -306,6 +306,19 @@ def fsm_summary(*, controller_path: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
+def fsm_review_summary(*, review_path: str) -> dict[str, Any]:
+    """Per-level intersection counts and unassigned lights from ``<map>_fsm_review.json``."""
+    with open(review_path) as f:
+        review = json.load(f)
+    levels = collections.Counter(i["level"] for i in review["intersections"])
+    unassigned = review.get("unassigned_lights")
+    return {
+        "levels": dict(sorted(levels.items())),
+        "junction_seeded_intersections": sum(n for level, n in levels.items() if level != "off"),
+        "unassigned_lights": None if unassigned is None else len(unassigned),
+    }
+
+
 def discover_maps(*, maps_dir: str, only: Optional[list[str]]) -> list[str]:
     """Relative paths of every ``.xodr`` under ``maps_dir`` (sorted), optionally filtered."""
     found = sorted(
@@ -378,6 +391,8 @@ def run_fsm(*, map_dir: str, converter: str, timeout_s: float) -> dict[str, Any]
     controller = load_metadata(map_dir=map_dir).get("traffic_light_controller_path")
     if controller:
         fsm.update(fsm_summary(controller_path=resolve_map_path(map_dir=map_dir, name=controller)))
+    for path in glob.glob(os.path.join(map_dir, "*_fsm_review.json")):
+        fsm.update(fsm_review_summary(review_path=path))
     return fsm
 
 

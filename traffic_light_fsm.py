@@ -54,6 +54,11 @@ class FsmConfig:
         all_red: All-red clearance duration (seconds) between phases.
         certainty_threshold: Below this, an intersection is refined with lanelet topology.
         topology_max_hops: Hops over the routing graph when testing shared-junction links.
+        use_xodr_junctions: Keep each OpenDRIVE junction's lights in one intersection (needs the
+            ``<map>_signal_groups.json`` sidecar). Off: distance clustering only.
+        use_xodr_groups: Also take phase groups from the junction's controllers (one controller,
+            one phase). Forces ``use_xodr_junctions``.
+        use_xodr_sequence: Also order phases by controller ``sequence``. Forces ``use_xodr_groups``.
     """
 
     cluster_eps: float = 50.0
@@ -66,6 +71,9 @@ class FsmConfig:
     all_red: float = 3.0
     certainty_threshold: float = 0.5
     topology_max_hops: int = 3
+    use_xodr_junctions: bool = True
+    use_xodr_groups: bool = False
+    use_xodr_sequence: bool = False
 
 
 @dataclasses.dataclass(slots=True)
@@ -175,27 +183,77 @@ def _axis_distance(*, a: float, b: float) -> float:
 # --------------------------------------------------------------------------------------
 
 
-def cluster_intersections(*, actors: list[Actor], config: FsmConfig) -> list[list[int]]:
-    """Group actors into intersections by spatial proximity.
+class _UnionFind:
+    """Disjoint sets over integer keys (path halving)."""
 
-    Returns a list of intersections, each a list of indices into ``actors``. Uses DBSCAN
-    with ``min_samples=1`` so an isolated light becomes its own (single-phase) intersection.
+    def __init__(self, *, keys) -> None:
+        self._parent = {k: k for k in keys}
+
+    def find(self, key: int) -> int:
+        while self._parent[key] != key:
+            self._parent[key] = self._parent[self._parent[key]]
+            key = self._parent[key]
+        return key
+
+    def union(self, a: int, b: int) -> int:
+        """Join the sets of ``a`` and ``b``; returns the surviving root."""
+        root_a, root_b = self.find(a), self.find(b)
+        self._parent[root_a] = root_b
+        return root_b
+
+
+def cluster_intersections(
+    *, actors: list[Actor], config: FsmConfig, membership: Optional[dict[str, str]] = None
+) -> list[list[int]]:
+    """Group actors into intersections by spatial proximity, never merging two declared junctions.
+
+    Returns a list of intersections, each a list of indices into ``actors``. Lights closer than
+    ``cluster_eps`` are linked, shortest link first (single linkage, which equals DBSCAN with
+    ``min_samples=1``), so an isolated light becomes its own intersection. ``membership`` maps an
+    ``actor_id`` (as a string) to its OpenDRIVE junction: a junction's lights start joined, and a
+    link that would join two different junctions is skipped, so a chain of unassigned lights can
+    never bridge them.
     """
     if not actors:
         return []
-    if len(actors) == 1:
-        return [[0]]
+    from sklearn.neighbors import NearestNeighbors
 
-    from sklearn.cluster import DBSCAN
+    membership = membership or {}
+    sets = _UnionFind(keys=range(len(actors)))
+    junctions: dict[int, set[str]] = {}
+    first_of_junction: dict[str, int] = {}
+    for i, actor in enumerate(actors):
+        junction = membership.get(str(actor.actor_id))
+        junctions[i] = {junction} if junction else set()
+        if junction in first_of_junction:
+            root = sets.union(i, first_of_junction[junction])
+            junctions[root] = {junction}
+        elif junction:
+            first_of_junction[junction] = i
 
     positions = np.array([a.center for a in actors])
-    labels = DBSCAN(eps=config.cluster_eps, min_samples=1).fit_predict(positions)
+    distances, neighbours = NearestNeighbors(radius=config.cluster_eps).fit(positions).radius_neighbors(positions)
+    edges = sorted(
+        (float(d), i, int(k)) for i in range(len(actors)) for d, k in zip(distances[i], neighbours[i]) if i < k
+    )
+    skipped: dict[tuple[str, str], float] = {}
+    for distance, i, k in edges:
+        root_i, root_k = sets.find(i), sets.find(k)
+        if root_i == root_k:
+            continue
+        if junctions[root_i] and junctions[root_k] and junctions[root_i] != junctions[root_k]:
+            pair = tuple(sorted(junctions[root_i] | junctions[root_k]))
+            skipped[pair] = min(distance, skipped.get(pair, distance))
+            continue
+        root = sets.union(i, k)
+        junctions[root] = junctions[root_i] | junctions[root_k]
+    for (a, b), distance in sorted(skipped.items()):
+        logger.warning("Junctions %s and %s have lights %.1f m apart (< cluster_eps) - kept separate", a, b, distance)
 
     intersections: dict[int, list[int]] = {}
-    for idx, label in enumerate(labels):
-        intersections.setdefault(int(label), []).append(idx)
-    return [intersections[k] for k in sorted(intersections)]
-
+    for i in range(len(actors)):
+        intersections.setdefault(sets.find(i), []).append(i)
+    return sorted(intersections.values(), key=min)
 
 # --------------------------------------------------------------------------------------
 # Stage 2: split an intersection into <= 2 phase groups by stopline axis
@@ -414,24 +472,17 @@ def refine_intersection_with_topology(
     """
     lanelets = {i: topology.lanelet_for(center=actors[i].center) for i in intersection}
 
-    parent = {i: i for i in intersection}
-
-    def find(i: int) -> int:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
+    sets = _UnionFind(keys=intersection)
     for a_idx in intersection:
         for b_idx in intersection:
             if a_idx < b_idx and topology.shares_junction(
                 a=lanelets[a_idx], b=lanelets[b_idx], max_hops=config.topology_max_hops
             ):
-                parent[find(a_idx)] = find(b_idx)
+                sets.union(a_idx, b_idx)
 
     components: dict[int, list[int]] = {}
     for i in intersection:
-        components.setdefault(find(i), []).append(i)
+        components.setdefault(sets.find(i), []).append(i)
     return list(components.values())
 
 
@@ -440,25 +491,115 @@ def refine_intersection_with_topology(
 # --------------------------------------------------------------------------------------
 
 
+LEVEL_OFF = "off"
+LEVEL_JUNCTIONS = "junctions"
+LEVEL_GROUPS = "groups"
+LEVEL_SEQUENCE = "sequence"
+
+
+@dataclasses.dataclass(slots=True)
+class IntersectionResult:
+    """One final intersection.
+
+    Attributes:
+        actors: Indices into the actor list.
+        groups: Ordered phase groups (indices into the actor list).
+        junction: OpenDRIVE junction id the intersection was seeded from, or ``None``.
+        level: XODR structure actually used: ``off``, ``junctions``, ``groups`` or ``sequence``.
+    """
+
+    actors: list[int]
+    groups: list[list[int]]
+    junction: Optional[str]
+    level: str
+
+
+def effective_xodr_levels(*, config: FsmConfig) -> FsmConfig:
+    """Apply the level cascade: ``use_xodr_sequence`` forces groups on, groups force junctions on."""
+    levels = dataclasses.replace(config)
+    if levels.use_xodr_sequence and not levels.use_xodr_groups:
+        logger.info("use_xodr_sequence forces use_xodr_groups on")
+        levels.use_xodr_groups = True
+    if levels.use_xodr_groups and not levels.use_xodr_junctions:
+        logger.info("use_xodr_groups forces use_xodr_junctions on")
+        levels.use_xodr_junctions = True
+    return levels
+
+
+def _junction_of(*, intersection: list[int], actors: list[Actor], membership: dict[str, str]) -> Optional[str]:
+    junctions = {membership.get(str(actors[i].actor_id)) for i in intersection} - {None}
+    return next(iter(junctions)) if len(junctions) == 1 else None
+
+
+def _controller_groups(
+    *, intersection: list[int], actors: list[Actor], signal_groups: dict, use_sequence: bool
+) -> tuple[Optional[list[list[int]]], str]:
+    """Phase groups from the XODR controllers covering this intersection's lights.
+
+    Each controller's lights form one group; a light no controller names joins the group whose
+    mean axis is nearest its own. Ordered by controller ``sequence`` when ``use_sequence`` and every
+    group has one, else larger group first. Returns ``(None, level)`` when no controller applies.
+    """
+    by_id = {str(actors[i].actor_id): i for i in intersection}
+    groups: list[tuple[Optional[int], list[int]]] = []
+    placed: set[int] = set()
+    for controller in signal_groups.get("controllers", []):
+        members = [by_id[sid] for sid in controller["signal_ids"] if sid in by_id and by_id[sid] not in placed]
+        if members:
+            groups.append((controller.get("sequence"), members))
+            placed.update(members)
+    if not groups:
+        return None, LEVEL_JUNCTIONS
+    for i in intersection:
+        if i in placed:
+            continue
+        means = [_circular_mean_mod_pi(angles=np.array([actors[j].axis for j in g])) for _, g in groups]
+        nearest = min(range(len(groups)), key=lambda k: _axis_distance(a=actors[i].axis, b=means[k]))
+        groups[nearest][1].append(i)
+    if len(groups) > 1 and all(len(g) == 1 for _, g in groups):
+        logger.warning(
+            "Intersection with lights %s: every XODR controller holds a single light - each light gets its own phase",
+            sorted(actors[i].actor_id for i in intersection),
+        )
+    if use_sequence and all(seq is not None for seq, _ in groups):
+        ordered = sorted(groups, key=lambda sg: (sg[0], min(actors[i].actor_id for i in sg[1])))
+        return [g for _, g in ordered], LEVEL_SEQUENCE
+    ordered = sorted(groups, key=lambda sg: (-len(sg[1]), min(actors[i].actor_id for i in sg[1])))
+    return [g for _, g in ordered], LEVEL_GROUPS
+
+
 def resolve_intersection_groups(
     *,
     actors: list[Actor],
     config: FsmConfig,
     topology: Optional[LaneletTopology] = None,
-) -> list[tuple[list[int], list[list[int]]]]:
+    signal_groups: Optional[dict] = None,
+) -> list[IntersectionResult]:
     """Cluster, sub-group, and (where uncertain) topology-refine the actors.
 
-    Returns one entry per final intersection: a tuple of (actor indices in the intersection,
-    ordered phase groups). Both :func:`generate_fsms` and the visualization tool consume this
-    so the rendered picture reflects exactly the groupings the FSM is built from.
+    With ``signal_groups`` (the ``<map>_signal_groups.json`` contents) and the XODR levels enabled
+    in ``config``, declared junctions seed the intersections, and controllers can fix phase groups
+    and their order. Both :func:`generate_fsms` and the visualization tool consume the result, so
+    the rendered picture reflects exactly the groupings the FSM is built from.
     """
-    intersections = cluster_intersections(actors=actors, config=config)
+    levels = effective_xodr_levels(config=config)
+    if signal_groups is None and levels.use_xodr_junctions:
+        logger.warning("No signal groups sidecar - XODR junctions, groups and sequence are not used")
+    membership = (
+        {sid: entry["junction"] for sid, entry in signal_groups["membership"].items()}
+        if signal_groups is not None and levels.use_xodr_junctions
+        else {}
+    )
+    intersections = cluster_intersections(actors=actors, config=config, membership=membership or None)
     centroids = np.array(
         [np.mean([actors[i].center for i in inter], axis=0) for inter in intersections]
     ) if intersections else np.empty((0, 2))
 
     resolved: list[list[int]] = []
     for idx, inter in enumerate(intersections):
+        if _junction_of(intersection=inter, actors=actors, membership=membership) is not None:
+            resolved.append(inter)
+            continue
         groups = group_actors(intersection=inter, actors=actors, config=config)
         certainty = intersection_certainty(
             intersection=inter,
@@ -491,10 +632,31 @@ def resolve_intersection_groups(
                 )
             resolved.append(inter)
 
-    return [
-        (inter, group_actors(intersection=inter, actors=actors, config=config))
-        for inter in resolved
-    ]
+    results = []
+    for inter in resolved:
+        junction = _junction_of(intersection=inter, actors=actors, membership=membership)
+        groups, level = None, LEVEL_OFF
+        if junction is not None:
+            level = LEVEL_JUNCTIONS
+            if levels.use_xodr_groups:
+                groups, level = _controller_groups(
+                    intersection=inter, actors=actors, signal_groups=signal_groups, use_sequence=levels.use_xodr_sequence
+                )
+        if groups is None:
+            groups = group_actors(intersection=inter, actors=actors, config=config)
+        results.append(IntersectionResult(actors=inter, groups=groups, junction=junction, level=level))
+    if membership:
+        unassigned = [a.actor_id for a in actors if str(a.actor_id) not in membership]
+        if unassigned:
+            placed = {
+                actors[i].actor_id: r.junction for r in results for i in r.actors if str(actors[i].actor_id) not in membership
+            }
+            logger.warning(
+                "%d light(s) belong to no XODR junction; placed by distance: %s",
+                len(unassigned),
+                ", ".join(f"{aid}->{placed[aid] or 'own intersection'}" for aid in sorted(unassigned)),
+            )
+    return results
 
 
 def generate_fsms(
@@ -502,10 +664,17 @@ def generate_fsms(
     actors: list[Actor],
     config: FsmConfig,
     topology: Optional[LaneletTopology] = None,
+    signal_groups: Optional[dict] = None,
 ) -> list[list[dict]]:
     """Run the full pipeline and return one FSM (state list) per intersection."""
-    resolved = resolve_intersection_groups(actors=actors, config=config, topology=topology)
-    return [build_fsm(groups=groups, actors=actors, config=config) for _, groups in resolved]
+    resolved = resolve_intersection_groups(actors=actors, config=config, topology=topology, signal_groups=signal_groups)
+    return [build_fsm(groups=r.groups, actors=actors, config=config) for r in resolved]
+
+
+def find_signal_groups_path(*, stoplines_path: str) -> Optional[str]:
+    """``<map>_signal_groups.json`` beside ``<map>_stoplines.json``, if it exists."""
+    path = stoplines_path[: -len("_stoplines.json")] + "_signal_groups.json"
+    return path if os.path.exists(path) else None
 
 
 def _load_topology(*, map_dir: str, metadata: dict) -> Optional[LaneletTopology]:
@@ -533,22 +702,31 @@ def run(
     use_topology: bool = True,
     visualize: bool = False,
     viz_config: Optional[object] = None,
+    signal_groups_path: Optional[str] = None,
 ) -> str:
-    """Generate FSMs for a map directory and write the controller JSON.
+    """Generate FSMs for a map directory and write the controller JSON and the review JSON.
 
+    ``signal_groups_path`` overrides the ``<map>_signal_groups.json`` found beside the stoplines.
     If ``visualize`` is set, also render a birdview mosaic of the map with the intersection
     clusters and phase subgroups overlaid (see :mod:`fsm_visualization`).
 
     Returns the path to the written ``*_traffic_light_controller.json``.
     """
+    map_dir = os.path.abspath(map_dir)
     metadata = load_metadata(map_dir=map_dir)
     stoplines_path = find_stoplines_path(map_dir=map_dir)
     actors = load_actors(stoplines_path=stoplines_path)
     logger.info("Loaded %d traffic-light actors from %s", len(actors), stoplines_path)
+    signal_groups_path = signal_groups_path or find_signal_groups_path(stoplines_path=stoplines_path)
+    signal_groups = None
+    if signal_groups_path is not None:
+        with open(signal_groups_path) as f:
+            signal_groups = json.load(f)
+        logger.info("Using XODR signal groups from %s", os.path.abspath(signal_groups_path))
 
     topology = _load_topology(map_dir=map_dir, metadata=metadata) if use_topology else None
-    resolved = resolve_intersection_groups(actors=actors, config=config, topology=topology)
-    fsms = [build_fsm(groups=groups, actors=actors, config=config) for _, groups in resolved]
+    resolved = resolve_intersection_groups(actors=actors, config=config, topology=topology, signal_groups=signal_groups)
+    fsms = [build_fsm(groups=r.groups, actors=actors, config=config) for r in resolved]
     logger.info("Generated FSMs for %d intersections", len(fsms))
 
     location = metadata.get("name") or os.path.basename(os.path.normpath(map_dir))
@@ -556,6 +734,16 @@ def run(
     with open(out_path, "w") as f:
         json.dump(fsms, f, indent=4)
     logger.info("Wrote traffic light controller to %s", out_path)
+    review_path = write_review(
+        map_dir=map_dir,
+        location=location,
+        resolved=resolved,
+        actors=actors,
+        config=config,
+        signal_groups_path=signal_groups_path,
+        signal_groups=signal_groups,
+    )
+    logger.info("Wrote FSM review to %s", review_path)
 
     metadata["traffic_light_controller_path"] = os.path.basename(out_path)
     with open(os.path.join(map_dir, "metadata.json"), "w") as f:
@@ -576,6 +764,47 @@ def run(
     return out_path
 
 
+def write_review(
+    *,
+    map_dir: str,
+    location: str,
+    resolved: list[IntersectionResult],
+    actors: list[Actor],
+    config: FsmConfig,
+    signal_groups_path: Optional[str],
+    signal_groups: Optional[dict],
+) -> str:
+    """Write ``<map>_fsm_review.json``: per intersection, its lights, phase groups and XODR level used.
+
+    Also lists the lights no XODR junction claims (placed by distance), when junctions are in use.
+    """
+    levels = effective_xodr_levels(config=config)
+    review = {
+        "levels_requested": {
+            "use_xodr_junctions": levels.use_xodr_junctions,
+            "use_xodr_groups": levels.use_xodr_groups,
+            "use_xodr_sequence": levels.use_xodr_sequence,
+        },
+        "signal_groups": os.path.abspath(signal_groups_path) if signal_groups_path else None,
+        "unassigned_lights": sorted(
+            a.actor_id for a in actors if str(a.actor_id) not in signal_groups["membership"]
+        ) if signal_groups is not None and levels.use_xodr_junctions else None,
+        "intersections": [
+            {
+                "junction": r.junction,
+                "level": r.level,
+                "lights": sorted(actors[i].actor_id for i in r.actors),
+                "groups": [sorted(actors[i].actor_id for i in g) for g in r.groups],
+            }
+            for r in resolved
+        ],
+    }
+    path = os.path.join(map_dir, f"{location}_fsm_review.json")
+    with open(path, "w") as f:
+        json.dump(review, f, indent=2)
+    return path
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     d = FsmConfig()  # slots=True means class attributes are descriptors; read defaults off an instance
     parser = argparse.ArgumentParser(description=__doc__)
@@ -591,6 +820,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--certainty-threshold", type=float, default=d.certainty_threshold)
     parser.add_argument("--topology-max-hops", type=int, default=d.topology_max_hops)
     parser.add_argument("--no-topology", action="store_true", help="Disable lanelet topology refinement")
+    parser.add_argument(
+        "--xodr-junctions",
+        action=argparse.BooleanOptionalAction,
+        default=d.use_xodr_junctions,
+        help="Keep each XODR junction's lights in one intersection (default on)",
+    )
+    parser.add_argument(
+        "--xodr-groups",
+        action=argparse.BooleanOptionalAction,
+        default=d.use_xodr_groups,
+        help="Also take phase groups from XODR controllers (implies --xodr-junctions)",
+    )
+    parser.add_argument(
+        "--xodr-sequence",
+        action=argparse.BooleanOptionalAction,
+        default=d.use_xodr_sequence,
+        help="Also order phases by controller sequence (implies --xodr-groups)",
+    )
+    parser.add_argument(
+        "--signal-groups",
+        default=None,
+        help="Signal groups JSON (default: <map>_signal_groups.json beside the stoplines)",
+    )
     parser.add_argument(
         "--visualize",
         action="store_true",
@@ -626,6 +878,9 @@ def main() -> None:
         all_red=args.all_red,
         certainty_threshold=args.certainty_threshold,
         topology_max_hops=args.topology_max_hops,
+        use_xodr_junctions=args.xodr_junctions,
+        use_xodr_groups=args.xodr_groups,
+        use_xodr_sequence=args.xodr_sequence,
     )
 
     viz_config = None
@@ -644,6 +899,7 @@ def main() -> None:
         use_topology=not args.no_topology,
         visualize=args.visualize,
         viz_config=viz_config,
+        signal_groups_path=args.signal_groups,
     )
 
 

@@ -138,6 +138,8 @@ def test_run_records_outcomes(two_runs):
     assert good["metrics"]["stoplines_by_agent_type"] == {"traffic_light": 2}
     assert good["fsm"]["outcome"] == "ok"
     assert good["fsm"]["lights"] == 2
+    assert good["fsm"]["junction_seeded_intersections"] >= 1
+    assert good["fsm"]["unassigned_lights"] == 0
     assert bad["conversion"]["outcome"] == "exception"
     assert bad["conversion"]["exception"] == "ValueError"
     assert bad["conversion"]["location"].startswith("crdesigner/map_conversion/opendrive/odr2cr/opendrive_parser/")

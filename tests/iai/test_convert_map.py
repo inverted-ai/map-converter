@@ -55,3 +55,14 @@ def test_provenance_records_input_config_and_versions(tmp_path):
 
 def test_git_identity_outside_a_checkout_is_null(tmp_path):
     assert cm.git_identity(repo=str(tmp_path)) == {"commit": None, "dirty": None}
+
+
+def test_conversion_writes_signal_groups_sidecar(tmp_path):
+    roads, junctions, controllers = xb.junction_map()
+    _write(map_dir=tmp_path, name="junction", text=xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    with open(tmp_path / "junction_signal_groups.json") as f:
+        groups = json.load(f)
+    assert groups["membership"]["11"] == {"junction": "100", "source": "controller"}
+    assert groups["source_xodr"] == os.path.abspath(tmp_path / "junction.xodr")

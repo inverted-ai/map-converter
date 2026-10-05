@@ -20,6 +20,7 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 
 - `convert_map.py` — **the IAI entry point.** OpenDRIVE → CommonRoad → Lanelet2 → TorchDriveSim artifacts. See "Conversion pipeline" below.
 - `traffic_light_fsm.py`, `fsm_visualization.py` — traffic-light FSM generation and review rendering from a converted map.
+- `opendrive_signal_groups.py` — reads the XODR's junction membership and controllers into `<map>_signal_groups.json` (called by `convert_map.py`; also a CLI).
 - `map_report.py`, `map_quality.py` — batch conversion report / comparison, and the quality metrics it records.
 - `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers.
 - `convert_lanelet_to_opendrive.py` — reverse direction via CARLA's tools.
@@ -48,7 +49,7 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then the header's `+proj=tmerc` geo-reference (lat/lon) and optional `<offset>`; falls back to `(0, 0)` with a warning.
 3. `export_osm` — `Network.load_opendrive` → `Network.export_lanelet_network` builds a CommonRoad lanelet network in the OpenDRIVE inertial frame (`filter_types`: `driving`, `onRamp`, `offRamp`, `exit`, `entry`), simplified, then `CR2LaneletConverter` (`crdesigner/map_conversion/lanelet2/cr2lanelet.py`) with a `CustomTransfomer` wrapping a Lanelet2 `UtmProjector` writes `<map>.osm`.
 4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).
-5. `extract_stoplines` — `traffic_light.iai_stoplines` from each traffic light, plus `Network._iai_stop_signs` / `_iai_yield_signs`, trim-filtered → `<map>_stoplines.json`.
+5. `extract_stoplines` — `traffic_light.iai_stoplines` from each traffic light, plus `Network._iai_stop_signs` / `_iai_yield_signs`, trim-filtered → `<map>_stoplines.json`; then `write_signal_groups` → `<map>_signal_groups.json`.
 6. `build_mesh` — `torchdrivesim.lanelet2.road_mesh_from_lanelet_map` / `lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
 7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
 

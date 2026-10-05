@@ -20,6 +20,7 @@ imported lazily so importing this module stays cheap.
 from __future__ import annotations
 
 import argparse
+import json
 import dataclasses
 import logging
 import os
@@ -36,7 +37,8 @@ logger = logging.getLogger(__name__)
 
 # RGB colours for overlays.
 _HULL_COLOR = (140, 140, 140)
-_SUBGROUP_COLORS = ((40, 120, 255), (255, 140, 0))  # phase 0 = blue, phase 1 = orange
+# Phase colours in order (blue, orange, aqua, magenta); XODR controller groups can give > 2 phases.
+_SUBGROUP_COLORS = ((40, 120, 255), (255, 140, 0), (27, 175, 122), (232, 123, 164))
 _SINGLE_GROUP_COLOR = (40, 200, 90)  # green: single-phase intersection (e.g. on-ramp)
 _TEXT_COLOR = (255, 255, 255)
 _TEXT_HALO = (0, 0, 0)
@@ -250,9 +252,7 @@ def _text_with_halo(draw, *, xy, text, font):
 
 
 def _draw_legend(draw, *, font):
-    rows = [
-        (_SUBGROUP_COLORS[0], "subgroup A (phase 0)"),
-        (_SUBGROUP_COLORS[1], "subgroup B (phase 1)"),
+    rows = [(color, f"phase {phase}") for phase, color in enumerate(_SUBGROUP_COLORS)] + [
         (_SINGLE_GROUP_COLOR, "single-phase intersection"),
         (_HULL_COLOR, "intersection outline"),
     ]
@@ -269,7 +269,7 @@ def _draw_legend(draw, *, font):
 def draw_overlays(
     *,
     mosaic: np.ndarray,
-    resolved: list[tuple[list[int], list[list[int]]]],
+    resolved: list["tlf.IntersectionResult"],
     actors: list["Actor"],
     bounds: tuple[float, float, float, float],
     ppm: float,
@@ -284,7 +284,8 @@ def draw_overlays(
     font = _load_font(size=config.font_size)
     r = config.marker_radius_px
 
-    for index, (intersection, groups) in enumerate(resolved):
+    for index, result in enumerate(resolved):
+        intersection, groups = result.actors, result.groups
         xs = np.array([actors[i].center[0] for i in intersection])
         ys = np.array([actors[i].center[1] for i in intersection])
         us, vs = world_to_pixel(x=xs, y=ys, xmax=xmax, ymax=ymax, ppm=ppm)
@@ -299,7 +300,7 @@ def draw_overlays(
 
         single = len(groups) == 1
         for phase, group in enumerate(groups):
-            color = _SINGLE_GROUP_COLOR if single else _SUBGROUP_COLORS[phase % 2]
+            color = _SINGLE_GROUP_COLOR if single else _SUBGROUP_COLORS[phase % len(_SUBGROUP_COLORS)]
             for i in group:
                 u, v = world_to_pixel(
                     x=np.array(actors[i].center[0]), y=np.array(actors[i].center[1]),
@@ -325,7 +326,7 @@ def render_mosaic(
     map_dir: str,
     metadata: dict,
     actors: list["Actor"],
-    resolved: list[tuple[list[int], list[list[int]]]],
+    resolved: list["tlf.IntersectionResult"],
     config: VizConfig,
 ) -> str:
     """Render the mosaic + overlays for an already-resolved FSM grouping and write the PNG.
@@ -361,7 +362,15 @@ def visualize(*, map_dir: str, fsm_config: tlf.FsmConfig, viz_config: VizConfig,
     metadata = tlf.load_metadata(map_dir=map_dir)
     actors = tlf.load_actors(stoplines_path=tlf.find_stoplines_path(map_dir=map_dir))
     topology = tlf._load_topology(map_dir=map_dir, metadata=metadata) if use_topology else None
-    resolved = tlf.resolve_intersection_groups(actors=actors, config=fsm_config, topology=topology)
+    stoplines_path = tlf.find_stoplines_path(map_dir=map_dir)
+    signal_groups_path = tlf.find_signal_groups_path(stoplines_path=stoplines_path)
+    signal_groups = None
+    if signal_groups_path is not None:
+        with open(signal_groups_path) as f:
+            signal_groups = json.load(f)
+    resolved = tlf.resolve_intersection_groups(
+        actors=actors, config=fsm_config, topology=topology, signal_groups=signal_groups
+    )
     logger.info("Resolved %d intersections; rendering visualization", len(resolved))
     return render_mosaic(
         map_dir=map_dir, metadata=metadata, actors=actors, resolved=resolved, config=viz_config

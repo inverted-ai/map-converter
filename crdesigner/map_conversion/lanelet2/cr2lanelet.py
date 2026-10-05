@@ -916,7 +916,8 @@ class CR2LaneletConverter:
                         if type_adj_right != "unknown":
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
-                            if lanelet.adj_right_same_direction:
+                            if lanelet.adj_right_same_direction and subtype_adj_right == subtype_lanelet:
+                                # same-direction lanes repeating one marking share a single line
                                 subtype = subtype_lanelet
                             else:
                                 subtype = subtype_lanelet + "_" + subtype_adj_right
@@ -988,7 +989,8 @@ class CR2LaneletConverter:
                         if type_adj_left != "unknown":
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
-                            if lanelet.adj_left_same_direction:
+                            if lanelet.adj_left_same_direction and subtype_adj_left == subtype_lanelet:
+                                # same-direction lanes repeating one marking share a single line
                                 subtype = subtype_lanelet
                             else:
                                 subtype = subtype_adj_left + "_" + subtype_lanelet

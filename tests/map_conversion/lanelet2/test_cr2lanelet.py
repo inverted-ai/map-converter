@@ -307,12 +307,13 @@ class TestCR2LaneletConverter(unittest.TestCase):
             list(cr1.osm.ways.values())[0].tag_dict, {"type": "curbstone", "subtype": "low"}
         )
 
-        # lanelet[1] is adjacent left to lanelet[0] and in same direction
+        # lanelet[1] is adjacent left to lanelet[0] and in same direction: both lanes describing
+        # the same solid line is one line, not a double line
         self.scenario.lanelet_network.lanelets[0].line_marking_left_vertices = LineMarking.SOLID
         self.scenario.lanelet_network.lanelets[1].line_marking_right_vertices = LineMarking.SOLID
         cr1(self.scenario)
         self.assertEqual(
-            list(cr1.osm.ways.values())[0].tag_dict, {"type": "line_thin", "subtype": "solid_solid"}
+            list(cr1.osm.ways.values())[0].tag_dict, {"type": "line_thin", "subtype": "solid"}
         )
 
         self.scenario.lanelet_network.lanelets[0].line_marking_left_vertices = LineMarking.DASHED

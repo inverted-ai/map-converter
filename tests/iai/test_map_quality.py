@@ -7,8 +7,6 @@ the metrics that follow from the fixture.
 
 import collections
 import os
-import subprocess
-import sys
 
 import lanelet2
 import pytest
@@ -16,8 +14,6 @@ from lanelet2.core import Lanelet, LaneletMap, LineString3d, Point3d, getId
 
 import map_quality as mq
 from tests.iai import xodr_builder as xb
-
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _point(*, x: float, y: float, z: float = 0.0) -> Point3d:
@@ -126,13 +122,8 @@ def converted_junction(tmp_path_factory) -> str:
     roads, junctions, controllers = xb.junction_map()
     roads.append(xb.straight_road(id="9", length=30.0, x=0.0, y=200.0))
     (map_dir / "junction.xodr").write_text(xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
-    subprocess.run(
-        [sys.executable, os.path.join(REPO_ROOT, "convert_map.py"), f"dir_path={map_dir}"],
-        check=True,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        timeout=300,
-    )
+    result = xb.run_convert_map(map_dir=str(map_dir))
+    assert result.returncode == 0, result.stderr
     return str(map_dir)
 
 

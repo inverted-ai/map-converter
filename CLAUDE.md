@@ -50,7 +50,7 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).
 5. `extract_stoplines` — `traffic_light.iai_stoplines` from each traffic light, plus `Network._iai_stop_signs` / `_iai_yield_signs`, trim-filtered → `<map>_stoplines.json`.
 6. `build_mesh` — `torchdrivesim.lanelet2.road_mesh_from_lanelet_map` / `lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
-7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`.
+7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
 
 Frame invariant: stoplines and the FSM use raw XODR-local coordinates; the mesh is built by reloading the `.osm` through the `UtmProjector`. Any offset must be applied identically to both.
 
@@ -60,6 +60,7 @@ These are the names/files that diverge from upstream. Search for them when chang
 
 - The repo-root scripts — IAI-authored, not upstream.
 - `crdesigner/map_conversion/lanelet2/cr2lanelet.py` — small IAI tweaks (import / type-hint cleanup).
+- Vendored code reports degradations through `logging.getLogger("crdesigner.degradation")` with `extra={kind, element, id, value, action}` (no IAI imports inside `crdesigner/`).
 - Custom attributes on upstream objects: `iai_stoplines`, `_iai_stop_signs`, `_iai_yield_signs`, `opendrive_id`. Grep for `iai_` inside `crdesigner/` to find where they're attached.
 - `git diff master -- crdesigner/` (or whatever the upstream-tracking branch is) is the authoritative way to enumerate IAI deltas.
 

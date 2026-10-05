@@ -41,6 +41,7 @@ from typing import Any, Optional
 from lxml import etree
 
 import map_quality
+from convert_map import git_identity, sha256_file
 from traffic_light_fsm import load_metadata, resolve_map_path
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 XML_COUNTED_TAGS = ("controller", "control", "signal", "signalReference", "object")
 CORE_OUTPUT_SUFFIXES = (".osm", "_stoplines.json", "metadata.json")
-EXCLUDED_OUTPUT_SUFFIXES = (".png", ".xodr", ".log")
+EXCLUDED_OUTPUT_SUFFIXES = ("_provenance.json", ".png", ".xodr", ".log")
 NEVER_MOVES = ("wall_s", "peak_rss_mb")
 FLOAT_MOVE_FRACTION = 0.01
 THUMBNAIL_PX = 384
@@ -168,14 +169,6 @@ def _exception_class(*, stderr: str) -> Optional[str]:
 # Inputs
 # --------------------------------------------------------------------------------------
 
-
-def sha256_file(*, path: str) -> str:
-    """sha256 of a file, read in chunks."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def xodr_statistics(*, path: str) -> dict[str, Any]:
@@ -387,19 +380,6 @@ def run_fsm(*, map_dir: str, converter: str, timeout_s: float) -> dict[str, Any]
         fsm.update(fsm_summary(controller_path=resolve_map_path(map_dir=map_dir, name=controller)))
     return fsm
 
-
-def git_identity(*, repo: str) -> dict[str, Any]:
-    """Commit and dirty flag of a checkout; ``None`` values when it is not a git checkout."""
-    head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
-    if head.returncode != 0:
-        return {"commit": None, "dirty": None}
-    status = subprocess.run(
-        ["git", "-C", repo, "status", "--porcelain", "--untracked-files=no"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip())}
 
 
 def run_report(

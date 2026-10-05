@@ -7,7 +7,12 @@ committed. Geometry is straight lines only, which keeps expected values easy to 
 from __future__ import annotations
 
 import dataclasses
+import os
+import subprocess
+import sys
 from typing import Optional
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 DEFAULT_GEO_REFERENCE = "+proj=tmerc +lat_0=49.0 +lon_0=8.0 +k=1 +x_0=0 +y_0=0 +ellps=WGS84"
 
@@ -75,6 +80,7 @@ class RoadSpec:
         default_factory=list
     )  # (s, a, b, c, d)
     rule: Optional[str] = None  # "RHT" / "LHT"
+    name: Optional[str] = None  # defaults to road<id>
     signals: list[SignalSpec] = dataclasses.field(default_factory=list)
 
 
@@ -212,7 +218,7 @@ def _signal(*, signal: SignalSpec) -> str:
 
 def _road(*, road: RoadSpec) -> str:
     attrs = _attrs(
-        name=f"road{road.id}",
+        name=road.name if road.name is not None else f"road{road.id}",
         length=_num(value=road.length),
         id=road.id,
         junction=road.junction,
@@ -355,3 +361,14 @@ def junction_map(
         ]
         junction.controllers = [("1001", 0), ("1002", 1)]
     return [road1, road2, road3], [junction], controllers
+
+
+def run_convert_map(*, map_dir: str, timeout_s: float = 300.0, **config: str) -> subprocess.CompletedProcess:
+    """Run ``convert_map.py`` on ``map_dir`` in a subprocess (stdin closed), returning its result.
+
+    A subprocess because crdesigner's config objects are process-global. Extra keyword arguments
+    become ``field=value`` command-line arguments.
+    """
+    argv = [sys.executable, os.path.join(REPO_ROOT, "convert_map.py"), f"dir_path={map_dir}"]
+    argv += [f"{k}={v}" for k, v in config.items()]
+    return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout_s)

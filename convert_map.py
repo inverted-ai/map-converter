@@ -4,10 +4,14 @@ The name of that file will be the map name.
 This script produces the required files for TorchDriveSim in the `dir_path` folder.
 """
 import dataclasses
+import datetime
 import glob
+import hashlib
+import importlib.metadata
 import json
 import os
 import re
+import subprocess
 import sys
 import logging
 from typing import Tuple, Optional
@@ -40,6 +44,11 @@ from commonroad.scenario.lanelet import LaneletNetwork
 
 
 logger = logging.getLogger(__name__)
+
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROVENANCE_PACKAGES = (
+    'torchdrivesim', 'torch', 'lanelet2', 'commonroad-io', 'numpy', 'lxml', 'pyproj', 'shapely', 'omegaconf',
+)
 
 
 @dataclasses.dataclass
@@ -540,8 +549,9 @@ def render_and_finish(
     osm_path: str,
     stoplines_path: str,
     mesh: BuiltMesh,
+    opendrive_path: str,
 ) -> None:
-    """Pick the map centre, write ``metadata.json`` and render ``visualization.png``."""
+    """Pick the map centre, write ``metadata.json``, render ``visualization.png``, record provenance."""
     if cfg.center is None:
         center = mesh.combined_mesh.center.squeeze(0).numpy().tolist()
     else:
@@ -587,13 +597,68 @@ def render_and_finish(
     viz_path = os.path.join(cfg.dir_path, 'visualization.png')
     logger.info(f'Saving visualization to {viz_path}')
     imageio.imsave(viz_path, map_image[0].permute(1, 2, 0).cpu().numpy().astype(np.uint8))
+    write_provenance(cfg=cfg, xodr_path=opendrive_path, out_dir=cfg.dir_path)
+
+
+def sha256_file(*, path: str) -> str:
+    """sha256 of a file, read in chunks."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def git_identity(*, repo: str) -> dict:
+    """Commit and dirty flag of a checkout; ``None`` values when it is not a git checkout."""
+    try:
+        head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return {"commit": None, "dirty": None}
+    if head.returncode != 0:
+        return {"commit": None, "dirty": None}
+    status = subprocess.run(
+        ["git", "-C", repo, "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip())}
+
+
+def write_provenance(*, cfg: MapConversionConfig, xodr_path: str, out_dir: str) -> str:
+    """Write ``<map>_provenance.json``: what was converted, with which converter and settings.
+
+    Returns:
+        Absolute path of the written file.
+    """
+    versions = {}
+    for package in PROVENANCE_PACKAGES:
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = None
+    provenance = {
+        "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "input": {"path": os.path.abspath(xodr_path), "sha256": sha256_file(path=xodr_path)},
+        "config": OmegaConf.to_container(OmegaConf.structured(cfg)),
+        "converter": git_identity(repo=REPO_ROOT),
+        "python": sys.version.split()[0],
+        "packages": versions,
+    }
+    location = os.path.basename(xodr_path)[:-5]
+    path = os.path.abspath(os.path.join(out_dir, f"{location}_provenance.json"))
+    with open(path, "w") as f:
+        json.dump(provenance, f, indent=2)
+    logger.info(f'Writing provenance to {path}')
+    return path
 
 
 def convert_map(cfg: MapConversionConfig) -> None:
     """Convert the single ``.xodr`` in ``cfg.dir_path`` into the TorchDriveSim artifact set.
 
-    Writes ``<map>.osm``, ``<map>_stoplines.json``, ``<map>_mesh.json``, ``metadata.json`` and
-    ``visualization.png`` into ``cfg.dir_path``.
+    Writes ``<map>.osm``, ``<map>_stoplines.json``, ``<map>_mesh.json``, ``metadata.json``,
+    ``visualization.png`` and ``<map>_provenance.json`` into ``cfg.dir_path``.
     """
     opendrive_path = validate_config(cfg=cfg)
     if opendrive_path is None:
@@ -615,6 +680,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         osm_path=exported.osm_path,
         stoplines_path=stoplines_path,
         mesh=mesh,
+        opendrive_path=opendrive_path,
     )
 
 

@@ -69,6 +69,7 @@ All outputs are written into `dir_path`.
 | `<map>_mesh.json` | Road and lane-marking `BirdviewMesh`: `verts`, `faces`, `categories`, `vert_category`, `colors`, `zs` | TorchDriveSim rendering |
 | `metadata.json` | `MapConfig`: `name`, `center`, `lanelet_map_origin` (lat, lon), `left_handed_coordinates`, the three file names above, `traffic_light_controller_path`, `iai_location_name` | `torchdrivesim.map.load_map_config` |
 | `visualization.png` | 2048×2048 top-down render centred on `center`, `visualization_fov` metres wide | People |
+| `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), Python and package versions, UTC time | People, `map_report.py` |
 
 `metadata.json` must stay loadable by `MapConfig(**json)`, which rejects unknown keys, so extra information is
 written to separate sidecar files.
@@ -267,6 +268,8 @@ options:
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
   without a marking type.
 - `<controller>` signal groups are not read.
+- A signal `<validity>` without `fromLane`/`toLane`, or naming a lane that does not exist, is skipped with a warning; the signal itself is kept.
+- The XML encoding declaration is honoured (e.g. `ISO-8859-1` files convert).
 
 ## Troubleshooting
 

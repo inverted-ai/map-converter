@@ -86,6 +86,9 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadty
 )
 
 
+degradation_logger = logging.getLogger("crdesigner.degradation")
+
+
 def parse_opendrive(file_path: Path, odr_conf: open_drive_config = open_drive_config) -> OpenDrive:
     """
     Tries to parse XML tree, returns OpenDRIVE object
@@ -96,7 +99,7 @@ def parse_opendrive(file_path: Path, odr_conf: open_drive_config = open_drive_co
     """
     generate_unique_id(odr_conf.initial_cr_id)  # reset IDs
 
-    with file_path.open("r") as file_in:
+    with file_path.open("rb") as file_in:
         root_node = etree.parse(file_in)
 
         for elem in root_node.getiterator():
@@ -517,7 +520,11 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
     new_signal.signal_value = road_signal.get("value")
     new_signal.unit = road_signal.get("unit")
     new_signal.text = road_signal.get("text")
-    if road_signal.find("validity") is not None:
+    if (
+        road_signal.find("validity") is not None
+        and road_signal.find("validity").get("fromLane") is not None
+        and road_signal.find("validity").get("toLane") is not None
+    ):
         new_signal.validity_from = road_signal.find("validity").get("fromLane")
         new_signal.validity_to = road_signal.find("validity").get("toLane")
     if (
@@ -531,12 +538,25 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
     for child in road_signal.iterchildren():
         if child.tag == 'validity':
             if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
-                breakpoint()
+                degradation_logger.warning(
+                    "signal %s: validity without fromLane/toLane - validity skipped",
+                    new_signal.id,
+                    extra={"kind": "missing_attribute", "element": "signal.validity",
+                           "id": new_signal.id, "value": None, "action": "skipped"},
+                )
+                continue
             fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
             for lane_idx in range(fromLane, toLane + 1):
                 lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
-                    breakpoint()
+                    degradation_logger.warning(
+                        "signal %s: validity lane %s not found in the first lane section - lane skipped",
+                        new_signal.id,
+                        lane_idx,
+                        extra={"kind": "unknown_reference", "element": "signal.validity",
+                               "id": new_signal.id, "value": lane_idx, "action": "skipped"},
+                    )
+                    continue
                 if hasattr(lane, 'signal_references'):
                     lane.signal_references.append(new_signal.id)
                 else:
@@ -560,7 +580,11 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
         "t"
     )  # position away from the reference curve
     new_signal_reference.orientation = road_signal_reference.get("orientation")
-    if road_signal_reference.find("validity") is not None:
+    if (
+        road_signal_reference.find("validity") is not None
+        and road_signal_reference.find("validity").get("fromLane") is not None
+        and road_signal_reference.find("validity").get("toLane") is not None
+    ):
         new_signal_reference.validity_from = road_signal_reference.find("validity").get("fromLane")
         new_signal_reference.validity_to = road_signal_reference.find("validity").get("toLane")
     if (
@@ -582,12 +606,25 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
     for child in road_signal_reference.iterchildren():
         if child.tag == 'validity':
             if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
-                breakpoint()
+                degradation_logger.warning(
+                    "signalReference %s: validity without fromLane/toLane - validity skipped",
+                    new_signal_reference.id,
+                    extra={"kind": "missing_attribute", "element": "signalReference.validity",
+                           "id": new_signal_reference.id, "value": None, "action": "skipped"},
+                )
+                continue
             fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
             for lane_idx in range(fromLane, toLane+1):
                 lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
-                    breakpoint()
+                    degradation_logger.warning(
+                        "signalReference %s: validity lane %s not found in the first lane section - lane skipped",
+                        new_signal_reference.id,
+                        lane_idx,
+                        extra={"kind": "unknown_reference", "element": "signalReference.validity",
+                               "id": new_signal_reference.id, "value": lane_idx, "action": "skipped"},
+                    )
+                    continue
                 if hasattr(lane, 'signal_references'):
                     lane.signal_references.append(new_signal_reference.id)
                 else:

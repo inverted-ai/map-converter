@@ -45,7 +45,7 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 
 `convert_map()` calls one keyword-only stage function per step, in this order; each stage writes its own output:
 
-1. `validate_config` — find the single `.xodr` in `cfg.dir_path` (the filename, minus extension, becomes the map name).
+1. `validate_config` — check the config before anything is read (`ConfigError`, exit code 2 from the CLI) and return the single `.xodr` in `cfg.dir_path` (the filename, minus extension, becomes the map name).
 2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then the header's `+proj=tmerc` geo-reference (lat/lon) and optional `<offset>`; falls back to `(0, 0)` with a warning.
 3. `export_osm` — `Network.load_opendrive` → `Network.export_lanelet_network` builds a CommonRoad lanelet network in the OpenDRIVE inertial frame (`filter_types`: `driving`, `onRamp`, `offRamp`, `exit`, `entry`), simplified, then `CR2LaneletConverter` (`crdesigner/map_conversion/lanelet2/cr2lanelet.py`) with a `CustomTransfomer` wrapping a Lanelet2 `UtmProjector` writes `<map>.osm`.
 4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).

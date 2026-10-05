@@ -44,14 +44,15 @@ arguments, each a field of `MapConversionConfig`:
 ```
 
 `dir_path` must contain exactly one `.xodr`; its file name (without `.xodr`) becomes the map name `<map>`.
-All outputs are written into `dir_path`.
+All outputs are written into `dir_path`. The configuration is checked before anything is read: no or several
+`.xodr` files, or `trim_radius` without `center`, stop the run with exit code 2 and write nothing.
 
 | Field | Default | Meaning |
 |---|---|---|
 | `dir_path` | required | Directory holding exactly one `.xodr`; all outputs are written here. |
 | `domain` | unset | Prefix for `iai_location_name` in `metadata.json` (`<domain>:<map>`); unset leaves it null. |
 | `lane_marking_join_threshold` | `0.1` | Distance (m) under which the markings of two neighbouring lanes are drawn as one line in the mesh. |
-| `visualization_fov` | `800` | Width (m) of the square area `visualization.png` shows, centred on `center`. |
+| `visualization_fov` | unset | Width (m) of the square area `visualization.png` shows, centred on `center`. Unset fits the whole road mesh with a 5% margin; the value used is recorded in `<map>_provenance.json`. |
 | `center` | unset | Map centre `[x, y]` in local metres: written to `metadata.json`, used as the render and trim centre. Unset uses the mesh centre. |
 | `trim_radius` | unset | Keep only lanelets and stoplines within this many metres of `center` (requires `center`). |
 | `trim_vertical_limits` | unset | `[min_z, max_z]`: stoplines outside the band are dropped; with `trim_radius`, lanelet points outside it are trimmed too. |
@@ -70,7 +71,7 @@ All outputs are written into `dir_path`.
 | `metadata.json` | `MapConfig`: `name`, `center`, `lanelet_map_origin` (lat, lon), `left_handed_coordinates`, the three file names above, `traffic_light_controller_path`, `iai_location_name` | `torchdrivesim.map.load_map_config` |
 | `visualization.png` | 2048×2048 top-down render centred on `center`, `visualization_fov` metres wide | People |
 | `<map>_signal_groups.json` | Traffic-light structure the OpenDRIVE file declares: junction per signal id (`membership`, with the source it came from), `<controller>` groups and `sequence`, conflicts, non-integer ids | `traffic_light_fsm.py` |
-| `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), Python and package versions, UTC time | People, `map_report.py` |
+| `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), the visualization FOV used, the traffic side of the roads (`RHT`, `LHT` or `mixed`), Python and package versions, UTC time | People, `map_report.py` |
 
 `metadata.json` must stay loadable by `MapConfig(**json)`, which rejects unknown keys, so extra information is
 written to separate sidecar files.
@@ -319,6 +320,8 @@ options:
 - **Map placed at (0, 0)**: the log says `Geo reference not found` or `Unable to parse geo reference`; see the
   geo-reference limit above.
 - **No stoplines**: compare `<signal>`/`<object>` counts in the report with `stoplines_by_agent_type`.
+- **`Invalid configuration: ...` and exit code 2**: the message names the problem (wrong number of `.xodr` files,
+  `trim_radius` without `center`); nothing was written.
 - **CUDA warning on start-up**: harmless; see Setup.
 
 ## Running the tests

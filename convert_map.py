@@ -48,6 +48,8 @@ from opendrive_signal_groups import write_signal_groups
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_VISUALIZATION_FOV = 800.0
+FOV_MARGIN = 1.05
 PROVENANCE_PACKAGES = (
     'torchdrivesim', 'torch', 'lanelet2', 'commonroad-io', 'numpy', 'lxml', 'pyproj', 'shapely', 'omegaconf',
 )
@@ -63,7 +65,8 @@ class MapConversionConfig:
             unset leaves it null.
         lane_marking_join_threshold: Distance (m) under which the markings of two neighbouring
             lanes are drawn as one line in the mesh.
-        visualization_fov: Width (m) of the square area ``visualization.png`` shows.
+        visualization_fov: Width (m) of the square area ``visualization.png`` shows; unset fits the
+            whole mesh around ``center`` with a 5% margin.
         center: Map centre ``[x, y]`` in local metres, written to ``metadata.json`` and used as
             the render and trim centre; unset uses the mesh centre.
         trim_radius: Keep only lanelets and stoplines within this many metres of ``center``.
@@ -80,7 +83,7 @@ class MapConversionConfig:
     dir_path: str
     domain: Optional[str] = None
     lane_marking_join_threshold: float = 0.1
-    visualization_fov: float = 800
+    visualization_fov: Optional[float] = None
     center: Optional[Tuple[float, float]] = None
     trim_radius: Optional[float] = None
     trim_vertical_limits: Optional[Tuple[float, float]] = None
@@ -321,6 +324,7 @@ class ParsedXodr:
     geo_reference: GeoReference
     geo_offset: Optional[GeoOffset]
     projector: object
+    traffic_side: Optional[str]  # "RHT", "LHT" or "mixed"
 
 
 @dataclasses.dataclass(slots=True)
@@ -340,12 +344,24 @@ class BuiltMesh:
     mesh_path: str
 
 
-def validate_config(*, cfg: MapConversionConfig) -> Optional[str]:
-    """Return the ``.xodr`` to convert, or ``None`` if ``cfg.dir_path`` holds none."""
-    xodr_files = glob.glob(os.path.join(cfg.dir_path, '*.xodr'))
-    if not xodr_files:
-        logger.error(f'No .xodr files found in {cfg.dir_path} - aborting')
-        return None
+class ConfigError(ValueError):
+    """An invalid :class:`MapConversionConfig`, found before anything is read or written."""
+
+
+def validate_config(*, cfg: MapConversionConfig) -> str:
+    """Check the configuration before parsing and return the ``.xodr`` to convert.
+
+    Raises:
+        ConfigError: ``trim_radius`` without ``center``, or ``dir_path`` not holding exactly one ``.xodr``.
+    """
+    if cfg.trim_radius is not None and cfg.center is None:
+        raise ConfigError('trim_radius requires center')
+    xodr_files = sorted(glob.glob(os.path.join(cfg.dir_path, '*.xodr')))
+    if len(xodr_files) != 1:
+        found = 'no .xodr file' if not xodr_files else (
+            f'{len(xodr_files)} .xodr files: ' + ', '.join(os.path.basename(f) for f in xodr_files)
+        )
+        raise ConfigError(f'{os.path.abspath(cfg.dir_path)} must hold exactly one .xodr; found {found}')
     return xodr_files[0]
 
 
@@ -376,7 +392,14 @@ def parse_xodr(*, opendrive_path: str) -> ParsedXodr:
         geo_reference=geo_reference,
         geo_offset=geo_offset,
         projector=projector,
+        traffic_side=traffic_side_of(opendrive=opendrive),
     )
+
+
+def traffic_side_of(*, opendrive) -> Optional[str]:
+    """``RHT`` or ``LHT`` if every road has that rule, ``mixed`` if they differ, ``None`` without roads."""
+    sides = {'RHT' if road.driving_direction else 'LHT' for road in opendrive.roads}
+    return None if not sides else sides.pop() if len(sides) == 1 else 'mixed'
 
 
 def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
@@ -452,7 +475,6 @@ def trim(*, cfg: MapConversionConfig, osm_path: str, projector) -> None:
     """Rewrite the ``.osm`` trimmed to ``cfg.trim_radius`` around ``cfg.center``, if requested."""
     # Trim the map if requested
     if cfg.trim_radius is not None:
-        assert cfg.center is not None, "Must specify center for trimming"
         lanelet_map = lanelet2.io.load(osm_path, projector)
         trimmed_map = trim_map(lanelet_map, center=cfg.center, radius=cfg.trim_radius,
                                vertical_limits=cfg.trim_vertical_limits)
@@ -552,6 +574,7 @@ def render_and_finish(
     stoplines_path: str,
     mesh: BuiltMesh,
     opendrive_path: str,
+    traffic_side: Optional[str],
 ) -> None:
     """Pick the map centre, write ``metadata.json``, render ``visualization.png``, record provenance."""
     if cfg.center is None:
@@ -573,6 +596,9 @@ def render_and_finish(
     store_map_config(map_cfg, metadata_path)
 
     # Visualize results
+    fov = cfg.visualization_fov
+    if fov is None:
+        fov = fitting_visualization_fov(verts=mesh.combined_mesh.verts, center=center)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     res = Resolution(2048, 2048)
     map_cfg = resolve_paths_to_absolute(map_cfg, root=cfg.dir_path)
@@ -594,12 +620,20 @@ def render_and_finish(
         camera_xy=camera_xy,
         camera_sc=camera_sc,
         res=res,
-        fov=cfg.visualization_fov,
+        fov=fov,
     )
     viz_path = os.path.join(cfg.dir_path, 'visualization.png')
     logger.info(f'Saving visualization to {viz_path}')
     imageio.imsave(viz_path, map_image[0].permute(1, 2, 0).cpu().numpy().astype(np.uint8))
-    write_provenance(cfg=cfg, xodr_path=opendrive_path, out_dir=cfg.dir_path)
+    write_provenance(
+        cfg=cfg, xodr_path=opendrive_path, out_dir=cfg.dir_path, visualization_fov=fov, traffic_side=traffic_side
+    )
+
+
+def fitting_visualization_fov(*, verts: torch.Tensor, center: list[float]) -> float:
+    """Width (m) of the square around ``center`` that holds every mesh vertex, plus 5%."""
+    offsets = (verts.reshape(-1, 2) - torch.tensor(center, dtype=verts.dtype)).abs()
+    return float(2.0 * offsets.max() * FOV_MARGIN) if offsets.numel() else DEFAULT_VISUALIZATION_FOV
 
 
 def sha256_file(*, path: str) -> str:
@@ -628,8 +662,18 @@ def git_identity(*, repo: str) -> dict:
     return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip())}
 
 
-def write_provenance(*, cfg: MapConversionConfig, xodr_path: str, out_dir: str) -> str:
+def write_provenance(
+    *,
+    cfg: MapConversionConfig,
+    xodr_path: str,
+    out_dir: str,
+    visualization_fov: float,
+    traffic_side: Optional[str],
+) -> str:
     """Write ``<map>_provenance.json``: what was converted, with which converter and settings.
+
+    Also records values the conversion derived: the visualization FOV it rendered with and the
+    traffic side (``RHT``/``LHT``/``mixed``) of the input's roads.
 
     Returns:
         Absolute path of the written file.
@@ -644,6 +688,8 @@ def write_provenance(*, cfg: MapConversionConfig, xodr_path: str, out_dir: str) 
         "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "input": {"path": os.path.abspath(xodr_path), "sha256": sha256_file(path=xodr_path)},
         "config": OmegaConf.to_container(OmegaConf.structured(cfg)),
+        "visualization_fov": visualization_fov,
+        "traffic_side": traffic_side,
         "converter": git_identity(repo=REPO_ROOT),
         "python": sys.version.split()[0],
         "packages": versions,
@@ -664,8 +710,6 @@ def convert_map(cfg: MapConversionConfig) -> None:
     ``cfg.dir_path``.
     """
     opendrive_path = validate_config(cfg=cfg)
-    if opendrive_path is None:
-        return
     parsed = parse_xodr(opendrive_path=opendrive_path)
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
@@ -687,6 +731,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         stoplines_path=stoplines_path,
         mesh=mesh,
         opendrive_path=opendrive_path,
+        traffic_side=parsed.traffic_side,
     )
 
 
@@ -696,4 +741,8 @@ if __name__ == '__main__':
     )
     logger.setLevel(logging.DEBUG)
     logger.addHandler(logging.StreamHandler())
-    convert_map(cfg)
+    try:
+        convert_map(cfg)
+    except ConfigError as exc:
+        logger.error(f'Invalid configuration: {exc}')
+        sys.exit(2)

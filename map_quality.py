@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import glob
 import hashlib
 import json
 import logging
@@ -144,8 +145,18 @@ class ConversionOutputs:
             load_errors=[str(e) for e in load_errors],
             stoplines=stoplines,
             mesh=mesh,
-            visualization_fov=DEFAULT_VISUALIZATION_FOV,
+            visualization_fov=_rendered_visualization_fov(map_dir=map_dir),
         )
+
+
+def _rendered_visualization_fov(*, map_dir: str) -> float:
+    """FOV the converter recorded in ``<map>_provenance.json``; outputs without one used the old default."""
+    for path in glob.glob(os.path.join(map_dir, "*_provenance.json")):
+        with open(path) as f:
+            fov = json.load(f).get("visualization_fov")
+        if fov is not None:
+            return float(fov)
+    return DEFAULT_VISUALIZATION_FOV
 
 
 # --------------------------------------------------------------------------------------

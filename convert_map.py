@@ -23,6 +23,7 @@ from pathlib import Path
 
 import torch.cuda
 from lxml import etree
+import pyproj
 from omegaconf import OmegaConf
 from shapely.geometry import LineString
 
@@ -36,6 +37,7 @@ from torchdrivesim.utils import Resolution
 
 from crdesigner.common.config.general_config import GeneralConfig
 from crdesigner.common.config.lanelet2_config import lanelet2_config
+from crdesigner.map_conversion.common.utils import clean_projection_string
 from crdesigner.map_conversion.lanelet2.cr2lanelet import CR2LaneletConverter
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser import parse_opendrive
 from crdesigner.common.config.opendrive_config import OpenDriveConfig
@@ -78,6 +80,8 @@ class MapConversionConfig:
             and the run fails if it never does. None disables the budget.
         simplify_max_iterations: Attempts at fitting the size budget.
         simplify_tolerance_factor: Factor the tolerance grows by per attempt.
+        allow_zero_origin: Convert a map whose ``<geoReference>`` is missing or unusable at
+            latitude/longitude (0, 0) instead of failing.
     """
 
     dir_path: str
@@ -92,6 +96,7 @@ class MapConversionConfig:
     osm_target_bytes: Optional[int] = 1000 * 1024 * 1024 #10 * 1024 * 1024
     simplify_max_iterations: int = 1
     simplify_tolerance_factor: float = 2.0
+    allow_zero_origin: bool = False
 
 
 @dataclasses.dataclass
@@ -123,10 +128,16 @@ class GeoOffset:
 
 @dataclasses.dataclass
 class GeoReference:
-    """Latitude/longitude of the map's local origin."""
+    """Latitude/longitude of the map's local origin.
+
+    ``translation`` is subtracted from projected (geo-referenced) coordinates to get local
+    coordinates: the false easting/northing for ``tmerc``, the map centre for ``utm``.
+    """
 
     lat: float
     lon: float
+    translation: Tuple[float, float] = (0.0, 0.0)
+    zone: Optional[int] = None
 
     @property
     def origin(self):
@@ -144,21 +155,54 @@ class GeoReference:
         return f'+proj=tmerc +lat_0={self.lat} +lon_0={self.lon}'
 
 
-def extract_geo_reference(geo_reference: str) -> Optional[GeoReference]:
-    """Origin from a ``+proj=tmerc`` geo-reference string, or ``None`` for any other projection."""
-    proj_pattern = r"\+proj=([\w]+)"
-    lat_pattern = r"\+lat_0=([-\d.]+)"
-    lon_pattern = r"\+lon_0=([-\d.]+)"
-    proj_match = re.search(proj_pattern, geo_reference)
-    lat_match = re.search(lat_pattern, geo_reference)
-    lon_match = re.search(lon_pattern, geo_reference)
+class InputError(ValueError):
+    """The OpenDRIVE input cannot be converted as configured (reported, never written around)."""
 
-    if proj_match is not None and proj_match.group(1) == 'tmerc' and lat_match and lon_match:
-        latitude = float(lat_match.group(1))
-        longitude = float(lon_match.group(1))
-        return GeoReference(latitude, longitude)
-    else:
+
+def parse_geo_reference(*, text: Optional[str], centre: Optional[Tuple[float, float]]) -> Optional[GeoReference]:
+    """Origin and local-frame translation from an OpenDRIVE ``<geoReference>`` PROJ string.
+
+    Args:
+        text: The ``<geoReference>`` contents.
+        centre: The map centre in projected coordinates; needed for ``utm``.
+
+    Returns:
+        ``tmerc``: origin ``(lat_0, lon_0)``, translation ``(x_0, y_0)``. ``utm``: origin at the map
+        centre, translation = the centre. ``None`` for a missing, unparseable or other projection.
+    """
+    if not text or not text.strip():
         return None
+    text = clean_projection_string(text)
+    try:
+        crs = pyproj.CRS.from_user_input(text)
+    except pyproj.exceptions.CRSError:
+        return None
+    # pyproj validates; values are read as written, since its PROJ round trip keeps only 15 digits.
+    params = dict(token[1:].split("=", 1) for token in text.split() if token.startswith("+") and "=" in token)
+    if params.get("proj") == "tmerc":
+        return GeoReference(
+            lat=float(params.get("lat_0", 0.0)),
+            lon=float(params.get("lon_0", 0.0)),
+            translation=(float(params.get("x_0", 0.0)), float(params.get("y_0", 0.0))),
+        )
+    if params.get("proj") == "utm" and centre is not None:
+        lon, lat = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(*centre)
+        return GeoReference(lat=lat, lon=lon, translation=(float(centre[0]), float(centre[1])), zone=int(params["zone"]) if "zone" in params else None)
+    return None
+
+
+def check_geo_reference(*, geo_reference: GeoReference, source: str) -> None:
+    """Fail on an origin no real map can have.
+
+    Raises:
+        InputError: ``|lat| >= 85`` or a UTM origin outside its declared zone.
+    """
+    if abs(geo_reference.lat) >= 85.0:
+        raise InputError(f"{source}: origin latitude {geo_reference.lat:.3f} is outside the supported range")
+    if geo_reference.zone is not None:
+        zone = int((geo_reference.lon + 180.0) // 6.0) % 60 + 1
+        if zone != int(geo_reference.zone):
+            raise InputError(f"{source}: UTM origin longitude {geo_reference.lon:.3f} is outside zone {geo_reference.zone}")
 
 
 def simplify_lanelet_network(*, network: LaneletNetwork, tolerance: float) -> int:
@@ -302,18 +346,31 @@ class CustomTransfomer:
     """
     I could not find a way to construct a pyproj transformer equivalent to the Lanelet2 UtmProjector,
     so I opted to use a wrapper instead.
+
+    ``to_local`` maps parsed OpenDRIVE coordinates into the map's local frame (header offset,
+    then ``translation``); the ``.osm``, the mesh and the stoplines all use that frame.
     """
-    def __init__(self, projector, offset: Optional[GeoOffset] = None):
+    def __init__(self, projector, offset: Optional[GeoOffset] = None, translation: Tuple[float, float] = (0.0, 0.0)):
         self.projector = projector
         self.offset = offset
+        self.translation = translation
+
+    @property
+    def rotation(self) -> float:
+        """Radians the header offset rotates local coordinates by."""
+        return math.radians(float(self.offset.hdg)) if self.offset is not None else 0.0
+
+    def to_local(self, x, y):
+        """Parsed OpenDRIVE ``(x, y)`` in the map's local metric frame."""
+        if self.offset is not None:
+            x, y = self.offset.apply_offset(x, y)
+        return x - self.translation[0], y - self.translation[1]
 
     def transform(self, x, y):
         """Local ``(x, y)`` to ``(lat, lon)``, applying the header offset first."""
-        if self.offset is not None:
-            x, y = self.offset.apply_offset(x, y)
+        x, y = self.to_local(x, y)
         transformed = self.projector.reverse(lanelet2.core.BasicPoint3d(x, y, 0))
         return transformed.lat, transformed.lon
-
 
 @dataclasses.dataclass(slots=True)
 class ParsedXodr:
@@ -324,6 +381,7 @@ class ParsedXodr:
     geo_reference: GeoReference
     geo_offset: Optional[GeoOffset]
     projector: object
+    frame: CustomTransfomer
     traffic_side: Optional[str]  # "RHT", "LHT" or "mixed"
 
 
@@ -365,26 +423,48 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
     return xodr_files[0]
 
 
-def parse_xodr(*, opendrive_path: str) -> ParsedXodr:
+def projected_centre(*, opendrive, geo_offset: Optional[GeoOffset]) -> Optional[Tuple[float, float]]:
+    """Map centre in projected coordinates: the header bounding box, else the road start points."""
+    box = [float(getattr(opendrive.header, side) or 0.0) for side in ("north", "south", "east", "west")]
+    if any(box):
+        north, south, east, west = box
+        return (east + west) / 2.0, (north + south) / 2.0
+    starts = [g.start_position for road in opendrive.roads for g in road.plan_view._geometries]
+    if not starts:
+        return None
+    xs, ys = zip(*(geo_offset.apply_offset(x, y) if geo_offset else (x, y) for x, y in starts))
+    return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+
+
+def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> ParsedXodr:
     """Parse the OpenDRIVE file and build the Lanelet2 projector from its geo-reference."""
     logger.info(f'Using {opendrive_path} as input')
     location = os.path.basename(opendrive_path)[:-5]
     opendrive = parse_opendrive(Path(opendrive_path))
 
     # Construct Lanelet2 projector
-    if opendrive.header.geo_reference is None:
-        logger.warning(f'Geo reference not found in {opendrive_path} - Lanelet2 map will not be properly geo referenced')
-        geo_reference = GeoReference(0.0, 0.0)
-    else:
-        geo_reference = extract_geo_reference(geo_reference=opendrive.header.geo_reference)
-        if geo_reference is None:
-            logger.warning(f'Unable to parse geo reference - Lanelet2 map will not be properly geo referenced')
-            geo_reference = GeoReference(0.0, 0.0)
     if opendrive.header.offset is not None:
         geo_offset = GeoOffset.from_dict(opendrive.header.offset)
-        geo_reference.offset = geo_offset
     else:
         geo_offset = None
+    geo_reference = parse_geo_reference(
+        text=opendrive.header.geo_reference, centre=projected_centre(opendrive=opendrive, geo_offset=geo_offset)
+    )
+    if geo_reference is None:
+        problem = (
+            'no <geoReference>' if not opendrive.header.geo_reference
+            else f'an unusable <geoReference> ({opendrive.header.geo_reference!r})'
+        )
+        if not allow_zero_origin:
+            raise InputError(
+                f'{os.path.abspath(opendrive_path)} has {problem}, so the map cannot be placed. '
+                f'Set allow_zero_origin=true to convert it at latitude/longitude (0, 0).'
+            )
+        logger.warning(f'{opendrive_path} has {problem} - converting at (0, 0) because allow_zero_origin is set')
+        geo_reference = GeoReference(0.0, 0.0)
+    elif geo_reference.origin == (0.0, 0.0) and geo_reference.translation == (0.0, 0.0):
+        logger.warning(f'{opendrive_path} declares its origin at latitude/longitude (0, 0)')
+    check_geo_reference(geo_reference=geo_reference, source=os.path.abspath(opendrive_path))
     projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
     return ParsedXodr(
         location=location,
@@ -392,6 +472,7 @@ def parse_xodr(*, opendrive_path: str) -> ParsedXodr:
         geo_reference=geo_reference,
         geo_offset=geo_offset,
         projector=projector,
+        frame=CustomTransfomer(projector, geo_offset, geo_reference.translation),
         traffic_side=traffic_side_of(opendrive=opendrive),
     )
 
@@ -445,7 +526,9 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
                 f'(removed {removed} vertices across {len(lanelet_network.lanelets)} lanelets)'
             )
         l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
-        osm = l2osm.convert_lanelet_network(lanelet_network, transformer=CustomTransfomer(parsed.projector, parsed.geo_offset))
+        osm = l2osm.convert_lanelet_network(lanelet_network, transformer=parsed.frame)
+        if next(osm.iter('node'), None) is None:
+            raise InputError(f'No lanelets of the converted lane types ({", ".join(open_drive_config.filter_types)}) - the map is empty')
         osm_bytes = etree.tostring(osm, xml_declaration=True, encoding="UTF-8", pretty_print=True)
         size_mb = len(osm_bytes) / (1024 * 1024)
         if not size_budget_active:
@@ -482,7 +565,12 @@ def trim(*, cfg: MapConversionConfig, osm_path: str, projector) -> None:
 
 
 def extract_stoplines(
-    *, cfg: MapConversionConfig, location: str, lanelet_network: LaneletNetwork, road_network: Network
+    *,
+    cfg: MapConversionConfig,
+    location: str,
+    lanelet_network: LaneletNetwork,
+    road_network: Network,
+    frame: CustomTransfomer,
 ) -> str:
     """Write traffic-light, stop-sign and yield-sign stoplines to ``<map>_stoplines.json``.
 
@@ -497,6 +585,8 @@ def extract_stoplines(
         agent_type = 'traffic_light'
         opendrive_id = traffic_light.opendrive_id
         for left, right in traffic_light.iai_stoplines:
+            left = np.array([*frame.to_local(left[0], left[1]), *left[2:]])
+            right = np.array([*frame.to_local(right[0], right[1]), *right[2:]])
             center = (left + right) / 2
             right_to_left = left - right
             x, y, z = float(center[0]), float(center[1]), float(center[2])
@@ -524,7 +614,8 @@ def extract_stoplines(
             z = float(xy[2])
         else:
             z = 0.0
-        x, y = float(xy[0]), float(xy[1])
+        x, y = (float(v) for v in frame.to_local(xy[0], xy[1]))
+        orientation = orientation + frame.rotation
 
         include_stopline = True
         if cfg.center is not None and cfg.trim_radius is not None:
@@ -710,7 +801,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
     ``cfg.dir_path``.
     """
     opendrive_path = validate_config(cfg=cfg)
-    parsed = parse_xodr(opendrive_path=opendrive_path)
+    parsed = parse_xodr(opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin)
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
     stoplines_path = extract_stoplines(
@@ -718,6 +809,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         location=parsed.location,
         lanelet_network=exported.lanelet_network,
         road_network=exported.road_network,
+        frame=parsed.frame,
     )
     write_signal_groups(
         xodr_path=opendrive_path, out_path=os.path.join(cfg.dir_path, f"{parsed.location}_signal_groups.json")
@@ -745,4 +837,7 @@ if __name__ == '__main__':
         convert_map(cfg)
     except ConfigError as exc:
         logger.error(f'Invalid configuration: {exc}')
+        sys.exit(2)
+    except InputError as exc:
+        logger.error(f'Cannot convert: {exc}')
         sys.exit(2)

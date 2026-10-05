@@ -60,6 +60,7 @@ All outputs are written into `dir_path`. The configuration is checked before any
 | `osm_target_bytes` | `1048576000` | Size budget for the `.osm`: the tolerance widens until the file fits, and the run fails if it never does. Unset disables the budget. |
 | `simplify_max_iterations` | `1` | Attempts at fitting the size budget. |
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
+| `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is missing or unusable at latitude/longitude (0, 0) instead of failing. |
 
 ## Output files
 
@@ -237,11 +238,14 @@ well. Use it to triage a batch of new maps, or to compare two converter versions
 ```
 
 `run` copies each `.xodr` into `<out>/maps/<relative path>/` and converts it there, so input folders are never
-written to. It writes `report.json` (rewritten after every map, so an interrupted run keeps its progress) and a
+written to. `--convert-arg FIELD=VALUE` passes a `MapConversionConfig` field to every conversion (e.g.
+`--convert-arg allow_zero_origin=true`). `--exclude GLOB` skips matching paths (relative to `--maps`), e.g.
+`--exclude 'Carla_UE4_old/*'`; `--map` limits the run to named files. It writes `report.json` (rewritten after every map, so an interrupted run keeps its progress) and a
 self-contained `report.html`. Per map it records:
 
-- **outcome**: `ok`, `exception` (with the exception class and the innermost `file:line`), `timeout`, or `pdb`
-  (the converter stopped in a debugger);
+- **outcome**: `ok`; `refused` (the converter declined on purpose, e.g. no usable geo-reference, with its
+  message); `exception` (with the exception class and the innermost `file:line`); `timeout`; or `pdb` (the
+  converter stopped in a debugger);
 - wall time and peak memory of the conversion;
 - input identity: sha256 (duplicates marked), size, header vendor and OpenDRIVE revision, counts of
   `<controller>`, `<control>`, `<signal>`, `<signalReference>`, `<object>`, and every `roadMark` type, with
@@ -275,7 +279,8 @@ never count as a move.
 
 ```text
 usage: map_report.py run [-h] --maps MAPS --out OUT [--converter CONVERTER] [--map ONLY]
-                         [--timeout-s TIMEOUT_S] [--fsm]
+                         [--timeout-s TIMEOUT_S] [--fsm] [--exclude GLOB]
+                         [--convert-arg FIELD=VALUE]
 
 options:
   -h, --help            show this help message and exit
@@ -287,6 +292,11 @@ options:
   --timeout-s TIMEOUT_S
                         Per-map timeout in seconds (default 1800)
   --fsm                 Also run traffic_light_fsm.py on each converted map
+  --exclude GLOB        Skip .xodr paths (relative to --maps) matching this glob, e.g.
+                        'Carla_UE4_old/*'; repeatable
+  --convert-arg FIELD=VALUE
+                        Pass a MapConversionConfig field to convert_map.py, e.g.
+                        allow_zero_origin=true; repeatable
 
 usage: map_report.py compare [-h] --out OUT before after
 
@@ -304,8 +314,10 @@ options:
 - Lanes of type `driving`, `onRamp`, `offRamp`, `exit` and `entry` become lanelets; other lane types are dropped.
 - Traffic lights come from dynamic `<signal>` elements; stop and yield signs from `<object>` elements with
   CARLA's stencil names. Other vendors' encodings may produce no stoplines.
-- The geo-reference is read from `+proj=tmerc +lat_0=… +lon_0=…`; other projections, or a missing
-  `<geoReference>`, place the map at latitude/longitude (0, 0) with a warning.
+- Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; `x_0`/`y_0` false easting/northing honoured) and
+  `+proj=utm +zone=…` (origin at the map centre). A missing, unparseable or other projection stops the run
+  (exit code 2) unless `allow_zero_origin=true`. A header `<offset>` is applied to the `.osm`, the mesh and the
+  stoplines alike.
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
   without a marking type.
 - `<controller>` groups and `sequence` are read for the traffic-light tool (levels B/C); the converter itself does not use them.
@@ -317,8 +329,9 @@ options:
 - **A map fails or produces nothing useful**: run `map_report.py run --maps <folder> --out <dir>` on it. The
   report gives the outcome and, for an exception, the class and the `file:line` where it was raised, together
   with the input's vendor and element counts.
-- **Map placed at (0, 0)**: the log says `Geo reference not found` or `Unable to parse geo reference`; see the
-  geo-reference limit above.
+- **`Cannot convert: ... cannot be placed`**: the `.xodr` has no usable `<geoReference>`. Add one, or set
+  `allow_zero_origin=true` to convert it at (0, 0). A warning `declares its origin at latitude/longitude (0, 0)`
+  means the file itself says (0, 0).
 - **No stoplines**: compare `<signal>`/`<object>` counts in the report with `stoplines_by_agent_type`.
 - **`Invalid configuration: ...` and exit code 2**: the message names the problem (wrong number of `.xodr` files,
   `trim_radius` without `center`); nothing was written.

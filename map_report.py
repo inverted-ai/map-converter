@@ -23,6 +23,7 @@ import base64
 import collections
 import dataclasses
 import datetime
+import fnmatch
 import glob
 import hashlib
 import html
@@ -54,6 +55,7 @@ NEVER_MOVES = ("wall_s", "peak_rss_mb")
 FLOAT_MOVE_FRACTION = 0.01
 THUMBNAIL_PX = 384
 POLL_S = 0.2
+REFUSED_EXIT_CODE = 2
 
 
 # --------------------------------------------------------------------------------------
@@ -126,11 +128,13 @@ _EXCEPTION_RE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|
 
 
 def classify(*, result: ChildResult, root: str) -> dict[str, Any]:
-    """Outcome of a conversion child: ``ok``, ``exception``, ``timeout`` or ``pdb``.
+    """Outcome of a conversion child: ``ok``, ``refused``, ``exception``, ``timeout`` or ``pdb``.
 
     pdb prints its ``(Pdb)`` prompt on stdout and, with stdin closed, quits via ``BdbQuit``,
-    so both streams are checked. For an exception, the class and the innermost frame
-    (relative to ``root`` when inside it) are recorded.
+    so both streams are checked. ``refused`` is a deliberate exit code 2 without a traceback (an
+    invalid configuration or an input the converter will not place), recorded with its message.
+    For an exception, the class and the innermost frame (relative to ``root`` when inside it)
+    are recorded.
     """
     if result.timed_out:
         return {"outcome": "timeout"}
@@ -139,6 +143,9 @@ def classify(*, result: ChildResult, root: str) -> dict[str, Any]:
         return {"outcome": "pdb", **_last_frame(stderr=result.stderr, root=root)}
     if result.returncode == 0:
         return {"outcome": "ok"}
+    if result.returncode == REFUSED_EXIT_CODE and "Traceback" not in result.stderr:
+        lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip()]
+        return {"outcome": "refused", "message": lines[-1] if lines else None}
     return {
         "outcome": "exception",
         "exception": _exception_class(stderr=result.stderr),
@@ -319,8 +326,12 @@ def fsm_review_summary(*, review_path: str) -> dict[str, Any]:
     }
 
 
-def discover_maps(*, maps_dir: str, only: Optional[list[str]]) -> list[str]:
-    """Relative paths of every ``.xodr`` under ``maps_dir`` (sorted), optionally filtered."""
+def discover_maps(*, maps_dir: str, only: Optional[list[str]], exclude: tuple[str, ...] = ()) -> list[str]:
+    """Relative paths of every ``.xodr`` under ``maps_dir`` (sorted), optionally filtered.
+
+    ``only`` keeps exactly those relative paths; ``exclude`` drops paths matching any glob pattern
+    (``fnmatch``, e.g. ``Carla_UE4_old/*`` or ``*/Town12.xodr``).
+    """
     found = sorted(
         os.path.relpath(p, maps_dir)
         for p in glob.glob(os.path.join(maps_dir, "**", "*.xodr"), recursive=True)
@@ -331,19 +342,25 @@ def discover_maps(*, maps_dir: str, only: Optional[list[str]]) -> list[str]:
         if missing:
             raise FileNotFoundError(f"--map not found under {maps_dir}: {sorted(missing)}")
         found = [p for p in found if p in wanted]
-    return found
+    return [p for p in found if not any(fnmatch.fnmatch(p, pattern) for pattern in exclude)]
 
 
 def convert_one(
-    *, xodr_path: str, map_dir: str, converter: str, timeout_s: float, with_fsm: bool
+    *,
+    xodr_path: str,
+    map_dir: str,
+    converter: str,
+    timeout_s: float,
+    with_fsm: bool,
+    convert_args: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Convert one map in a fresh ``map_dir`` and measure it."""
+    """Convert one map in a fresh ``map_dir`` (``convert_args`` passed to ``convert_map.py``) and measure it."""
     if os.path.exists(map_dir):
         shutil.rmtree(map_dir)
     os.makedirs(map_dir)
     shutil.copy2(xodr_path, os.path.join(map_dir, os.path.basename(xodr_path)))
     result = run_child(
-        argv=[sys.executable, os.path.join(converter, "convert_map.py"), f"dir_path={map_dir}"],
+        argv=[sys.executable, os.path.join(converter, "convert_map.py"), f"dir_path={map_dir}", *convert_args],
         cwd=map_dir,
         timeout_s=timeout_s,
         log_prefix=os.path.join(map_dir, "convert"),
@@ -405,6 +422,8 @@ def run_report(
     only: Optional[list[str]],
     timeout_s: float,
     with_fsm: bool,
+    convert_args: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (),
 ) -> str:
     """Convert and measure every map; write ``report.json`` and ``report.html``.
 
@@ -430,11 +449,13 @@ def run_report(
         "ruler_git": git_identity(repo=REPO_ROOT),
         "python": sys.version.split()[0],
         "timeout_s": timeout_s,
+        "convert_args": list(convert_args),
+        "exclude": list(exclude),
         "fsm": with_fsm,
         "maps": [],
     }
     first_by_sha: dict[str, str] = {}
-    for index, rel in enumerate(discover_maps(maps_dir=maps_dir, only=only), start=1):
+    for index, rel in enumerate(discover_maps(maps_dir=maps_dir, only=only, exclude=exclude), start=1):
         xodr_path = os.path.join(maps_dir, rel)
         sha = sha256_file(path=xodr_path)
         logger.info("[%d] converting %s", index, xodr_path)
@@ -453,6 +474,7 @@ def run_report(
                 converter=converter,
                 timeout_s=timeout_s,
                 with_fsm=with_fsm,
+                convert_args=convert_args,
             ),
         }
         first_by_sha.setdefault(sha, rel)
@@ -610,7 +632,7 @@ table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
 th{position:sticky;top:0;background:var(--bg);font-weight:600}
 td.n{text-align:right;font-variant-numeric:tabular-nums}
-.ok{color:var(--ok);font-weight:600}.exception,.pdb,.timeout{color:var(--bad);font-weight:600}
+.ok{color:var(--ok);font-weight:600}.refused{color:var(--muted);font-weight:600}.exception,.pdb,.timeout{color:var(--bad);font-weight:600}
 img.thumb{width:160px;height:160px;object-fit:contain;border:1px solid var(--line);border-radius:4px;background:#fff}
 .charts img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff;margin:4px 0}
 code{font-size:12px}
@@ -652,7 +674,7 @@ def _page(*, title: str, body: str) -> str:
     )
 
 
-OUTCOME_COLOURS = {"ok": "#0ca30c", "exception": "#d03b3b", "timeout": "#ec835a", "pdb": "#fab219"}
+OUTCOME_COLOURS = {"ok": "#0ca30c", "refused": "#8a8f94", "exception": "#d03b3b", "timeout": "#ec835a", "pdb": "#fab219"}
 SERIES_COLOUR = "#2a78d6"
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
@@ -754,7 +776,7 @@ def render_report_html(*, report: dict[str, Any]) -> str:
         crossed = metrics.get("crossed_geometry") or {}
         stoplines = metrics.get("stoplines_by_agent_type") or {}
         fsm = m.get("fsm") or {}
-        detail = conv.get("exception") or ""
+        detail = conv.get("exception") or conv.get("message") or ""
         if conv.get("location"):
             detail += f" @ {conv['location']}"
         rows.append(
@@ -845,6 +867,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     run.add_argument("--map", action="append", dest="only", help="Only this .xodr (path relative to --maps); repeatable")
     run.add_argument("--timeout-s", type=float, default=1800.0, help="Per-map timeout in seconds (default 1800)")
     run.add_argument("--fsm", action="store_true", help="Also run traffic_light_fsm.py on each converted map")
+    run.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="Skip .xodr paths (relative to --maps) matching this glob, e.g. 'Carla_UE4_old/*'; repeatable",
+    )
+    run.add_argument(
+        "--convert-arg",
+        action="append",
+        default=[],
+        metavar="FIELD=VALUE",
+        help="Pass a MapConversionConfig field to convert_map.py, e.g. allow_zero_origin=true; repeatable",
+    )
     compare = sub.add_parser("compare", help="List every metric that moved between two runs")
     compare.add_argument("before", help="report.json of the earlier run")
     compare.add_argument("after", help="report.json of the later run")
@@ -864,6 +900,8 @@ def main() -> None:
             only=args.only,
             timeout_s=args.timeout_s,
             with_fsm=args.fsm,
+            convert_args=tuple(args.convert_arg),
+            exclude=tuple(args.exclude),
         )
     else:
         run_compare(before_path=args.before, after_path=args.after, out_dir=args.out)

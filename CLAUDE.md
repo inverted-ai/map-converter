@@ -46,14 +46,14 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 `convert_map()` calls one keyword-only stage function per step, in this order; each stage writes its own output:
 
 1. `validate_config` — check the config before anything is read (`ConfigError`, exit code 2 from the CLI) and return the single `.xodr` in `cfg.dir_path` (the filename, minus extension, becomes the map name).
-2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then the header's `+proj=tmerc` geo-reference (lat/lon) and optional `<offset>`; falls back to `(0, 0)` with a warning.
+2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then `parse_geo_reference` (pyproj; `tmerc` and `utm`) and the header `<offset>`, combined in one `CustomTransfomer` local frame; a missing/unusable geo-reference raises `InputError` unless `allow_zero_origin`.
 3. `export_osm` — `Network.load_opendrive` → `Network.export_lanelet_network` builds a CommonRoad lanelet network in the OpenDRIVE inertial frame (`filter_types`: `driving`, `onRamp`, `offRamp`, `exit`, `entry`), simplified, then `CR2LaneletConverter` (`crdesigner/map_conversion/lanelet2/cr2lanelet.py`) with a `CustomTransfomer` wrapping a Lanelet2 `UtmProjector` writes `<map>.osm`.
 4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).
 5. `extract_stoplines` — `traffic_light.iai_stoplines` from each traffic light, plus `Network._iai_stop_signs` / `_iai_yield_signs`, trim-filtered → `<map>_stoplines.json`; then `write_signal_groups` → `<map>_signal_groups.json`.
 6. `build_mesh` — `torchdrivesim.lanelet2.road_mesh_from_lanelet_map` / `lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
 7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
 
-Frame invariant: stoplines and the FSM use raw XODR-local coordinates; the mesh is built by reloading the `.osm` through the `UtmProjector`. Any offset must be applied identically to both.
+Frame invariant: the vendored parser subtracts the header `<offset>` from road geometry; `CustomTransfomer.to_local` adds it back and subtracts the false easting / UTM centre. The `.osm` (hence the mesh) and the stoplines both go through `to_local`, so they share one local frame.
 
 ## Where the IAI seams live
 

@@ -36,6 +36,11 @@ def test_exception_outcome_names_class_and_frame(tmp_path):
     }
 
 
+def test_clean_exit_code_2_is_refused_with_message(tmp_path):
+    result = _child(tmp_path=tmp_path, code="import sys\nprint('Cannot convert: no geo-reference', file=sys.stderr)\nsys.exit(2)\n")
+    assert mr.classify(result=result, root=str(tmp_path)) == {"outcome": "refused", "message": "Cannot convert: no geo-reference"}
+
+
 def test_breakpoint_is_pdb_not_hang(tmp_path):
     result = _child(tmp_path=tmp_path, code="breakpoint()\nraise SystemExit(0)\n", timeout_s=20.0)
     assert not result.timed_out
@@ -94,6 +99,14 @@ def test_canonical_mesh_digest_ignores_category_order(tmp_path):
     b["verts"] = [[0, 1]]
     (tmp_path / "b.json").write_text(json.dumps(b))
     assert mr.canonical_mesh_digest(path=str(tmp_path / "a.json")) != mr.canonical_mesh_digest(path=str(tmp_path / "b.json"))
+
+
+def test_discover_maps_exclude_globs(tmp_path):
+    for rel in ("a/Town12/Town12.xodr", "old/x/x.xodr", "b/keep.xodr"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("<OpenDRIVE/>")
+    found = mr.discover_maps(maps_dir=str(tmp_path), only=None, exclude=("old/*", "*/Town12.xodr"))
+    assert found == ["b/keep.xodr"]
 
 
 def test_moved_rules():
@@ -168,3 +181,18 @@ def test_compare_identical_runs_has_no_moves(two_runs, tmp_path):
     comparison = mr.compare_reports(before=two_runs[0], after=two_runs[1])
     assert comparison["maps_with_moves"] == []
     assert len(comparison["maps"]) == 2
+
+
+def test_convert_args_reach_the_converter(tmp_path):
+    maps = tmp_path / "maps" / "nogeo"
+    maps.mkdir(parents=True)
+    (maps / "nogeo.xodr").write_text(xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None))
+    out = tmp_path / "out"
+    script = os.path.join(REPO_ROOT, "map_report.py")
+    for extra, outcome in (([], "refused"), (["--convert-arg", "allow_zero_origin=true"], "ok")):
+        subprocess.run(
+            [sys.executable, script, "run", "--maps", str(tmp_path / "maps"), "--out", str(out), *extra],
+            check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=300,
+        )
+        with open(out / "report.json") as f:
+            assert json.load(f)["maps"][0]["conversion"]["outcome"] == outcome

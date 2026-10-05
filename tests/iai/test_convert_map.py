@@ -127,3 +127,78 @@ def test_traffic_side_recorded_in_provenance(tmp_path, rules, expected):
     assert result.returncode == 0, result.stderr
     with open(tmp_path / "side_provenance.json") as f:
         assert json.load(f)["traffic_side"] == expected
+
+
+@pytest.mark.parametrize(
+    "text, lat, lon, translation",
+    [
+        ("+proj=tmerc +lat_0=49 +lon_0=8 +k=1 +x_0=0 +y_0=0 +ellps=WGS84", 49.0, 8.0, (0.0, 0.0)),
+        ("+proj=tmerc +lat_0=4.9e+01 +lon_0=8.0e+00 +ellps=WGS84", 49.0, 8.0, (0.0, 0.0)),
+        ("+proj=tmerc +lat_0=0 +lon_0=-117 +k=0.9996 +x_0=19951.4 +y_0=-3.63093e+06 +datum=WGS84", 0.0, -117.0, (19951.4, -3630930.0)),
+    ],
+)
+def test_parse_tmerc_geo_reference(text, lat, lon, translation):
+    geo = cm.parse_geo_reference(text=text, centre=None)
+    assert (geo.lat, geo.lon) == pytest.approx((lat, lon))
+    assert geo.translation == pytest.approx(translation)
+
+
+def test_parse_keeps_every_digit_of_the_origin():
+    geo = cm.parse_geo_reference(text="+proj=tmerc +lat_0=37.33241890014467 +lon_0=-121.8928770999713 +k=1", centre=None)
+    assert (geo.lat, geo.lon) == (37.33241890014467, -121.8928770999713)
+
+
+def test_parse_utm_geo_reference_centres_origin_on_the_map():
+    geo = cm.parse_geo_reference(text="+proj=utm +zone=32 +ellps=WGS84 +units=m", centre=(500000.0, 5428000.0))
+    assert geo.lon == pytest.approx(9.0)  # zone 32 central meridian
+    assert 48.9 < geo.lat < 49.1
+    assert geo.translation == (500000.0, 5428000.0)
+
+
+@pytest.mark.parametrize("text", [None, "", "not a projection", "+proj=utm +ellps=WGS84", "+proj=merc +lat_ts=0"])
+def test_unusable_geo_reference_is_none(text):
+    assert cm.parse_geo_reference(text=text, centre=(0.0, 0.0)) is None
+
+
+def test_missing_geo_reference_fails_unless_allowed(tmp_path):
+    text = xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None)
+    _write(map_dir=tmp_path, name="nogeo", text=text)
+    refused = xb.run_convert_map(map_dir=str(tmp_path))
+    assert refused.returncode == 2
+    assert "allow_zero_origin" in refused.stderr
+    assert sorted(os.listdir(tmp_path)) == ["nogeo.xodr"]
+    allowed = xb.run_convert_map(map_dir=str(tmp_path), allow_zero_origin="true")
+    assert allowed.returncode == 0, allowed.stderr
+    with open(tmp_path / "metadata.json") as f:
+        assert json.load(f)["lanelet_map_origin"] == [0.0, 0.0]
+
+
+def test_header_offset_applies_to_stoplines(tmp_path):
+    import map_quality as mq
+    from shapely.geometry import LineString, Point
+
+    roads, junctions, controllers = xb.junction_map()
+    text = xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers, offset=(120.0, -40.0, 0.0, 0.0))
+    _write(map_dir=tmp_path, name="offset", text=text)
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    outputs = mq.ConversionOutputs.load(map_dir=str(tmp_path))
+    centrelines = [LineString([(p.x, p.y) for p in ll.centerline]) for ll in outputs.lanelet_map.laneletLayer]
+    assert outputs.stoplines
+    for row in outputs.stoplines:
+        assert min(c.distance(Point(row["x"], row["y"])) for c in centrelines) < 0.5
+
+
+def test_false_northing_places_map_at_true_latitude(tmp_path):
+    import map_quality as mq
+    import lanelet2
+
+    geo = "+proj=tmerc +lat_0=0 +lon_0=-117 +k=0.9996 +x_0=0 +y_0=-3630930 +datum=WGS84"
+    _write(map_dir=tmp_path, name="sd", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=geo))
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    outputs = mq.ConversionOutputs.load(map_dir=str(tmp_path))
+    x, y, _ = outputs.points[0]
+    lat0, lon0 = outputs.metadata["lanelet_map_origin"]
+    gps = mq.utm_projector(origin_lat=lat0, origin_lon=lon0).reverse(lanelet2.core.BasicPoint3d(x, y, 0.0))
+    assert 32.5 < gps.lat < 33.1  # y_0 = -3,630,930 m puts the road ~32.8 deg north, not on the equator

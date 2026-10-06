@@ -45,7 +45,7 @@ arguments, each a field of `MapConversionConfig`:
 
 `dir_path` must contain exactly one `.xodr`; its file name (without `.xodr`) becomes the map name `<map>`.
 All outputs are written into `dir_path`. The configuration is checked before anything is read: no or several
-`.xodr` files, or `trim_radius` without `center`, stop the run with exit code 2 and write nothing.
+`.xodr` files, or `trim_radius` without `center`, stop the run with exit code 3 and write nothing.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -184,7 +184,8 @@ options:
 ```
 
 ```text
-usage: fsm_visualization.py [-h] [--cluster-eps CLUSTER_EPS] [--no-topology] [--px-per-m PX_PER_M]
+usage: fsm_visualization.py [-h] [--cluster-eps CLUSTER_EPS] [--no-topology]
+                            [--signal-groups SIGNAL_GROUPS] [--px-per-m PX_PER_M]
                             [--max-mosaic-px MAX_MOSAIC_PX] [--font-size FONT_SIZE]
                             [--marker-radius-px MARKER_RADIUS_PX]
                             map_dir
@@ -208,6 +209,9 @@ options:
   -h, --help            show this help message and exit
   --cluster-eps CLUSTER_EPS
   --no-topology         Disable lanelet topology refinement
+  --signal-groups SIGNAL_GROUPS
+                        Signal groups JSON (default: <map>_signal_groups.json beside the
+                        stoplines)
   --px-per-m PX_PER_M
   --max-mosaic-px MAX_MOSAIC_PX
   --font-size FONT_SIZE
@@ -316,7 +320,7 @@ options:
   CARLA's stencil names. Other vendors' encodings may produce no stoplines.
 - Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; `x_0`/`y_0` false easting/northing honoured) and
   `+proj=utm +zone=…` (origin at the map centre). A missing, unparseable or other projection stops the run
-  (exit code 2) unless `allow_zero_origin=true`. A header `<offset>` is applied to the `.osm`, the mesh and the
+  (exit code 3) unless `allow_zero_origin=true`. A header `<offset>` is applied to the `.osm`, the mesh and the
   stoplines alike.
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
   without a marking type.
@@ -333,7 +337,7 @@ options:
   `allow_zero_origin=true` to convert it at (0, 0). A warning `declares its origin at latitude/longitude (0, 0)`
   means the file itself says (0, 0).
 - **No stoplines**: compare `<signal>`/`<object>` counts in the report with `stoplines_by_agent_type`.
-- **`Invalid configuration: ...` and exit code 2**: the message names the problem (wrong number of `.xodr` files,
+- **`Invalid configuration: ...` and exit code 3**: the message names the problem (wrong number of `.xodr` files,
   `trim_radius` without `center`); nothing was written.
 - **CUDA warning on start-up**: harmless; see Setup.
 

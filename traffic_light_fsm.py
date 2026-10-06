@@ -517,13 +517,21 @@ class IntersectionResult:
 def effective_xodr_levels(*, config: FsmConfig) -> FsmConfig:
     """Apply the level cascade: ``use_xodr_sequence`` forces groups on, groups force junctions on."""
     levels = dataclasses.replace(config)
-    if levels.use_xodr_sequence and not levels.use_xodr_groups:
-        logger.info("use_xodr_sequence forces use_xodr_groups on")
-        levels.use_xodr_groups = True
-    if levels.use_xodr_groups and not levels.use_xodr_junctions:
-        logger.info("use_xodr_groups forces use_xodr_junctions on")
-        levels.use_xodr_junctions = True
+    levels.use_xodr_groups = levels.use_xodr_groups or levels.use_xodr_sequence
+    levels.use_xodr_junctions = levels.use_xodr_junctions or levels.use_xodr_groups
     return levels
+
+
+def xodr_membership(*, signal_groups: Optional[dict], levels: FsmConfig) -> dict[str, str]:
+    """``actor_id`` (as a string) -> junction, when junctions are in use and a sidecar exists."""
+    if signal_groups is None or not levels.use_xodr_junctions:
+        return {}
+    return {sid: entry["junction"] for sid, entry in signal_groups["membership"].items()}
+
+
+def unassigned_light_ids(*, actors: list[Actor], membership: dict[str, str]) -> list[int]:
+    """Lights no XODR junction claims (empty when junctions are not in use)."""
+    return sorted(a.actor_id for a in actors if membership and str(a.actor_id) not in membership)
 
 
 def _junction_of(*, intersection: list[int], actors: list[Actor], membership: dict[str, str]) -> Optional[str]:
@@ -583,14 +591,17 @@ def resolve_intersection_groups(
     the rendered picture reflects exactly the groupings the FSM is built from.
     """
     levels = effective_xodr_levels(config=config)
+    if levels != config:
+        logger.info(
+            "XODR levels in use (higher levels imply lower): junctions=%s groups=%s sequence=%s",
+            levels.use_xodr_junctions,
+            levels.use_xodr_groups,
+            levels.use_xodr_sequence,
+        )
     if signal_groups is None and levels.use_xodr_junctions:
         logger.warning("No signal groups sidecar - XODR junctions, groups and sequence are not used")
-    membership = (
-        {sid: entry["junction"] for sid, entry in signal_groups["membership"].items()}
-        if signal_groups is not None and levels.use_xodr_junctions
-        else {}
-    )
-    intersections = cluster_intersections(actors=actors, config=config, membership=membership or None)
+    membership = xodr_membership(signal_groups=signal_groups, levels=levels)
+    intersections = cluster_intersections(actors=actors, config=config, membership=membership)
     centroids = np.array(
         [np.mean([actors[i].center for i in inter], axis=0) for inter in intersections]
     ) if intersections else np.empty((0, 2))
@@ -645,17 +656,14 @@ def resolve_intersection_groups(
         if groups is None:
             groups = group_actors(intersection=inter, actors=actors, config=config)
         results.append(IntersectionResult(actors=inter, groups=groups, junction=junction, level=level))
-    if membership:
-        unassigned = [a.actor_id for a in actors if str(a.actor_id) not in membership]
-        if unassigned:
-            placed = {
-                actors[i].actor_id: r.junction for r in results for i in r.actors if str(actors[i].actor_id) not in membership
-            }
-            logger.warning(
-                "%d light(s) belong to no XODR junction; placed by distance: %s",
-                len(unassigned),
-                ", ".join(f"{aid}->{placed[aid] or 'own intersection'}" for aid in sorted(unassigned)),
-            )
+    unassigned = unassigned_light_ids(actors=actors, membership=membership)
+    if unassigned:
+        placed = {actors[i].actor_id: r.junction for r in results for i in r.actors}
+        logger.warning(
+            "%d light(s) belong to no XODR junction; placed by distance: %s",
+            len(unassigned),
+            ", ".join(f"{aid}->{placed[aid] or 'own intersection'}" for aid in unassigned),
+        )
     return results
 
 
@@ -675,6 +683,22 @@ def find_signal_groups_path(*, stoplines_path: str) -> Optional[str]:
     """``<map>_signal_groups.json`` beside ``<map>_stoplines.json``, if it exists."""
     path = stoplines_path[: -len("_stoplines.json")] + "_signal_groups.json"
     return path if os.path.exists(path) else None
+
+
+def load_signal_groups(*, stoplines_path: str, override: Optional[str] = None) -> tuple[Optional[str], Optional[dict]]:
+    """The signal groups sidecar the FSM uses: ``override`` if given, else the one beside the stoplines.
+
+    Returns:
+        ``(absolute path, contents)``, or ``(None, None)`` when there is no sidecar.
+    """
+    path = override or find_signal_groups_path(stoplines_path=stoplines_path)
+    if path is None:
+        return None, None
+    path = os.path.abspath(path)
+    with open(path) as f:
+        groups = json.load(f)
+    logger.info("Using XODR signal groups from %s", path)
+    return path, groups
 
 
 def _load_topology(*, map_dir: str, metadata: dict) -> Optional[LaneletTopology]:
@@ -717,12 +741,7 @@ def run(
     stoplines_path = find_stoplines_path(map_dir=map_dir)
     actors = load_actors(stoplines_path=stoplines_path)
     logger.info("Loaded %d traffic-light actors from %s", len(actors), stoplines_path)
-    signal_groups_path = signal_groups_path or find_signal_groups_path(stoplines_path=stoplines_path)
-    signal_groups = None
-    if signal_groups_path is not None:
-        with open(signal_groups_path) as f:
-            signal_groups = json.load(f)
-        logger.info("Using XODR signal groups from %s", os.path.abspath(signal_groups_path))
+    signal_groups_path, signal_groups = load_signal_groups(stoplines_path=stoplines_path, override=signal_groups_path)
 
     topology = _load_topology(map_dir=map_dir, metadata=metadata) if use_topology else None
     resolved = resolve_intersection_groups(actors=actors, config=config, topology=topology, signal_groups=signal_groups)
@@ -785,9 +804,9 @@ def write_review(
             "use_xodr_groups": levels.use_xodr_groups,
             "use_xodr_sequence": levels.use_xodr_sequence,
         },
-        "signal_groups": os.path.abspath(signal_groups_path) if signal_groups_path else None,
-        "unassigned_lights": sorted(
-            a.actor_id for a in actors if str(a.actor_id) not in signal_groups["membership"]
+        "signal_groups": signal_groups_path,
+        "unassigned_lights": unassigned_light_ids(
+            actors=actors, membership=xodr_membership(signal_groups=signal_groups, levels=levels)
         ) if signal_groups is not None and levels.use_xodr_junctions else None,
         "intersections": [
             {

@@ -22,6 +22,7 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 - `traffic_light_fsm.py`, `fsm_visualization.py` — traffic-light FSM generation and review rendering from a converted map.
 - `opendrive_signal_groups.py` — reads the XODR's junction membership and controllers into `<map>_signal_groups.json` (called by `convert_map.py`; also a CLI).
 - `map_report.py`, `map_quality.py` — batch conversion report / comparison, and the quality metrics it records.
+- `conversion_common.py` — dependency-free helpers both `convert_map.py` and `map_report.py` use (file sha256, git identity, the refusal exit code 3).
 - `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers.
 - `convert_lanelet_to_opendrive.py` — reverse direction via CARLA's tools.
 - `crdesigner/` — **vendored** CommonRoad Scenario Designer. Treat as upstream.
@@ -45,7 +46,7 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 
 `convert_map()` calls one keyword-only stage function per step, in this order; each stage writes its own output:
 
-1. `validate_config` — check the config before anything is read (`ConfigError`, exit code 2 from the CLI) and return the single `.xodr` in `cfg.dir_path` (the filename, minus extension, becomes the map name).
+1. `validate_config` — check the config before anything is read (`ConfigError`, exit code 3 from the CLI) and return the single `.xodr` in `cfg.dir_path` (the filename, minus extension, becomes the map name).
 2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then `parse_geo_reference` (pyproj; `tmerc` and `utm`) and the header `<offset>`, combined in one `CustomTransfomer` local frame; a missing/unusable geo-reference raises `InputError` unless `allow_zero_origin`.
 3. `export_osm` — `Network.load_opendrive` → `Network.export_lanelet_network` builds a CommonRoad lanelet network in the OpenDRIVE inertial frame (`filter_types`: `driving`, `onRamp`, `offRamp`, `exit`, `entry`), simplified, then `CR2LaneletConverter` (`crdesigner/map_conversion/lanelet2/cr2lanelet.py`) with a `CustomTransfomer` wrapping a Lanelet2 `UtmProjector` writes `<map>.osm`.
 4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).

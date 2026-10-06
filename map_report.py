@@ -42,7 +42,7 @@ from typing import Any, Optional
 from lxml import etree
 
 import map_quality
-from convert_map import git_identity, sha256_file
+from conversion_common import REFUSED_EXIT_CODE, git_identity, sha256_file
 from traffic_light_fsm import load_metadata, resolve_map_path
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,6 @@ NEVER_MOVES = ("wall_s", "peak_rss_mb")
 FLOAT_MOVE_FRACTION = 0.01
 THUMBNAIL_PX = 384
 POLL_S = 0.2
-REFUSED_EXIT_CODE = 2
 
 
 # --------------------------------------------------------------------------------------
@@ -131,7 +130,7 @@ def classify(*, result: ChildResult, root: str) -> dict[str, Any]:
     """Outcome of a conversion child: ``ok``, ``refused``, ``exception``, ``timeout`` or ``pdb``.
 
     pdb prints its ``(Pdb)`` prompt on stdout and, with stdin closed, quits via ``BdbQuit``,
-    so both streams are checked. ``refused`` is a deliberate exit code 2 without a traceback (an
+    so both streams are checked. ``refused`` is ``convert_map.py``'s dedicated exit code (an
     invalid configuration or an input the converter will not place), recorded with its message.
     For an exception, the class and the innermost frame (relative to ``root`` when inside it)
     are recorded.
@@ -143,7 +142,7 @@ def classify(*, result: ChildResult, root: str) -> dict[str, Any]:
         return {"outcome": "pdb", **_last_frame(stderr=result.stderr, root=root)}
     if result.returncode == 0:
         return {"outcome": "ok"}
-    if result.returncode == REFUSED_EXIT_CODE and "Traceback" not in result.stderr:
+    if result.returncode == REFUSED_EXIT_CODE:
         lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip()]
         return {"outcome": "refused", "message": lines[-1] if lines else None}
     return {
@@ -365,9 +364,12 @@ def convert_one(
         timeout_s=timeout_s,
         log_prefix=os.path.join(map_dir, "convert"),
     )
+    outcome = classify(result=result, root=converter)
+    if outcome.get("message"):
+        outcome["message"] = outcome["message"].replace(map_dir, "<RUN_DIR>")  # comparable across runs
     record: dict[str, Any] = {
         "conversion": {
-            **classify(result=result, root=converter),
+            **outcome,
             "returncode": result.returncode,
             "wall_s": result.wall_s,
             "peak_rss_mb": result.peak_rss_mb,

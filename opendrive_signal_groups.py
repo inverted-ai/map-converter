@@ -62,9 +62,10 @@ def _children(*, elem, name: str) -> list:
     return [c for c in elem if _localname(elem=c) == name]
 
 
-def _float(*, raw: Optional[str]) -> Optional[float]:
+def _number(*, raw: Optional[str], cast):
+    """``cast(raw)``, or ``None`` when ``raw`` is missing or malformed."""
     try:
-        return float(raw)
+        return cast(raw)
     except (TypeError, ValueError):
         return None
 
@@ -79,7 +80,7 @@ def _road(*, road) -> _Road:
     junction = road.get("junction")
     return _Road(
         junction=None if junction in (None, "", "-1") else junction,
-        length=_float(raw=road.get("length")),
+        length=_number(raw=road.get("length"), cast=float),
         predecessor_junction=links["predecessor"],
         successor_junction=links["successor"],
     )
@@ -87,6 +88,8 @@ def _road(*, road) -> _Road:
 
 def extract_signal_groups(*, xodr_path: str, max_distance: float = DEFAULT_MAX_DISTANCE_M) -> dict:
     """Junction membership, controllers and id problems declared in one ``.xodr``.
+
+    The file is streamed one top-level element at a time, so large maps are not held in memory.
 
     Args:
         xodr_path: The OpenDRIVE file.
@@ -96,65 +99,70 @@ def extract_signal_groups(*, xodr_path: str, max_distance: float = DEFAULT_MAX_D
         A JSON-ready dict with ``membership`` (signal id → ``{junction, source}``),
         ``controllers``, ``conflicts``, ``non_integer_signal_ids`` and ``warnings``.
     """
-    root = etree.parse(os.path.abspath(xodr_path)).getroot()
     candidates: dict[str, dict[str, str]] = {}  # signal id -> {source: junction}
     non_integer: set[str] = set()
 
+    def signal_id(raw: Optional[str]) -> Optional[str]:
+        normalised = normalise_signal_id(raw=raw)
+        if normalised is None:
+            non_integer.add(str(raw))
+        return normalised
+
     def offer(*, raw_id: Optional[str], source: str, junction: Optional[str]) -> None:
-        signal_id = normalise_signal_id(raw=raw_id)
-        if signal_id is None:
-            non_integer.add(str(raw_id))
-            return
-        if junction is not None:
-            candidates.setdefault(signal_id, {}).setdefault(source, junction)
+        normalised = signal_id(raw_id)
+        if normalised is not None and junction is not None:
+            candidates.setdefault(normalised, {}).setdefault(source, junction)
 
     controllers: dict[str, dict] = {}
-    for controller in _children(elem=root, name="controller"):
-        signal_ids = []
-        for control in _children(elem=controller, name="control"):
-            signal_id = normalise_signal_id(raw=control.get("signalId"))
-            if signal_id is None:
-                non_integer.add(str(control.get("signalId")))
-            else:
-                signal_ids.append(signal_id)
-        controllers[controller.get("id")] = {
-            "id": controller.get("id"),
-            "name": controller.get("name"),
-            "signal_ids": signal_ids,
-            "sequence": _int_or_none(raw=controller.get("sequence")),
-            "junction": None,
-        }
+    junction_refs: list[tuple[str, str, Optional[int]]] = []  # (junction, controller, sequence)
+    for _, elem in etree.iterparse(os.path.abspath(xodr_path), events=("end",), huge_tree=True):
+        parent = elem.getparent()
+        if parent is None or parent.getparent() is not None:
+            continue  # only the root's children are handled; nested elements are read through them
+        kind = _localname(elem=elem)
+        if kind == "controller":
+            signal_ids = [signal_id(c.get("signalId")) for c in _children(elem=elem, name="control")]
+            controllers[elem.get("id")] = {
+                "id": elem.get("id"),
+                "name": elem.get("name"),
+                "signal_ids": [s for s in signal_ids if s is not None],
+                "sequence": _number(raw=elem.get("sequence"), cast=int),
+                "junction": None,
+            }
+        elif kind == "junction":
+            for ref in _children(elem=elem, name="controller"):
+                junction_refs.append((elem.get("id"), ref.get("id"), _number(raw=ref.get("sequence"), cast=int)))
+        elif kind == "road":
+            road = _road(road=elem)
+            for signals in _children(elem=elem, name="signals"):
+                for signal in signals:
+                    if _localname(elem=signal) not in ("signal", "signalReference"):
+                        continue
+                    s = _number(raw=signal.get("s"), cast=float)
+                    offer(raw_id=signal.get("id"), source="road_junction", junction=road.junction)
+                    offer(raw_id=signal.get("id"), source="approach_road", junction=_approach_junction(road=road, s=s, max_distance=max_distance))
+        elem.clear()
+        while elem.getprevious() is not None:
+            del parent[0]
 
-    for junction in _children(elem=root, name="junction"):
-        for ref in _children(elem=junction, name="controller"):
-            controller = controllers.get(ref.get("id"))
-            if controller is None:
-                continue
-            controller["junction"] = junction.get("id")
-            sequence = _int_or_none(raw=ref.get("sequence"))
-            if sequence is not None:
-                controller["sequence"] = sequence
-            for signal_id in controller["signal_ids"]:
-                offer(raw_id=signal_id, source="controller", junction=junction.get("id"))
-
-    for road_elem in _children(elem=root, name="road"):
-        road = _road(road=road_elem)
-        for signals in _children(elem=road_elem, name="signals"):
-            for signal in signals:
-                kind = _localname(elem=signal)
-                if kind not in ("signal", "signalReference"):
-                    continue
-                offer(raw_id=signal.get("id"), source="road_junction", junction=road.junction)
-                offer(raw_id=signal.get("id"), source="approach_road", junction=_approach_junction(road=road, s=_float(raw=signal.get("s")), max_distance=max_distance))
+    for junction, controller_id, sequence in junction_refs:
+        controller = controllers.get(controller_id)
+        if controller is None:
+            continue
+        controller["junction"] = junction
+        if sequence is not None:
+            controller["sequence"] = sequence
+        for normalised in controller["signal_ids"]:
+            offer(raw_id=normalised, source="controller", junction=junction)
 
     membership: dict[str, dict[str, str]] = {}
     conflicts = []
-    for signal_id, by_source in sorted(candidates.items(), key=lambda kv: int(kv[0])):
+    for normalised, by_source in sorted(candidates.items(), key=lambda kv: int(kv[0])):
         chosen = next(source for source in SOURCES if source in by_source)
-        membership[signal_id] = {"junction": by_source[chosen], "source": chosen}
+        membership[normalised] = {"junction": by_source[chosen], "source": chosen}
         others = {s: j for s, j in by_source.items() if j != by_source[chosen]}
         if others:
-            conflicts.append({"signal_id": signal_id, "chosen": membership[signal_id], "disagreeing": others})
+            conflicts.append({"signal_id": normalised, "chosen": membership[normalised], "disagreeing": others})
     warnings = [
         f"signal {c['signal_id']}: {c['chosen']['source']} says junction {c['chosen']['junction']}, "
         + ", ".join(f"{s} says {j}" for s, j in c["disagreeing"].items())
@@ -173,13 +181,6 @@ def extract_signal_groups(*, xodr_path: str, max_distance: float = DEFAULT_MAX_D
         "non_integer_signal_ids": sorted(non_integer),
         "warnings": warnings,
     }
-
-
-def _int_or_none(*, raw: Optional[str]) -> Optional[int]:
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
 
 
 def _approach_junction(*, road: _Road, s: Optional[float], max_distance: float) -> Optional[str]:

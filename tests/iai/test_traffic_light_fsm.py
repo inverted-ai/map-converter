@@ -262,21 +262,13 @@ def _resolved_ids(*, resolved: list[t.IntersectionResult], actors: list[t.Actor]
 
 
 @pytest.fixture(scope="module")
-def town15_signal_groups(tmp_path_factory) -> dict:
-    """Town15's sidecar, generated through the CLI into a temp dir (never into maps/)."""
+def town15_signal_groups() -> dict:
+    """Town15's signal groups, extracted in memory (nothing is written into maps/)."""
     if not os.path.exists(TOWN15_XODR):
         pytest.skip("Town15 fixture absent")
-    import json
-    import subprocess
-    import sys
+    import opendrive_signal_groups
 
-    out = tmp_path_factory.mktemp("town15") / "Town15_signal_groups.json"
-    subprocess.run(
-        [sys.executable, os.path.join(REPO_ROOT, "opendrive_signal_groups.py"), "--xodr", TOWN15_XODR, "--out", str(out)],
-        check=True,
-        capture_output=True,
-    )
-    return json.loads(out.read_text())
+    return opendrive_signal_groups.extract_signal_groups(xodr_path=TOWN15_XODR)
 
 
 def test_levels_off_is_todays_distance_clustering():

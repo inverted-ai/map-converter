@@ -20,11 +20,10 @@ imported lazily so importing this module stays cheap.
 from __future__ import annotations
 
 import argparse
-import json
 import dataclasses
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
@@ -357,17 +356,23 @@ def render_mosaic(
     return out_path
 
 
-def visualize(*, map_dir: str, fsm_config: tlf.FsmConfig, viz_config: VizConfig, use_topology: bool = True) -> str:
-    """Standalone entry: resolve groupings from artifacts in ``map_dir`` and render the mosaic."""
+def visualize(
+    *,
+    map_dir: str,
+    fsm_config: tlf.FsmConfig,
+    viz_config: VizConfig,
+    use_topology: bool = True,
+    signal_groups_path: Optional[str] = None,
+) -> str:
+    """Standalone entry: resolve groupings from artifacts in ``map_dir`` and render the mosaic.
+
+    ``signal_groups_path`` overrides the sidecar beside the stoplines, as in ``traffic_light_fsm.py``.
+    """
     metadata = tlf.load_metadata(map_dir=map_dir)
-    actors = tlf.load_actors(stoplines_path=tlf.find_stoplines_path(map_dir=map_dir))
-    topology = tlf._load_topology(map_dir=map_dir, metadata=metadata) if use_topology else None
     stoplines_path = tlf.find_stoplines_path(map_dir=map_dir)
-    signal_groups_path = tlf.find_signal_groups_path(stoplines_path=stoplines_path)
-    signal_groups = None
-    if signal_groups_path is not None:
-        with open(signal_groups_path) as f:
-            signal_groups = json.load(f)
+    actors = tlf.load_actors(stoplines_path=stoplines_path)
+    topology = tlf._load_topology(map_dir=map_dir, metadata=metadata) if use_topology else None
+    _, signal_groups = tlf.load_signal_groups(stoplines_path=stoplines_path, override=signal_groups_path)
     resolved = tlf.resolve_intersection_groups(
         actors=actors, config=fsm_config, topology=topology, signal_groups=signal_groups
     )
@@ -384,6 +389,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("map_dir", help="Map directory with metadata.json, mesh and *_stoplines.json")
     parser.add_argument("--cluster-eps", type=float, default=fd.cluster_eps)
     parser.add_argument("--no-topology", action="store_true", help="Disable lanelet topology refinement")
+    parser.add_argument(
+        "--signal-groups",
+        default=None,
+        help="Signal groups JSON (default: <map>_signal_groups.json beside the stoplines)",
+    )
     parser.add_argument("--px-per-m", type=float, default=vd.target_px_per_m)
     parser.add_argument("--max-mosaic-px", type=int, default=vd.max_mosaic_px)
     parser.add_argument("--font-size", type=int, default=vd.font_size)
@@ -407,6 +417,7 @@ def main() -> None:
         fsm_config=fsm_config,
         viz_config=viz_config,
         use_topology=not args.no_topology,
+        signal_groups_path=args.signal_groups,
     )
     logger.info("Wrote FSM visualization to %s", out_path)
 

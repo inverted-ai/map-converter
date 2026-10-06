@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+import conversion_common
 import convert_map as cm
 from tests.iai import xodr_builder as xb
 
@@ -58,7 +59,7 @@ def test_provenance_records_input_config_and_versions(tmp_path):
 
 
 def test_git_identity_outside_a_checkout_is_null(tmp_path):
-    assert cm.git_identity(repo=str(tmp_path)) == {"commit": None, "dirty": None}
+    assert conversion_common.git_identity(repo=str(tmp_path)) == {"commit": None, "dirty": None}
 
 
 def test_conversion_writes_signal_groups_sidecar(tmp_path):
@@ -90,7 +91,7 @@ def test_invalid_config_fails_fast_and_writes_nothing(tmp_path, setup, config, m
     start = time.monotonic()
     result = xb.run_convert_map(map_dir=str(tmp_path), timeout_s=30, **config)
     assert time.monotonic() - start < 5
-    assert result.returncode != 0
+    assert result.returncode == conversion_common.REFUSED_EXIT_CODE
     assert message in result.stderr
     assert sorted(os.listdir(tmp_path)) == before
 
@@ -164,7 +165,7 @@ def test_missing_geo_reference_fails_unless_allowed(tmp_path):
     text = xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None)
     _write(map_dir=tmp_path, name="nogeo", text=text)
     refused = xb.run_convert_map(map_dir=str(tmp_path))
-    assert refused.returncode == 2
+    assert refused.returncode == conversion_common.REFUSED_EXIT_CODE
     assert "allow_zero_origin" in refused.stderr
     assert sorted(os.listdir(tmp_path)) == ["nogeo.xodr"]
     allowed = xb.run_convert_map(map_dir=str(tmp_path), allow_zero_origin="true")

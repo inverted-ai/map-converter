@@ -36,9 +36,14 @@ def test_exception_outcome_names_class_and_frame(tmp_path):
     }
 
 
-def test_clean_exit_code_2_is_refused_with_message(tmp_path):
-    result = _child(tmp_path=tmp_path, code="import sys\nprint('Cannot convert: no geo-reference', file=sys.stderr)\nsys.exit(2)\n")
+def test_refusal_exit_code_is_refused_with_message(tmp_path):
+    result = _child(tmp_path=tmp_path, code="import sys\nprint('Cannot convert: no geo-reference', file=sys.stderr)\nsys.exit(3)\n")
     assert mr.classify(result=result, root=str(tmp_path)) == {"outcome": "refused", "message": "Cannot convert: no geo-reference"}
+
+
+def test_missing_script_is_an_exception_not_a_refusal(tmp_path):
+    result = mr.run_child(argv=[sys.executable, str(tmp_path / "absent.py")], cwd=str(tmp_path), timeout_s=30, log_prefix=str(tmp_path / "absent"))
+    assert mr.classify(result=result, root=str(tmp_path))["outcome"] == "exception"
 
 
 def test_breakpoint_is_pdb_not_hang(tmp_path):
@@ -196,3 +201,16 @@ def test_convert_args_reach_the_converter(tmp_path):
         )
         with open(out / "report.json") as f:
             assert json.load(f)["maps"][0]["conversion"]["outcome"] == outcome
+
+
+def test_refusal_message_is_comparable_across_runs(tmp_path):
+    maps = tmp_path / "maps" / "nogeo"
+    maps.mkdir(parents=True)
+    (maps / "nogeo.xodr").write_text(xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None))
+    messages = []
+    for name in ("a", "b"):
+        report = mr.run_report(maps_dir=str(tmp_path / "maps"), out_dir=str(tmp_path / name), converter=REPO_ROOT, only=None, timeout_s=300, with_fsm=False)
+        with open(report) as f:
+            messages.append(json.load(f)["maps"][0]["conversion"]["message"])
+    assert messages[0] == messages[1]
+    assert "<RUN_DIR>" in messages[0]

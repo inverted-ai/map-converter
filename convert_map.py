@@ -6,12 +6,9 @@ This script produces the required files for TorchDriveSim in the `dir_path` fold
 import dataclasses
 import datetime
 import glob
-import hashlib
 import importlib.metadata
 import json
 import os
-import re
-import subprocess
 import sys
 import logging
 from typing import Tuple, Optional
@@ -44,6 +41,7 @@ from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.network import Network
 from commonroad.scenario.lanelet import LaneletNetwork
 
+from conversion_common import REFUSED_EXIT_CODE, git_identity, sha256_file
 from opendrive_signal_groups import write_signal_groups
 
 
@@ -201,7 +199,7 @@ def check_geo_reference(*, geo_reference: GeoReference, source: str) -> None:
         raise InputError(f"{source}: origin latitude {geo_reference.lat:.3f} is outside the supported range")
     if geo_reference.zone is not None:
         zone = int((geo_reference.lon + 180.0) // 6.0) % 60 + 1
-        if zone != int(geo_reference.zone):
+        if zone != geo_reference.zone:
             raise InputError(f"{source}: UTM origin longitude {geo_reference.lon:.3f} is outside zone {geo_reference.zone}")
 
 
@@ -379,7 +377,6 @@ class ParsedXodr:
     location: str
     opendrive: object
     geo_reference: GeoReference
-    geo_offset: Optional[GeoOffset]
     projector: object
     frame: CustomTransfomer
     traffic_side: Optional[str]  # "RHT", "LHT" or "mixed"
@@ -470,7 +467,6 @@ def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> Parse
         location=location,
         opendrive=opendrive,
         geo_reference=geo_reference,
-        geo_offset=geo_offset,
         projector=projector,
         frame=CustomTransfomer(projector, geo_offset, geo_reference.translation),
         traffic_side=traffic_side_of(opendrive=opendrive),
@@ -727,32 +723,6 @@ def fitting_visualization_fov(*, verts: torch.Tensor, center: list[float]) -> fl
     return float(2.0 * offsets.max() * FOV_MARGIN) if offsets.numel() else DEFAULT_VISUALIZATION_FOV
 
 
-def sha256_file(*, path: str) -> str:
-    """sha256 of a file, read in chunks."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def git_identity(*, repo: str) -> dict:
-    """Commit and dirty flag of a checkout; ``None`` values when it is not a git checkout."""
-    try:
-        head = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        return {"commit": None, "dirty": None}
-    if head.returncode != 0:
-        return {"commit": None, "dirty": None}
-    status = subprocess.run(
-        ["git", "-C", repo, "status", "--porcelain", "--untracked-files=no"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip())}
-
-
 def write_provenance(
     *,
     cfg: MapConversionConfig,
@@ -837,7 +807,7 @@ if __name__ == '__main__':
         convert_map(cfg)
     except ConfigError as exc:
         logger.error(f'Invalid configuration: {exc}')
-        sys.exit(2)
+        sys.exit(REFUSED_EXIT_CODE)
     except InputError as exc:
         logger.error(f'Cannot convert: {exc}')
-        sys.exit(2)
+        sys.exit(REFUSED_EXIT_CODE)

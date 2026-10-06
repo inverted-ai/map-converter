@@ -332,7 +332,10 @@ options:
   lanes on a banked road are level across. Where two roads' profiles disagree at a joint, the step is kept
   (it shows as a `z_conflicts` entry).
 - Lanelets the CommonRoad network links as predecessor/successor share their end nodes in the `.osm` when
-  those nodes lie within 1 cm of each other (height included), so the Lanelet2 routing graph connects them.
+  their end points lie within 1 m of each other (coinciding nodes within 1 cm are merged), so the Lanelet2
+  routing graph connects them. Linked lanelets whose ends are further apart (a lane widening at a road
+  joint, loops, gaps in the source) keep their own end points: their shape is kept, but Lanelet2 does not
+  route across that link.
 - Object `orientation="undefined"` (seen in some vendor exports) is read as `none`, with a warning.
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
   without a marking type.

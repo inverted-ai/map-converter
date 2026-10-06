@@ -25,6 +25,10 @@ from crdesigner.map_conversion.lanelet2.lanelet2 import (
 )
 
 
+# Metres two linked lanelets' boundary end points may be apart and still share a node.
+SHARED_NODE_TOLERANCE = 1.0
+
+
 def _set_overriding_tags_for_bidirectional_users(lanelet: Lanelet, way_rel: WayRelation):
     """
     Function that extracts bidirectional users from CR lanelet and creates according overriding tags for L2 lanelet
@@ -1060,6 +1064,27 @@ class CR2LaneletConverter:
 
         return None
 
+    def _nodes_at(self, node_ids, vertices) -> bool:
+        """
+        Whether already created nodes lie where this lanelet's own boundary end vertices are.
+
+        Linked lanelets whose ends do not meet (loops, lanes widening at a joint, gaps in the source)
+        must not share nodes: sharing drags this lanelet's boundary end onto the other lanelet's and
+        folds its shape. Such a link is then not routable in Lanelet2, which needs shared end points.
+
+        :param node_ids: Left and right node ids.
+        :param vertices: The lanelet's own left and right end vertices.
+        :return: True if every node is within SHARED_NODE_TOLERANCE metres (in x/y) of its vertex.
+        """
+        for node_id, vertex in zip(node_ids, vertices):
+            node = self.osm.nodes[node_id]
+            lat, lon = self.transformer.transform(self.origin_utm[0] + vertex[0], self.origin_utm[1] + vertex[1])
+            north = (float(node.lat) - lat) * 111_000.0
+            east = (float(node.lon) - lon) * 111_000.0 * np.cos(np.radians(lat))
+            if np.hypot(north, east) > SHARED_NODE_TOLERANCE:
+                return False
+        return True
+
     def _get_shared_first_nodes_from_other_lanelets(
         self, lanelet: Lanelet
     ) -> Tuple[Union[str, None], Union[str, None]]:
@@ -1070,16 +1095,17 @@ class CR2LaneletConverter:
         :param lanelet: Lanelet for which shared nodes should be found.
         :return: Id of first left and first right node if they exist.
         """
+        ends = (lanelet.left_vertices[0], lanelet.right_vertices[0])
         if lanelet.predecessor:
             for lanelet_id in lanelet.predecessor:
                 first_left_node, first_right_node = self.last_nodes.get(lanelet_id, (None, None))
-                if first_left_node:
+                if first_left_node and self._nodes_at((first_left_node, first_right_node), ends):
                     return first_left_node, first_right_node
             for pred_id in lanelet.predecessor:
                 pred = self.lanelet_network.find_lanelet_by_id(pred_id)
                 for succ_id in pred.successor:
                     first_left_node, first_right_node = self.first_nodes.get(succ_id, (None, None))
-                    if first_left_node:
+                    if first_left_node and self._nodes_at((first_left_node, first_right_node), ends):
                         return first_left_node, first_right_node
         return None, None
 
@@ -1093,16 +1119,17 @@ class CR2LaneletConverter:
         :param lanelet: Lanelet for which shared nodes should be found.
         :return: Id of last left and last right node if they exist.
         """
+        ends = (lanelet.left_vertices[-1], lanelet.right_vertices[-1])
         if lanelet.successor:
             for lanelet_id in lanelet.successor:
                 last_left_node, last_right_node = self.first_nodes.get(lanelet_id, (None, None))
-                if last_left_node:
+                if last_left_node and self._nodes_at((last_left_node, last_right_node), ends):
                     return last_left_node, last_right_node
             for succ_id in lanelet.successor:
                 succ = self.lanelet_network.find_lanelet_by_id(succ_id)
                 for pred_id in succ.predecessor:
                     last_left_node, last_right_node = self.last_nodes.get(pred_id, (None, None))
-                    if last_left_node:
+                    if last_left_node and self._nodes_at((last_left_node, last_right_node), ends):
                         return last_left_node, last_right_node
 
         return None, None

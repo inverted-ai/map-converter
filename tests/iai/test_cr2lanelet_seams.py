@@ -57,3 +57,18 @@ def test_successor_reusing_an_opposite_neighbours_way_shares_the_seam_nodes():
     assert ways[converter.left_ways[1]].nodes[-1] == shared_way[-1]  # reversed: 3 starts at its end
     assert ways[converter.right_ways[1]].nodes[-1] == ways[converter.right_ways[3]].nodes[0]
     assert set(converter.osm.nodes) >= {n for way in ways.values() for n in way.nodes}
+
+
+def test_linked_lanelets_that_do_not_meet_keep_their_own_end_nodes():
+    # 2 is linked as 1's successor but starts 10 m further on: sharing 1's end nodes would
+    # stretch 2's boundaries back across the gap.
+    network = LaneletNetwork()
+    network.add_lanelet(_lanelet(lanelet_id=1, left=[[0, 3], [10, 3]], right=[[0, 0], [10, 0]], successor=[2]))
+    network.add_lanelet(_lanelet(lanelet_id=2, left=[[20, 3], [30, 3]], right=[[20, 0], [30, 0]], predecessor=[1]))
+    converter = CR2LaneletConverter()
+    converter.convert_lanelet_network(network, transformer=_DegreesTransformer())
+    ways, nodes = converter.osm.ways, converter.osm.nodes
+
+    assert ways[converter.left_ways[1]].nodes[-1] != ways[converter.left_ways[2]].nodes[0]
+    first_right = nodes[ways[converter.right_ways[2]].nodes[0]]
+    assert abs(float(first_right.lon) * 111_000.0 - 20.0) < 0.01  # 2 still starts at x = 20 m

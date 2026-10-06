@@ -500,15 +500,12 @@ class TestCR2LaneletConverter(unittest.TestCase):
     def test_get_shared_first_nodes_from_other_lanelets(self):
         cr1 = CR2LaneletConverter()
         cr1(self.scenario)
-        # creating a lanelet that will have the same first nodes as some random lanelet already in the scenario
-        lv = np.array(
-            [[-134.8145, 22.3995], [-135, 23]]
-        )  # same beginning of the node, end does not matter
-        rv = np.array(
-            [[-134.791, 25.5844], [-135, 26]]
-        )  # same beginning of the node, end does not matter
-        cv = np.array([[0, 0], [0, 0]])  # does not matter
-        laneletTest = Lanelet(lv, rv, cv, 100)
+        # creating a lanelet that starts where lanelet 2 ends, so it can share lanelet 2's last nodes
+        pred = self.scenario.lanelet_network.find_lanelet_by_id(2)
+        lv = np.array([pred.left_vertices[-1], pred.left_vertices[-1] + 1])  # end does not matter
+        rv = np.array([pred.right_vertices[-1], pred.right_vertices[-1] + 1])  # end does not matter
+        cv = (lv + rv) / 2  # does not matter
+        laneletTest = Lanelet(lv, cv, rv, 100)
 
         # adding the lanelet which coordinates have been used in vertices as the predecessor
         laneletTest.predecessor = [2]
@@ -524,15 +521,12 @@ class TestCR2LaneletConverter(unittest.TestCase):
     def test_get_shared_last_nodes_from_other_lanelets(self):
         cr1 = CR2LaneletConverter()
         cr1(self.scenario)
-        # creating a lanelet that will have the same first nodes as some random lanelet already in the scenario
-        lv = np.array(
-            [[-79, 15], [-80.9075, 16.1302]]
-        )  # same beginning of the node, end does not matter
-        rv = np.array(
-            [[-79, 18], [-80.3486, 19.5818]]
-        )  # same beginning of the node, end does not matter
-        cv = np.array([[0, 0], [0, 0]])  # does not matter
-        laneletTest = Lanelet(lv, rv, cv, 100)
+        # creating a lanelet that ends where lanelet 2 starts, so it can share lanelet 2's first nodes
+        succ = self.scenario.lanelet_network.find_lanelet_by_id(2)
+        lv = np.array([succ.left_vertices[0] - 1, succ.left_vertices[0]])  # beginning does not matter
+        rv = np.array([succ.right_vertices[0] - 1, succ.right_vertices[0]])  # beginning does not matter
+        cv = (lv + rv) / 2  # does not matter
+        laneletTest = Lanelet(lv, cv, rv, 100)
 
         # adding the lanelet which coordinates have been used in vertices as the predecessor
         laneletTest.successor = [2]

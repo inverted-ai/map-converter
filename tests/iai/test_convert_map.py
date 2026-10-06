@@ -3,6 +3,8 @@
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import time
 
 import numpy as np
@@ -13,16 +15,9 @@ import convert_map as cm
 from tests.iai import xodr_builder as xb
 
 
-def _write(*, map_dir, name: str, text: str, encoding: str = "utf-8") -> str:
-    map_dir.mkdir(exist_ok=True)
-    path = map_dir / f"{name}.xodr"
-    path.write_bytes(text.encode(encoding))
-    return str(path)
-
-
 def test_latin1_xodr_with_non_ascii_name_converts(tmp_path):
     road = xb.straight_road(id="1", length=40.0, name="Hauptstraße Süd")
-    _write(map_dir=tmp_path, name="latin1", text=xb.build_xodr(roads=[road], encoding="ISO-8859-1"), encoding="iso-8859-1")
+    xb.write_xodr(map_dir=tmp_path, name="latin1", text=xb.build_xodr(roads=[road], encoding="ISO-8859-1"), encoding="iso-8859-1")
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "latin1.osm").exists()
@@ -33,7 +28,7 @@ def test_incomplete_signal_validity_is_skipped_not_debugged(tmp_path):
     connecting = roads[1]
     connecting.signals[0].validity = (None, -1)  # no fromLane
     connecting.signals[1].validity = (-7, -7)  # lane absent from the road
-    _write(map_dir=tmp_path, name="validity", text=xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
+    xb.write_xodr(map_dir=tmp_path, name="validity", text=xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
     result = xb.run_convert_map(map_dir=str(tmp_path), timeout_s=30)
     assert result.returncode == 0, result.stderr
     assert "(Pdb)" not in result.stdout
@@ -42,7 +37,7 @@ def test_incomplete_signal_validity_is_skipped_not_debugged(tmp_path):
 
 
 def test_provenance_records_input_config_and_versions(tmp_path):
-    xodr = _write(map_dir=tmp_path, name="prov", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    xodr = xb.write_xodr(map_dir=tmp_path, name="prov", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     with open(tmp_path / "prov_provenance.json") as f:
@@ -65,7 +60,7 @@ def test_git_identity_outside_a_checkout_is_null(tmp_path):
 
 def test_conversion_writes_signal_groups_sidecar(tmp_path):
     roads, junctions, controllers = xb.junction_map()
-    _write(map_dir=tmp_path, name="junction", text=xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
+    xb.write_xodr(map_dir=tmp_path, name="junction", text=xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     with open(tmp_path / "junction_signal_groups.json") as f:
@@ -85,9 +80,9 @@ def test_conversion_writes_signal_groups_sidecar(tmp_path):
 def test_invalid_config_fails_fast_and_writes_nothing(tmp_path, setup, config, message):
     road = xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)])
     if setup in ("one", "two"):
-        _write(map_dir=tmp_path, name="a", text=road)
+        xb.write_xodr(map_dir=tmp_path, name="a", text=road)
     if setup == "two":
-        _write(map_dir=tmp_path, name="b", text=road)
+        xb.write_xodr(map_dir=tmp_path, name="b", text=road)
     before = sorted(os.listdir(tmp_path))
     start = time.monotonic()
     result = xb.run_convert_map(map_dir=str(tmp_path), timeout_s=30, **config)
@@ -99,7 +94,7 @@ def test_invalid_config_fails_fast_and_writes_nothing(tmp_path, setup, config, m
 
 @pytest.mark.parametrize("with_dir_path", [False, True], ids=["neither", "both"])
 def test_dir_path_and_xodr_path_are_exclusive(tmp_path, with_dir_path):
-    xodr = _write(map_dir=tmp_path, name="a", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    xodr = xb.write_xodr(map_dir=tmp_path, name="a", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
     config = {"xodr_path": xodr} if with_dir_path else {}
     result = xb.run_convert_map(map_dir=str(tmp_path) if with_dir_path else None, timeout_s=30, **config)
     assert result.returncode == conversion_common.REFUSED_EXIT_CODE
@@ -108,11 +103,8 @@ def test_dir_path_and_xodr_path_are_exclusive(tmp_path, with_dir_path):
 
 
 def test_xodr_path_writes_every_output_beside_it_and_returns_the_osm(tmp_path):
-    import subprocess
-    import sys
-
-    xodr = _write(map_dir=tmp_path, name="town", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
-    _write(map_dir=tmp_path, name="other", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    xodr = xb.write_xodr(map_dir=tmp_path, name="town", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    xb.write_xodr(map_dir=tmp_path, name="other", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
     code = f"import convert_map as cm; print(cm.convert_map(cm.MapConversionConfig(xodr_path={xodr!r})))"
     result = subprocess.run([sys.executable, "-c", code], cwd=xb.REPO_ROOT, capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, result.stderr
@@ -125,7 +117,7 @@ def test_xodr_path_writes_every_output_beside_it_and_returns_the_osm(tmp_path):
 
 def _long_map(*, tmp_path) -> None:
     roads = [xb.straight_road(id="1", length=3000.0), xb.straight_road(id="2", length=200.0, x=0.0, y=1500.0, hdg=1.0)]
-    _write(map_dir=tmp_path, name="long", text=xb.build_xodr(roads=roads))
+    xb.write_xodr(map_dir=tmp_path, name="long", text=xb.build_xodr(roads=roads))
 
 
 def test_default_fov_covers_the_whole_mesh(tmp_path):
@@ -150,7 +142,7 @@ def test_explicit_fov_is_kept(tmp_path):
 @pytest.mark.parametrize("rules, expected", [((None, None), "RHT"), (("LHT", "LHT"), "LHT"), (("LHT", "RHT"), "mixed")])
 def test_traffic_side_recorded_in_provenance(tmp_path, rules, expected):
     roads = [xb.straight_road(id=str(i), length=30.0, y=20.0 * i, rule=rule) for i, rule in enumerate(rules, start=1)]
-    _write(map_dir=tmp_path, name="side", text=xb.build_xodr(roads=roads))
+    xb.write_xodr(map_dir=tmp_path, name="side", text=xb.build_xodr(roads=roads))
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     with open(tmp_path / "side_provenance.json") as f:
@@ -190,7 +182,7 @@ def test_unusable_geo_reference_is_none(text):
 
 def test_missing_geo_reference_converts_at_zero_with_warning(tmp_path):
     text = xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None)
-    _write(map_dir=tmp_path, name="nogeo", text=text)
+    xb.write_xodr(map_dir=tmp_path, name="nogeo", text=text)
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     assert "has no <geoReference> - converting at latitude/longitude (0, 0)" in result.stderr
@@ -202,7 +194,7 @@ def test_missing_geo_reference_converts_at_zero_with_warning(tmp_path):
 
 def test_unusable_geo_reference_fails_unless_allowed(tmp_path):
     text = xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference="+proj=merc +lat_ts=0")
-    _write(map_dir=tmp_path, name="badgeo", text=text)
+    xb.write_xodr(map_dir=tmp_path, name="badgeo", text=text)
     refused = xb.run_convert_map(map_dir=str(tmp_path))
     assert refused.returncode == conversion_common.REFUSED_EXIT_CODE
     assert "allow_zero_origin" in refused.stderr
@@ -227,7 +219,7 @@ def test_undefined_object_orientation_is_treated_as_none(tmp_path):
         'zOffset="0.0" length="0.5" width="0.5" height="1.0" hdg="0.0" pitch="0.0" roll="0.0"/></objects>',
         1,
     )
-    _write(map_dir=tmp_path, name="orient", text=text)
+    xb.write_xodr(map_dir=tmp_path, name="orient", text=text)
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     assert "orientation 'undefined' - using 'none'" in result.stderr
@@ -239,7 +231,7 @@ def test_header_offset_applies_to_stoplines(tmp_path):
 
     roads, junctions, controllers = xb.junction_map()
     text = xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers, offset=(120.0, -40.0, 0.0, 0.0))
-    _write(map_dir=tmp_path, name="offset", text=text)
+    xb.write_xodr(map_dir=tmp_path, name="offset", text=text)
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     outputs = mq.ConversionOutputs.load(map_dir=str(tmp_path))
@@ -255,7 +247,7 @@ def _joined_roads_centrelines(*, map_dir, offset) -> tuple[np.ndarray, str]:
 
     road1 = xb.straight_road(id="1", length=50.0, successor=xb.LinkSpec(element_type="road", element_id="2", contact_point="start"))
     road2 = xb.straight_road(id="2", length=50.0, x=50.0, predecessor=xb.LinkSpec(element_type="road", element_id="1", contact_point="end"))
-    _write(map_dir=map_dir, name="joined", text=xb.build_xodr(roads=[road1, road2], offset=offset))
+    xb.write_xodr(map_dir=map_dir, name="joined", text=xb.build_xodr(roads=[road1, road2], offset=offset))
     result = xb.run_convert_map(map_dir=str(map_dir))
     assert result.returncode == 0, result.stderr
     outputs = mq.ConversionOutputs.load(map_dir=str(map_dir))
@@ -290,7 +282,7 @@ def test_false_northing_places_map_at_true_latitude(tmp_path):
     import lanelet2
 
     geo = "+proj=tmerc +lat_0=0 +lon_0=-117 +k=0.9996 +x_0=0 +y_0=-3630930 +datum=WGS84"
-    _write(map_dir=tmp_path, name="sd", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=geo))
+    xb.write_xodr(map_dir=tmp_path, name="sd", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=geo))
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     outputs = mq.ConversionOutputs.load(map_dir=str(tmp_path))

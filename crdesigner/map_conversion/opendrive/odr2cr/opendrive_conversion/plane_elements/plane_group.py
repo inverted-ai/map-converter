@@ -484,7 +484,7 @@ class ParametricLaneGroup:
             if len(left_vertices) > len(vertex_poses):
                 vertex_poses.append(pos)
 
-        elevations = np.array([[self.calc_elevation(pos)] for pos in vertex_poses]).reshape(-1, 1)
+        elevations = np.array([self.calc_elevation(pos) for pos in vertex_poses]).reshape(-1, 1)
         left_vertices, right_vertices = (
             np.hstack([np.array(left_vertices).reshape(-1, 2), elevations]),
             np.hstack([np.array(right_vertices).reshape(-1, 2), elevations]),

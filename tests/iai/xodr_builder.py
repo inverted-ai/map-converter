@@ -364,6 +364,14 @@ def junction_map(
     return [road1, road2, road3], [junction], controllers
 
 
+def write_xodr(*, map_dir, name: str, text: str, encoding: str = "utf-8") -> str:
+    """Write ``<map_dir>/<name>.xodr`` (creating ``map_dir``), encoded as ``encoding``; return its path."""
+    map_dir.mkdir(parents=True, exist_ok=True)
+    path = map_dir / f"{name}.xodr"
+    path.write_bytes(text.encode(encoding))
+    return str(path)
+
+
 def run_convert_map(*, map_dir: Optional[str] = None, timeout_s: float = 300.0, **config: str) -> subprocess.CompletedProcess:
     """Run ``convert_map.py`` on ``map_dir`` in a subprocess (stdin closed), returning its result.
 

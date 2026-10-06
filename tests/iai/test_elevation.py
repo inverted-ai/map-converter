@@ -16,8 +16,7 @@ def _convert_slope(*, map_dir, lane_sections: list[xb.LaneSectionSpec]) -> mq.Co
         lane_sections=lane_sections,
         elevation=[(0.0, 0.0, GRADE, 0.0, 0.0)],
     )
-    map_dir.mkdir()
-    (map_dir / "slope.xodr").write_text(xb.build_xodr(roads=[road]))
+    xb.write_xodr(map_dir=map_dir, name="slope", text=xb.build_xodr(roads=[road]))
     result = xb.run_convert_map(map_dir=str(map_dir))
     assert result.returncode == 0, result.stderr
     return mq.ConversionOutputs.load(map_dir=str(map_dir))

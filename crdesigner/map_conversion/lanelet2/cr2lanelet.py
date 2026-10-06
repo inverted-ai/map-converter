@@ -27,6 +27,8 @@ from crdesigner.map_conversion.lanelet2.lanelet2 import (
 
 # Metres two linked lanelets' boundary end points may be apart and still share a node.
 SHARED_NODE_TOLERANCE = 1.0
+# Metres per degree of latitude, for comparing node positions.
+METRES_PER_DEGREE = 111_000.0
 
 
 def _set_overriding_tags_for_bidirectional_users(lanelet: Lanelet, way_rel: WayRelation):
@@ -317,7 +319,7 @@ class CR2LaneletConverter:
 
         :param tolerance: Maximum distance in metres between two seam nodes that are merged.
         """
-        degree_tolerance = tolerance / 111_000.0
+        degree_tolerance = tolerance / METRES_PER_DEGREE
         replaced = {}
 
         def resolve(node_id):
@@ -327,9 +329,11 @@ class CR2LaneletConverter:
 
         for lanelet in self.lanelet_network.lanelets:
             last = self.last_nodes.get(lanelet.lanelet_id)
+            if last is None:
+                continue
             for successor_id in lanelet.successor:
                 first = self.first_nodes.get(successor_id)
-                if last is None or first is None:
+                if first is None:
                     continue
                 for keep, drop in zip(last, first):
                     keep, drop = resolve(keep), resolve(drop)
@@ -1082,8 +1086,8 @@ class CR2LaneletConverter:
         for node_id, vertex in zip(node_ids, vertices):
             node = self.osm.nodes[node_id]
             lat, lon = self.transformer.transform(self.origin_utm[0] + vertex[0], self.origin_utm[1] + vertex[1])
-            north = (float(node.lat) - lat) * 111_000.0
-            east = (float(node.lon) - lon) * 111_000.0 * np.cos(np.radians(lat))
+            north = (float(node.lat) - lat) * METRES_PER_DEGREE
+            east = (float(node.lon) - lon) * METRES_PER_DEGREE * np.cos(np.radians(lat))
             if np.hypot(north, east) > SHARED_NODE_TOLERANCE:
                 return False
         return True

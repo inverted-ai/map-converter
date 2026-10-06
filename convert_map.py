@@ -465,6 +465,11 @@ class ConfigError(ValueError):
     """An invalid :class:`MapConversionConfig`, found before anything is read or written."""
 
 
+def map_name(*, xodr_path: str) -> str:
+    """The map name: the ``.xodr`` file name without its extension."""
+    return Path(xodr_path).stem
+
+
 def validate_config(*, cfg: MapConversionConfig) -> str:
     """Check the configuration before parsing and return the ``.xodr`` to convert.
 
@@ -508,7 +513,7 @@ def projected_centre(*, opendrive, geo_offset: Optional[GeoOffset]) -> Optional[
 def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> ParsedXodr:
     """Parse the OpenDRIVE file and build the Lanelet2 projector from its geo-reference."""
     logger.info(f'Using {opendrive_path} as input')
-    location = os.path.basename(opendrive_path)[:-5]
+    location = map_name(xodr_path=opendrive_path)
     opendrive = parse_opendrive(Path(opendrive_path))
 
     # Construct Lanelet2 projector
@@ -856,7 +861,7 @@ def write_provenance(
         "python": sys.version.split()[0],
         "packages": versions,
     }
-    location = os.path.basename(xodr_path)[:-5]
+    location = map_name(xodr_path=xodr_path)
     path = os.path.abspath(os.path.join(out_dir, f"{location}_provenance.json"))
     with open(path, "w") as f:
         json.dump(provenance, f, indent=2)
@@ -881,7 +886,7 @@ def convert_map(cfg: MapConversionConfig) -> str:
         cfg = OmegaConf.to_object(cfg)
     opendrive_path = validate_config(cfg=cfg)
     if cfg.xodr_path is not None:
-        out_dir = os.path.join(os.path.dirname(opendrive_path), os.path.basename(opendrive_path)[:-5])
+        out_dir = os.path.join(os.path.dirname(opendrive_path), map_name(xodr_path=opendrive_path))
         os.makedirs(out_dir, exist_ok=True)
         cfg = dataclasses.replace(cfg, dir_path=out_dir)
     parsed = parse_xodr(opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin)

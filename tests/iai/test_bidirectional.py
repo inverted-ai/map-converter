@@ -41,7 +41,7 @@ def _single_lane_road_map() -> str:
 
 
 def test_bidirectional_lane_is_kept_tagged_and_not_linked_head_on(tmp_path):
-    (tmp_path / "bidir.xodr").write_text(_single_lane_road_map())
+    xb.write_xodr(map_dir=tmp_path, name="bidir", text=_single_lane_road_map())
     result = xb.run_convert_map(map_dir=str(tmp_path))
     assert result.returncode == 0, result.stderr
     outputs = mq.ConversionOutputs.load(map_dir=str(tmp_path))

@@ -60,7 +60,7 @@ All outputs are written into `dir_path`. The configuration is checked before any
 | `osm_target_bytes` | `1048576000` | Size budget for the `.osm`: the tolerance widens until the file fits, and the run fails if it never does. Unset disables the budget. |
 | `simplify_max_iterations` | `1` | Attempts at fitting the size budget. |
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
-| `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is missing or unusable at latitude/longitude (0, 0) instead of failing. |
+| `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing. (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
 
 ## Output files
 
@@ -247,7 +247,7 @@ written to. `--convert-arg FIELD=VALUE` passes a `MapConversionConfig` field to 
 `--exclude 'Carla_UE4_old/*'`; `--map` limits the run to named files. It writes `report.json` (rewritten after every map, so an interrupted run keeps its progress) and a
 self-contained `report.html`. Per map it records:
 
-- **outcome**: `ok`; `refused` (the converter declined on purpose, e.g. no usable geo-reference, with its
+- **outcome**: `ok`; `refused` (the converter declined on purpose, e.g. an unusable geo-reference, with its
   message); `exception` (with the exception class and the innermost `file:line`); `timeout`; or `pdb` (the
   converter stopped in a debugger);
 - wall time and peak memory of the conversion;
@@ -319,9 +319,12 @@ options:
 - Traffic lights come from dynamic `<signal>` elements; stop and yield signs from `<object>` elements with
   CARLA's stencil names. Other vendors' encodings may produce no stoplines.
 - Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; `x_0`/`y_0` false easting/northing honoured) and
-  `+proj=utm +zone=…` (origin at the map centre). A missing, unparseable or other projection stops the run
-  (exit code 3) unless `allow_zero_origin=true`. A header `<offset>` is applied to the `.osm`, the mesh and the
-  stoplines alike.
+  `+proj=utm +zone=…` (origin at the map centre); malformed tokens in the string are ignored with a warning.
+  A map with no `<geoReference>` has only local coordinates: it converts at latitude/longitude (0, 0) with a
+  warning, recorded as `"geo_reference": "absent"` in provenance. A `<geoReference>` that is present but
+  unparseable or another projection stops the run (exit code 3) unless `allow_zero_origin=true`. A header
+  `<offset>` is applied to the `.osm`, the mesh and the stoplines alike.
+- Object `orientation="undefined"` (seen in some vendor exports) is read as `none`, with a warning.
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
   without a marking type.
 - `<controller>` groups and `sequence` are read for the traffic-light tool (levels B/C); the converter itself does not use them.
@@ -333,9 +336,9 @@ options:
 - **A map fails or produces nothing useful**: run `map_report.py run --maps <folder> --out <dir>` on it. The
   report gives the outcome and, for an exception, the class and the `file:line` where it was raised, together
   with the input's vendor and element counts.
-- **`Cannot convert: ... cannot be placed`**: the `.xodr` has no usable `<geoReference>`. Add one, or set
-  `allow_zero_origin=true` to convert it at (0, 0). A warning `declares its origin at latitude/longitude (0, 0)`
-  means the file itself says (0, 0).
+- **`Cannot convert: ... cannot be placed`**: the `.xodr` declares a `<geoReference>` the converter cannot use.
+  Fix it, or set `allow_zero_origin=true` to convert at (0, 0). The warnings `has no <geoReference>` and
+  `declares its origin at latitude/longitude (0, 0)` mean the map converted at (0, 0).
 - **No stoplines**: compare `<signal>`/`<object>` counts in the report with `stoplines_by_agent_type`.
 - **`Invalid configuration: ...` and exit code 3**: the message names the problem (wrong number of `.xodr` files,
   `trim_radius` without `center`); nothing was written.

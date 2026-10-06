@@ -251,6 +251,14 @@ class Object:
 
     @orientation.setter
     def orientation(self, value):
+        if value == "undefined":
+            logging.getLogger("crdesigner.degradation").warning(
+                "object %s: orientation 'undefined' - using 'none'",
+                self.id,
+                extra={"kind": "unknown_value", "element": "object.orientation",
+                       "id": self.id, "value": value, "action": "defaulted"},
+            )
+            value = "none"
         if value not in ["+", "-", "none"]:
             raise AttributeError("Value is not a valid orientation!")
         self._orientation = str(value)

@@ -9,6 +9,7 @@ import glob
 import importlib.metadata
 import json
 import os
+import re
 import sys
 import logging
 from typing import Tuple, Optional
@@ -78,8 +79,9 @@ class MapConversionConfig:
             and the run fails if it never does. None disables the budget.
         simplify_max_iterations: Attempts at fitting the size budget.
         simplify_tolerance_factor: Factor the tolerance grows by per attempt.
-        allow_zero_origin: Convert a map whose ``<geoReference>`` is missing or unusable at
-            latitude/longitude (0, 0) instead of failing.
+        allow_zero_origin: Convert a map whose ``<geoReference>`` is present but unusable at
+            latitude/longitude (0, 0) instead of failing. A map with no ``<geoReference>`` always
+            converts at (0, 0), with a warning.
     """
 
     dir_path: str
@@ -171,6 +173,15 @@ def parse_geo_reference(*, text: Optional[str], centre: Optional[Tuple[float, fl
     if not text or not text.strip():
         return None
     text = clean_projection_string(text)
+    # Vendor exports carry malformed tokens (e.g. "+=alt_0=0"); keep well-formed +key[=value] ones.
+    tokens = []
+    for token in text.split():
+        candidate = "+" + token.lstrip("+")
+        if re.fullmatch(r"\+[A-Za-z_]\w*(=\S+)?", candidate):
+            tokens.append(candidate)
+        else:
+            logger.warning(f'Ignoring malformed <geoReference> token {token!r}')
+    text = " ".join(tokens)
     try:
         crs = pyproj.CRS.from_user_input(text)
     except pyproj.exceptions.CRSError:
@@ -380,6 +391,7 @@ class ParsedXodr:
     projector: object
     frame: CustomTransfomer
     traffic_side: Optional[str]  # "RHT", "LHT" or "mixed"
+    geo_reference_status: str  # "declared", "absent" or "unusable_zero_origin_allowed"
 
 
 @dataclasses.dataclass(slots=True)
@@ -447,18 +459,20 @@ def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> Parse
     geo_reference = parse_geo_reference(
         text=opendrive.header.geo_reference, centre=projected_centre(opendrive=opendrive, geo_offset=geo_offset)
     )
-    if geo_reference is None:
-        problem = (
-            'no <geoReference>' if not opendrive.header.geo_reference
-            else f'an unusable <geoReference> ({opendrive.header.geo_reference!r})'
-        )
+    geo_reference_status = 'declared'
+    if geo_reference is None and not (opendrive.header.geo_reference or '').strip():
+        # Nothing to misplace: the coordinates are local, so (0, 0) is the honest origin.
+        logger.warning(f'{os.path.abspath(opendrive_path)} has no <geoReference> - converting at latitude/longitude (0, 0)')
+        geo_reference, geo_reference_status = GeoReference(0.0, 0.0), 'absent'
+    elif geo_reference is None:
+        problem = f'an unusable <geoReference> ({opendrive.header.geo_reference!r})'
         if not allow_zero_origin:
             raise InputError(
                 f'{os.path.abspath(opendrive_path)} has {problem}, so the map cannot be placed. '
                 f'Set allow_zero_origin=true to convert it at latitude/longitude (0, 0).'
             )
         logger.warning(f'{opendrive_path} has {problem} - converting at (0, 0) because allow_zero_origin is set')
-        geo_reference = GeoReference(0.0, 0.0)
+        geo_reference, geo_reference_status = GeoReference(0.0, 0.0), 'unusable_zero_origin_allowed'
     elif geo_reference.origin == (0.0, 0.0) and geo_reference.translation == (0.0, 0.0):
         logger.warning(f'{opendrive_path} declares its origin at latitude/longitude (0, 0)')
     check_geo_reference(geo_reference=geo_reference, source=os.path.abspath(opendrive_path))
@@ -470,6 +484,7 @@ def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> Parse
         projector=projector,
         frame=CustomTransfomer(projector, geo_offset, geo_reference.translation),
         traffic_side=traffic_side_of(opendrive=opendrive),
+        geo_reference_status=geo_reference_status,
     )
 
 
@@ -662,6 +677,7 @@ def render_and_finish(
     mesh: BuiltMesh,
     opendrive_path: str,
     traffic_side: Optional[str],
+    geo_reference_status: str,
 ) -> None:
     """Pick the map centre, write ``metadata.json``, render ``visualization.png``, record provenance."""
     if cfg.center is None:
@@ -713,7 +729,12 @@ def render_and_finish(
     logger.info(f'Saving visualization to {viz_path}')
     imageio.imsave(viz_path, map_image[0].permute(1, 2, 0).cpu().numpy().astype(np.uint8))
     write_provenance(
-        cfg=cfg, xodr_path=opendrive_path, out_dir=cfg.dir_path, visualization_fov=fov, traffic_side=traffic_side
+        cfg=cfg,
+        xodr_path=opendrive_path,
+        out_dir=cfg.dir_path,
+        visualization_fov=fov,
+        traffic_side=traffic_side,
+        geo_reference_status=geo_reference_status,
     )
 
 
@@ -730,11 +751,13 @@ def write_provenance(
     out_dir: str,
     visualization_fov: float,
     traffic_side: Optional[str],
+    geo_reference_status: str,
 ) -> str:
     """Write ``<map>_provenance.json``: what was converted, with which converter and settings.
 
-    Also records values the conversion derived: the visualization FOV it rendered with and the
-    traffic side (``RHT``/``LHT``/``mixed``) of the input's roads.
+    Also records values the conversion derived: the visualization FOV it rendered with, the
+    traffic side (``RHT``/``LHT``/``mixed``) of the input's roads and whether the geo-reference was
+    ``declared``, ``absent`` (placed at (0, 0)) or ``unusable_zero_origin_allowed``.
 
     Returns:
         Absolute path of the written file.
@@ -751,6 +774,7 @@ def write_provenance(
         "config": OmegaConf.to_container(OmegaConf.structured(cfg)),
         "visualization_fov": visualization_fov,
         "traffic_side": traffic_side,
+        "geo_reference": geo_reference_status,
         "converter": git_identity(repo=REPO_ROOT),
         "python": sys.version.split()[0],
         "packages": versions,
@@ -794,6 +818,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         mesh=mesh,
         opendrive_path=opendrive_path,
         traffic_side=parsed.traffic_side,
+        geo_reference_status=parsed.geo_reference_status,
     )
 
 

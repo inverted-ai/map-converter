@@ -191,7 +191,7 @@ def test_compare_identical_runs_has_no_moves(two_runs, tmp_path):
 def test_convert_args_reach_the_converter(tmp_path):
     maps = tmp_path / "maps" / "nogeo"
     maps.mkdir(parents=True)
-    (maps / "nogeo.xodr").write_text(xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None))
+    (maps / "nogeo.xodr").write_text(xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference="+proj=merc +lat_ts=0"))
     out = tmp_path / "out"
     script = os.path.join(REPO_ROOT, "map_report.py")
     for extra, outcome in (([], "refused"), (["--convert-arg", "allow_zero_origin=true"], "ok")):
@@ -206,7 +206,7 @@ def test_convert_args_reach_the_converter(tmp_path):
 def test_refusal_message_is_comparable_across_runs(tmp_path):
     maps = tmp_path / "maps" / "nogeo"
     maps.mkdir(parents=True)
-    (maps / "nogeo.xodr").write_text(xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None))
+    (maps / "nogeo.xodr").write_text(xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference="+proj=merc +lat_ts=0"))
     messages = []
     for name in ("a", "b"):
         report = mr.run_report(maps_dir=str(tmp_path / "maps"), out_dir=str(tmp_path / name), converter=REPO_ROOT, only=None, timeout_s=300, with_fsm=False)

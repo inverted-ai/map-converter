@@ -161,17 +161,49 @@ def test_unusable_geo_reference_is_none(text):
     assert cm.parse_geo_reference(text=text, centre=(0.0, 0.0)) is None
 
 
-def test_missing_geo_reference_fails_unless_allowed(tmp_path):
+def test_missing_geo_reference_converts_at_zero_with_warning(tmp_path):
     text = xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference=None)
     _write(map_dir=tmp_path, name="nogeo", text=text)
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "has no <geoReference> - converting at latitude/longitude (0, 0)" in result.stderr
+    with open(tmp_path / "metadata.json") as f:
+        assert json.load(f)["lanelet_map_origin"] == [0.0, 0.0]
+    with open(tmp_path / "nogeo_provenance.json") as f:
+        assert json.load(f)["geo_reference"] == "absent"
+
+
+def test_unusable_geo_reference_fails_unless_allowed(tmp_path):
+    text = xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)], geo_reference="+proj=merc +lat_ts=0")
+    _write(map_dir=tmp_path, name="badgeo", text=text)
     refused = xb.run_convert_map(map_dir=str(tmp_path))
     assert refused.returncode == conversion_common.REFUSED_EXIT_CODE
     assert "allow_zero_origin" in refused.stderr
-    assert sorted(os.listdir(tmp_path)) == ["nogeo.xodr"]
+    assert sorted(os.listdir(tmp_path)) == ["badgeo.xodr"]
     allowed = xb.run_convert_map(map_dir=str(tmp_path), allow_zero_origin="true")
     assert allowed.returncode == 0, allowed.stderr
-    with open(tmp_path / "metadata.json") as f:
-        assert json.load(f)["lanelet_map_origin"] == [0.0, 0.0]
+    with open(tmp_path / "badgeo_provenance.json") as f:
+        assert json.load(f)["geo_reference"] == "unusable_zero_origin_allowed"
+
+
+def test_malformed_geo_reference_tokens_are_ignored():
+    text = "++proj=tmerc +lon_0=-73.99735 +lat_0=40.736652 +=alt_0=0 +ellps=WGS84 +units=m"
+    geo = cm.parse_geo_reference(text=text, centre=None)
+    assert (geo.lat, geo.lon) == (40.736652, -73.99735)
+
+
+def test_undefined_object_orientation_is_treated_as_none(tmp_path):
+    roads, junctions, controllers = xb.junction_map()
+    text = xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers).replace(
+        "<objects/>",
+        '<objects><object id="900" s="5.0" t="0.0" type="pole" name="pole" orientation="undefined" '
+        'zOffset="0.0" length="0.5" width="0.5" height="1.0" hdg="0.0" pitch="0.0" roll="0.0"/></objects>',
+        1,
+    )
+    _write(map_dir=tmp_path, name="orient", text=text)
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "orientation 'undefined' - using 'none'" in result.stderr
 
 
 def test_header_offset_applies_to_stoplines(tmp_path):

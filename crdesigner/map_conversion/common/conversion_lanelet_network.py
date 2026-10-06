@@ -409,6 +409,12 @@ class ConversionLaneletNetwork(LaneletNetwork):
         """
         mergeable_lanelets = []
 
+        # a bidirectional lanelet's boundaries swap sides against a one-way neighbour: concatenating them crosses
+        if lanelet.user_bidirectional or any(
+            self.find_lanelet_by_id(lane_id).user_bidirectional for lane_id in lanelet.successor
+        ):
+            return None
+
         # neglect conflicting references (references pointing to each other) since this can cause errors in later processing steps when working with references
         if (
             lanelet.parametric_lane_group

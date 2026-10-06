@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import logging
+import math
 from typing import Tuple, Optional
 
 import imageio
@@ -211,6 +212,52 @@ def check_geo_reference(*, geo_reference: GeoReference, source: str) -> None:
         zone = int((geo_reference.lon + 180.0) // 6.0) % 60 + 1
         if zone != geo_reference.zone:
             raise InputError(f"{source}: UTM origin longitude {geo_reference.lon:.3f} is outside zone {geo_reference.zone}")
+
+
+@dataclasses.dataclass(slots=True)
+class BidirectionalFixes:
+    """Topology to drop around bidirectional lanelets (see :func:`bidirectional_fixes`)."""
+
+    links: list[tuple[int, int]]  # (predecessor id, successor id) pairs to unlink
+    reverse_connectors: list[int]  # lanelets retracing a bidirectional lanelet the other way
+
+
+def bidirectional_fixes(*, lanelet_network: LaneletNetwork, tolerance: float = 5.0) -> BidirectionalFixes:
+    """Find the links the OpenDRIVE conversion gets wrong around bidirectional lanelets.
+
+    A bidirectional lanelet has one drawn direction. A lane meeting it at its far end, or head-on, is
+    linked as if it met the near end, so the ``.osm`` writer shares nodes across the gap and the shape
+    folds. A link touching a bidirectional lanelet is kept only where the predecessor ends at the
+    successor's start. A predecessor running from the lanelet's end back to its start duplicates it
+    in reverse; ``one_way=no`` covers travel against the drawn direction instead.
+
+    Args:
+        lanelet_network: The CommonRoad network exported from OpenDRIVE.
+        tolerance: Metres within which an end point counts as touching a lanelet end.
+
+    Returns:
+        The links to unlink and the reverse connectors to remove.
+    """
+    links = []
+    reverse_connectors = []
+    for lanelet in lanelet_network.lanelets:
+        if not lanelet.user_bidirectional:
+            continue
+        start, end = lanelet.left_vertices[0][:2], lanelet.left_vertices[-1][:2]
+        for pred_id in lanelet.predecessor:
+            pred = lanelet_network.find_lanelet_by_id(pred_id)
+            if pred is None:
+                continue
+            pred_start, pred_end = pred.left_vertices[0][:2], pred.left_vertices[-1][:2]
+            if math.dist(pred_start, end) < tolerance and math.dist(pred_end, start) < tolerance:
+                reverse_connectors.append(pred_id)
+            elif math.dist(pred_end, start) >= tolerance:
+                links.append((pred_id, lanelet.lanelet_id))
+        for succ_id in lanelet.successor:
+            succ = lanelet_network.find_lanelet_by_id(succ_id)
+            if succ is not None and math.dist(succ.left_vertices[0][:2], end) >= tolerance:
+                links.append((lanelet.lanelet_id, succ_id))
+    return BidirectionalFixes(links=links, reverse_connectors=reverse_connectors)
 
 
 def simplify_lanelet_network(*, network: LaneletNetwork, tolerance: float) -> int:
@@ -516,7 +563,7 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
         # "sidewalk",
         # "shoulder",
         # "crosswalk",
-        # "bidirectional",
+        "bidirectional",
     ]
     road_network = Network()
     road_network.load_opendrive(parsed.opendrive)
@@ -526,6 +573,18 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
     #     )
     # We leave everything in the original OpenDRIVE inertial coordinate frame
     lanelet_network = road_network.export_lanelet_network(transformer=None, filter_types=open_drive_config.filter_types)
+    fixes = bidirectional_fixes(lanelet_network=lanelet_network)
+    for pred_id, succ_id in fixes.links:
+        pred, succ = lanelet_network.find_lanelet_by_id(pred_id), lanelet_network.find_lanelet_by_id(succ_id)
+        pred.successor = [i for i in pred.successor if i != succ_id]
+        succ.predecessor = [i for i in succ.predecessor if i != pred_id]
+    for lanelet_id in fixes.reverse_connectors:
+        lanelet_network.remove_lanelet(lanelet_id)
+    if fixes.links or fixes.reverse_connectors:
+        logger.info(
+            f'Bidirectional lanelets: unlinked {len(fixes.links)} wrong links, '
+            f'removed {len(fixes.reverse_connectors)} reverse connectors'
+        )
 
     # Export CommonRoad to Lanelet2, iterating tolerance until the OSM fits the size budget.
     commonroad_config = GeneralConfig()

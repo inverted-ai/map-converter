@@ -61,7 +61,8 @@ Frame invariant: the vendored parser leaves road geometry in file coordinates; `
 These are the names/files that diverge from upstream. Search for them when changing the OpenDRIVE → CommonRoad path:
 
 - The repo-root scripts — IAI-authored, not upstream.
-- `crdesigner/map_conversion/lanelet2/cr2lanelet.py` — small IAI tweaks (import / type-hint cleanup, the narrowed same-direction marking rule) and `_share_seam_nodes`, which merges coinciding predecessor/successor end nodes so routing sees the link.
+- `crdesigner/map_conversion/lanelet2/cr2lanelet.py` — small IAI tweaks (import / type-hint cleanup, the narrowed same-direction marking rule) and `_share_seam_nodes`, which merges coinciding predecessor/successor end nodes so routing sees the link; `_nodes_at` (`SHARED_NODE_TOLERANCE`) stops linked lanelets that do not meet from sharing end nodes; `one_way=no` for bidirectional vehicle lanes.
+- `crdesigner/map_conversion/common/conversion_lanelet_network.py` — `check_concatenation_potential` never concatenates bidirectional lanelets. `convert_map.bidirectional_fixes` drops the OpenDRIVE conversion's wrong links around them.
 - `crdesigner/map_conversion/opendrive/odr2cr/opendrive_conversion/plane_elements/` — elevation: `Border.calc_elevation` follows the reference chain, `ParametricLane.calc_elevation` (reversed lanes) and `ParametricLaneGroup.calc_elevation` (merge/split mirroring).
 - Vendored code reports degradations through `logging.getLogger("crdesigner.degradation")` with `extra={kind, element, id, value, action}` (no IAI imports inside `crdesigner/`).
 - Custom attributes on upstream objects: `iai_stoplines`, `_iai_stop_signs`, `_iai_yield_signs`, `opendrive_id`. Grep for `iai_` inside `crdesigner/` to find where they're attached.

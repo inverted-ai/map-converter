@@ -317,7 +317,10 @@ options:
 
 ## Supported OpenDRIVE and known limits
 
-- Lanes of type `driving`, `onRamp`, `offRamp`, `exit` and `entry` become lanelets; other lane types are dropped.
+- Lanes of type `driving`, `onRamp`, `offRamp`, `exit`, `entry` and `bidirectional` become lanelets; other lane
+  types are dropped. A `bidirectional` lane is tagged `one_way=no` (plus the per-user `one_way:vehicle...`
+  tags) and is never concatenated with its neighbours; links to it are kept only where the lanes meet, and a
+  connector retracing it in reverse is dropped.
 - Traffic lights come from dynamic `<signal>` elements; stop and yield signs from `<object>` elements with
   CARLA's stencil names. Other vendors' encodings may produce no stoplines.
 - Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; with an `x_0`/`y_0` false easting/northing, origin

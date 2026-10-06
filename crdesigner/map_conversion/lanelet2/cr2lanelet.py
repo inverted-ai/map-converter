@@ -52,6 +52,9 @@ def _set_overriding_tags_for_bidirectional_users(lanelet: Lanelet, way_rel: WayR
 
         elif user_bidirectional_value == "bicycle" or user_bidirectional_value == "pedestrian":
             way_rel.tag_dict["one_way:" + user_bidirectional_value] = "no"
+    if any(key.startswith("one_way:vehicle") for key in way_rel.tag_dict):
+        # the general tag, which Lanelet2's vehicle routing and downstream map tools read
+        way_rel.tag_dict["one_way"] = "no"
 
 
 def _line_marking_to_type_subtype_vertices(line_marking: LineMarking) -> [str, str]:

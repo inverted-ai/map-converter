@@ -34,7 +34,7 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 All commands: `PYTHONPATH` unset (a sourced ROS environment breaks pytest), the repo's venv python, absolute paths.
 
 - Setup: `python3 -m venv <repo>/.venv && <repo>/.venv/bin/pip install -r <repo>/requirements-tests.txt`. `requirements.txt` is the runtime manifest; `pyproject.toml` is upstream's poetry packaging and is left untouched (`tests/iai/test_requirements.py` keeps the two in step).
-- **Run a conversion:** `<repo>/.venv/bin/python <repo>/convert_map.py dir_path=<folder-with-single-.xodr>`. Other `MapConversionConfig` fields are OmegaConf dotlist args; see README.
+- **Run a conversion:** `<repo>/.venv/bin/python <repo>/convert_map.py dir_path=<folder-with-single-.xodr>` (or `xodr_path=<file.xodr>`, outputs in `<file folder>/<stem>/`; `convert_map()` returns the `.osm` path). Other `MapConversionConfig` fields are OmegaConf dotlist args; see README.
 - **Batch report:** `<repo>/.venv/bin/python <repo>/map_report.py run --maps <dir> --out <dir> [--fsm]`; `compare <a/report.json> <b/report.json> --out <dir>`.
 - Tests: `QT_QPA_PLATFORM=offscreen <repo>/.venv/bin/python -m pytest <repo>/tests` (set `IAI_MAPS_DIR` to a maps folder for the Town15 FSM tests). The upstream suite writes files into the tree; they are git-ignored.
 - Lint: `ruff check .` and `ruff format --check .`. Config in `pyproject.toml` (line-length 100, double quotes, rules `E4,E7,E9,I`). The ANTLR-generated parser at `crdesigner/verification_repairing/verification/hol/parser/gen/` is excluded — do not lint or reformat it.
@@ -46,7 +46,7 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 
 `convert_map()` calls one keyword-only stage function per step, in this order; each stage writes its own output:
 
-1. `validate_config` — check the config before anything is read (`ConfigError`, exit code 3 from the CLI) and return the single `.xodr` in `cfg.dir_path` (the filename, minus extension, becomes the map name).
+1. `validate_config` — check the config before anything is read (`ConfigError`, exit code 3 from the CLI) and return the `.xodr`: `cfg.xodr_path`, or the single one in `cfg.dir_path` (the filename, minus extension, becomes the map name). With `xodr_path`, `convert_map` points `dir_path` at `<xodr folder>/<stem>/` for the remaining stages.
 2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then `parse_geo_reference` (pyproj; `tmerc` and `utm`) and the header `<offset>`, combined in one `CustomTransfomer` local frame; no geo-reference → origin (0, 0) with a warning; a present but unusable one raises `InputError` unless `allow_zero_origin`.
 3. `export_osm` — `Network.load_opendrive` → `Network.export_lanelet_network` builds a CommonRoad lanelet network in the OpenDRIVE inertial frame (`filter_types`: `driving`, `onRamp`, `offRamp`, `exit`, `entry`), simplified, then `CR2LaneletConverter` (`crdesigner/map_conversion/lanelet2/cr2lanelet.py`) with a `CustomTransfomer` wrapping a Lanelet2 `UtmProjector` writes `<map>.osm`.
 4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).

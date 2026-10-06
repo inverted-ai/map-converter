@@ -44,12 +44,16 @@ arguments, each a field of `MapConversionConfig`:
 ```
 
 `dir_path` must contain exactly one `.xodr`; its file name (without `.xodr`) becomes the map name `<map>`.
-All outputs are written into `dir_path`. The configuration is checked before anything is read: no or several
-`.xodr` files, or `trim_radius` without `center`, stop the run with exit code 3 and write nothing.
+All outputs are written into `dir_path`. Alternatively give the file itself as `xodr_path=/path/to/MyMap.xodr`:
+the outputs then go to `/path/to/MyMap/`, so several `.xodr` files in one folder never overwrite each other.
+From Python, `convert_map.convert_map(MapConversionConfig(xodr_path=...))` returns the absolute `.osm` path.
+The configuration is checked before anything is read: neither or both of `dir_path` and `xodr_path`, no or
+several `.xodr` files, or `trim_radius` without `center`, stop the run with exit code 3 and write nothing.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `dir_path` | required | Directory holding exactly one `.xodr`; all outputs are written here. |
+| `dir_path` | unset | Directory holding exactly one `.xodr`; all outputs are written here. |
+| `xodr_path` | unset | The `.xodr` itself, instead of `dir_path`; outputs go to `<xodr folder>/<map>/`. Exactly one of the two is required. |
 | `domain` | unset | Prefix for `iai_location_name` in `metadata.json` (`<domain>:<map>`); unset leaves it null. |
 | `lane_marking_join_threshold` | `0.1` | Distance (m) under which the markings of two neighbouring lanes are drawn as one line in the mesh. |
 | `visualization_fov` | unset | Width (m) of the square area `visualization.png` shows, centred on `center`. Unset fits the whole road mesh with a 5% margin; the value used is recorded in `<map>_provenance.json`. |

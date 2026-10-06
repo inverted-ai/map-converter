@@ -97,6 +97,32 @@ def test_invalid_config_fails_fast_and_writes_nothing(tmp_path, setup, config, m
     assert sorted(os.listdir(tmp_path)) == before
 
 
+@pytest.mark.parametrize("with_dir_path", [False, True], ids=["neither", "both"])
+def test_dir_path_and_xodr_path_are_exclusive(tmp_path, with_dir_path):
+    xodr = _write(map_dir=tmp_path, name="a", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    config = {"xodr_path": xodr} if with_dir_path else {}
+    result = xb.run_convert_map(map_dir=str(tmp_path) if with_dir_path else None, timeout_s=30, **config)
+    assert result.returncode == conversion_common.REFUSED_EXIT_CODE
+    assert "exactly one of dir_path and xodr_path" in result.stderr
+    assert sorted(os.listdir(tmp_path)) == ["a.xodr"]
+
+
+def test_xodr_path_writes_every_output_beside_it_and_returns_the_osm(tmp_path):
+    import subprocess
+    import sys
+
+    xodr = _write(map_dir=tmp_path, name="town", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    _write(map_dir=tmp_path, name="other", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    code = f"import convert_map as cm; print(cm.convert_map(cm.MapConversionConfig(xodr_path={xodr!r})))"
+    result = subprocess.run([sys.executable, "-c", code], cwd=xb.REPO_ROOT, capture_output=True, text=True, timeout=300)
+    assert result.returncode == 0, result.stderr
+    out_dir = tmp_path / "town"
+    assert result.stdout.strip().splitlines()[-1] == str(out_dir / "town.osm")
+    expected = {"town.osm", "town_stoplines.json", "town_mesh.json", "town_signal_groups.json",
+                "town_provenance.json", "metadata.json", "visualization.png"}
+    assert expected <= set(os.listdir(out_dir))
+
+
 def _long_map(*, tmp_path) -> None:
     roads = [xb.straight_road(id="1", length=3000.0), xb.straight_road(id="2", length=200.0, x=0.0, y=1500.0, hdg=1.0)]
     _write(map_dir=tmp_path, name="long", text=xb.build_xodr(roads=roads))

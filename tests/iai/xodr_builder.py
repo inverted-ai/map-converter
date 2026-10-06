@@ -364,12 +364,13 @@ def junction_map(
     return [road1, road2, road3], [junction], controllers
 
 
-def run_convert_map(*, map_dir: str, timeout_s: float = 300.0, **config: str) -> subprocess.CompletedProcess:
+def run_convert_map(*, map_dir: Optional[str] = None, timeout_s: float = 300.0, **config: str) -> subprocess.CompletedProcess:
     """Run ``convert_map.py`` on ``map_dir`` in a subprocess (stdin closed), returning its result.
 
     A subprocess because crdesigner's config objects are process-global. Extra keyword arguments
-    become ``field=value`` command-line arguments.
+    become ``field=value`` command-line arguments (e.g. ``xodr_path`` with no ``map_dir``).
     """
-    argv = [sys.executable, os.path.join(REPO_ROOT, "convert_map.py"), f"dir_path={map_dir}"]
+    argv = [sys.executable, os.path.join(REPO_ROOT, "convert_map.py")]
+    argv += [f"dir_path={map_dir}"] if map_dir is not None else []
     argv += [f"{k}={v}" for k, v in config.items()]
     return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout_s)

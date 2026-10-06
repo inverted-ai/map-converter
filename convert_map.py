@@ -1,7 +1,8 @@
 """
-The required input is a folder `dir_path` with a single *.xodr file in it.
-The name of that file will be the map name.
-This script produces the required files for TorchDriveSim in the `dir_path` folder.
+The input is either a folder `dir_path` with a single *.xodr file in it, or the file itself as
+`xodr_path`. The name of that file will be the map name.
+This script produces the required files for TorchDriveSim in `dir_path`, or for `xodr_path` in
+the folder `<xodr folder>/<map name>/`.
 """
 import dataclasses
 import datetime
@@ -62,6 +63,8 @@ class MapConversionConfig:
 
     Attributes:
         dir_path: Directory holding exactly one ``.xodr``; all outputs are written here.
+        xodr_path: The ``.xodr`` itself, instead of ``dir_path``; outputs go to
+            ``<xodr folder>/<map name>/``. Exactly one of the two is required.
         domain: Prefix for ``iai_location_name`` in ``metadata.json`` (``<domain>:<map>``);
             unset leaves it null.
         lane_marking_join_threshold: Distance (m) under which the markings of two neighbouring
@@ -84,7 +87,8 @@ class MapConversionConfig:
             converts at (0, 0), with a warning.
     """
 
-    dir_path: str
+    dir_path: Optional[str] = None
+    xodr_path: Optional[str] = None
     domain: Optional[str] = None
     lane_marking_join_threshold: float = 0.1
     visualization_fov: Optional[float] = None
@@ -465,10 +469,18 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
     """Check the configuration before parsing and return the ``.xodr`` to convert.
 
     Raises:
-        ConfigError: ``trim_radius`` without ``center``, or ``dir_path`` not holding exactly one ``.xodr``.
+        ConfigError: neither or both of ``dir_path`` and ``xodr_path``, ``trim_radius`` without
+            ``center``, ``xodr_path`` not an existing ``.xodr`` file, or ``dir_path`` not holding
+            exactly one ``.xodr``.
     """
+    if (cfg.dir_path is None) == (cfg.xodr_path is None):
+        raise ConfigError('give exactly one of dir_path and xodr_path')
     if cfg.trim_radius is not None and cfg.center is None:
         raise ConfigError('trim_radius requires center')
+    if cfg.xodr_path is not None:
+        if not (cfg.xodr_path.endswith('.xodr') and os.path.isfile(cfg.xodr_path)):
+            raise ConfigError(f'xodr_path {os.path.abspath(cfg.xodr_path)} is not an existing .xodr file')
+        return os.path.abspath(cfg.xodr_path)
     xodr_files = sorted(glob.glob(os.path.join(cfg.dir_path, '*.xodr')))
     if len(xodr_files) != 1:
         found = 'no .xodr file' if not xodr_files else (
@@ -852,14 +864,26 @@ def write_provenance(
     return path
 
 
-def convert_map(cfg: MapConversionConfig) -> None:
-    """Convert the single ``.xodr`` in ``cfg.dir_path`` into the TorchDriveSim artifact set.
+def convert_map(cfg: MapConversionConfig) -> str:
+    """Convert ``cfg.xodr_path``, or the single ``.xodr`` in ``cfg.dir_path``, into the TorchDriveSim artifacts.
 
     Writes ``<map>.osm``, ``<map>_stoplines.json``, ``<map>_mesh.json``, ``metadata.json``,
     ``visualization.png``, ``<map>_signal_groups.json`` and ``<map>_provenance.json`` into
-    ``cfg.dir_path``.
+    ``cfg.dir_path``, or for ``xodr_path`` into ``<xodr folder>/<map name>/``.
+
+    Args:
+        cfg: The run's settings, as a dataclass or the command line's ``DictConfig``.
+
+    Returns:
+        Absolute path of the written ``.osm``.
     """
+    if not dataclasses.is_dataclass(cfg):
+        cfg = OmegaConf.to_object(cfg)
     opendrive_path = validate_config(cfg=cfg)
+    if cfg.xodr_path is not None:
+        out_dir = os.path.join(os.path.dirname(opendrive_path), os.path.basename(opendrive_path)[:-5])
+        os.makedirs(out_dir, exist_ok=True)
+        cfg = dataclasses.replace(cfg, dir_path=out_dir)
     parsed = parse_xodr(opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin)
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
@@ -885,6 +909,7 @@ def convert_map(cfg: MapConversionConfig) -> None:
         traffic_side=parsed.traffic_side,
         geo_reference_status=parsed.geo_reference_status,
     )
+    return os.path.abspath(exported.osm_path)
 
 
 if __name__ == '__main__':

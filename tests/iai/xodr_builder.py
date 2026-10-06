@@ -24,6 +24,7 @@ class LaneSpec:
     id: int
     type: str = "driving"
     width: float = 3.5
+    width_slope: float = 0.0  # metres of width per metre of s (a tapering lane)
     road_mark: str = "solid"
     predecessor: Optional[int] = None
     successor: Optional[int] = None
@@ -172,7 +173,7 @@ def _lane(*, lane: LaneSpec) -> str:
         links += f'<successor id="{lane.successor}"/>'
     return (
         f'<lane id="{lane.id}" type="{lane.type}" level="false"><link>{links}</link>'
-        f'<width sOffset="0.0" a="{_num(value=lane.width)}" b="0.0" c="0.0" d="0.0"/>'
+        f'<width sOffset="0.0" a="{_num(value=lane.width)}" b="{_num(value=lane.width_slope)}" c="0.0" d="0.0"/>'
         f'<roadMark sOffset="0.0" type="{lane.road_mark}" weight="standard" color="standard" '
         f'width="0.13"/></lane>'
     )

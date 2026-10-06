@@ -236,9 +236,9 @@ def simplify_lanelet_network(*, network: LaneletNetwork, tolerance: float) -> in
     # numpy subtract with no trailing-axis guard; if an adj-pair ends up mixed
     # 2D/3D it crashes the OSM export.
     for lanelet in network.lanelets:
-        lanelet.left_vertices = _ensure_3d(polyline=lanelet.left_vertices)
-        lanelet.right_vertices = _ensure_3d(polyline=lanelet.right_vertices)
-        lanelet.center_vertices = _ensure_3d(polyline=lanelet.center_vertices)
+        lanelet.left_vertices = _ensure_3d(polyline=lanelet.left_vertices, lanelet_id=lanelet.lanelet_id)
+        lanelet.right_vertices = _ensure_3d(polyline=lanelet.right_vertices, lanelet_id=lanelet.lanelet_id)
+        lanelet.center_vertices = _ensure_3d(polyline=lanelet.center_vertices, lanelet_id=lanelet.lanelet_id)
         _refresh_lanelet_caches(lanelet=lanelet)
     for lanelet in network.lanelets:
         left = lanelet.left_vertices
@@ -269,10 +269,15 @@ def _refresh_lanelet_caches(*, lanelet) -> None:
     lanelet._inner_distance = None
 
 
-def _ensure_3d(*, polyline: np.ndarray) -> np.ndarray:
-    """Pad a 2D polyline with a z=0 column; pass 3D through unchanged."""
+def _ensure_3d(*, polyline: np.ndarray, lanelet_id: int) -> np.ndarray:
+    """Pad a 2D polyline with a z=0 column (logged as a degradation); pass 3D through unchanged."""
     if polyline.shape[1] == 3:
         return polyline
+    logging.getLogger("crdesigner.degradation").warning(
+        "lanelet %s: boundary has no heights - using z=0",
+        lanelet_id,
+        extra={"kind": "missing_value", "element": "lanelet.vertices.z", "id": lanelet_id, "value": None, "action": "defaulted"},
+    )
     return np.column_stack([polyline, np.zeros(polyline.shape[0], dtype=polyline.dtype)])
 
 

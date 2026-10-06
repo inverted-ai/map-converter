@@ -119,6 +119,16 @@ class ParametricLane:
         self.access = access if access is not None else []
         self.driving_direction = driving_direction
 
+    def calc_elevation(self, s: float) -> float:
+        """Calc the road elevation at position s of the lane.
+
+        :param s: Position along the lane, in the same convention as calc_border.
+        :return: Elevation in metres.
+        """
+        # Reversed lanes walk the border backwards, as in calc_border.
+        border_s = self.length - s if self.reverse else s
+        return self.border_group.inner_border.calc_elevation(border_s + self.border_group.inner_border_offset)
+
     def calc_border(
         self, border: str, s_pos: float, width_offset: float = 0.0, compute_curvature: bool = True
     ) -> Tuple[Tuple[float, float], float, float, float]:
@@ -305,7 +315,7 @@ class ParametricLane:
             else:
                 left_vertices.append(inner_pos)
                 right_vertices.append(outer_pos)
-            elevation = self.border_group.inner_border.calc_elevation(s + self.border_group.inner_border_offset)
+            elevation = self.calc_elevation(s)
             left_vertices[-1] = np.concatenate([left_vertices[-1], np.array([elevation])])
             right_vertices[-1] = np.concatenate([right_vertices[-1], np.array([elevation])])
 

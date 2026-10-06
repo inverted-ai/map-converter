@@ -327,6 +327,12 @@ options:
   unparseable or another projection stops the run (exit code 3) unless `allow_zero_origin=true`. A header
   `<offset>` shifts the file's x/y to projected coordinates for the `.osm`, the mesh and the stoplines
   alike; its `hdg` rotation and `z` are ignored with a warning (untested: no sample map uses them).
+- Heights come from each road's `<elevationProfile>` at the point's position along the road, for every
+  lane (reversed and merging lanes included). `<superelevation>` (cross-slope) and `<shape>` are ignored, so
+  lanes on a banked road are level across. Where two roads' profiles disagree at a joint, the step is kept
+  (it shows as a `z_conflicts` entry).
+- Lanelets the CommonRoad network links as predecessor/successor share their end nodes in the `.osm` when
+  those nodes lie within 1 cm of each other (height included), so the Lanelet2 routing graph connects them.
 - Object `orientation="undefined"` (seen in some vendor exports) is read as `none`, with a warning.
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
   without a marking type.

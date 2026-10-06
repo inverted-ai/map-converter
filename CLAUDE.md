@@ -54,7 +54,7 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 6. `build_mesh` — `torchdrivesim.lanelet2.road_mesh_from_lanelet_map` / `lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
 7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
 
-Frame invariant: the vendored parser subtracts the header `<offset>` from road geometry; `CustomTransfomer.to_local` adds it back and subtracts the false easting / UTM centre. The `.osm` (hence the mesh) and the stoplines both go through `to_local`, so they share one local frame.
+Frame invariant: the vendored parser leaves road geometry in file coordinates; `CustomTransfomer.to_local` adds the header `<offset>` x/y shift (its `hdg` and `z` are ignored with a warning) and subtracts `GeoReference.translation` (the map centre for UTM and false-origin tmerc maps). The `.osm` (hence the mesh) and the stoplines both go through `to_local`, so they share one local frame.
 
 ## Where the IAI seams live
 

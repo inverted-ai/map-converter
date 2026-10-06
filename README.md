@@ -77,8 +77,10 @@ All outputs are written into `dir_path`. The configuration is checked before any
 `metadata.json` must stay loadable by `MapConfig(**json)`, which rejects unknown keys, so extra information is
 written to separate sidecar files.
 
-Coordinates: everything is in the OpenDRIVE inertial frame in metres; `lanelet_map_origin` is the latitude and
-longitude that frame's origin maps to (Lanelet2 `UtmProjector`).
+Coordinates: one local frame in metres for every output: the file's coordinates plus the header `<offset>`
+shift, minus the map centre for `utm` maps and for `tmerc` maps with a false easting/northing (which keeps
+coordinates small enough for the float32 mesh). `lanelet_map_origin` is the latitude and longitude that
+frame's origin maps to (Lanelet2 `UtmProjector`).
 
 ## Traffic-light state machines
 
@@ -318,12 +320,13 @@ options:
 - Lanes of type `driving`, `onRamp`, `offRamp`, `exit` and `entry` become lanelets; other lane types are dropped.
 - Traffic lights come from dynamic `<signal>` elements; stop and yield signs from `<object>` elements with
   CARLA's stencil names. Other vendors' encodings may produce no stoplines.
-- Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; `x_0`/`y_0` false easting/northing honoured) and
-  `+proj=utm +zone=…` (origin at the map centre); malformed tokens in the string are ignored with a warning.
+- Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; with an `x_0`/`y_0` false easting/northing, origin
+  at the map centre) and `+proj=utm +zone=…` (origin at the map centre); malformed tokens in the string are ignored with a warning.
   A map with no `<geoReference>` has only local coordinates: it converts at latitude/longitude (0, 0) with a
   warning, recorded as `"geo_reference": "absent"` in provenance. A `<geoReference>` that is present but
   unparseable or another projection stops the run (exit code 3) unless `allow_zero_origin=true`. A header
-  `<offset>` is applied to the `.osm`, the mesh and the stoplines alike.
+  `<offset>` shifts the file's x/y to projected coordinates for the `.osm`, the mesh and the stoplines
+  alike; its `hdg` rotation and `z` are ignored with a warning (untested: no sample map uses them).
 - Object `orientation="undefined"` (seen in some vendor exports) is read as `none`, with a warning.
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
   without a marking type.

@@ -15,7 +15,6 @@ import logging
 from typing import Tuple, Optional
 
 import imageio
-import math
 import numpy as np
 from pathlib import Path
 
@@ -101,7 +100,10 @@ class MapConversionConfig:
 
 @dataclasses.dataclass
 class GeoOffset:
-    """The OpenDRIVE header ``<offset>``: a translation (m) then a rotation (degrees as stored)."""
+    """The OpenDRIVE header ``<offset>``: projected = file coordinates + ``(x, y)``.
+
+    ``hdg`` (radians) and ``z`` are read but not applied: ``parse_xodr`` warns when they are non-zero.
+    """
 
     x: float
     y: float
@@ -118,20 +120,15 @@ class GeoOffset:
         return cls(x, y, z, hdg)
 
     def apply_offset(self, x, y):
-        """Translate ``(x, y)`` by the offset, then rotate it by ``hdg``."""
-        x_translated = x + float(self.x)
-        y_translated = y + float(self.y)
-        hdg_rad = math.radians(float(self.hdg))
-        x_rotated = x_translated * math.cos(hdg_rad) - y_translated * math.sin(hdg_rad)
-        y_rotated = x_translated * math.sin(hdg_rad) + y_translated * math.cos(hdg_rad)
-        return x_rotated, y_rotated
+        """File ``(x, y)`` in projected coordinates."""
+        return x + float(self.x), y + float(self.y)
 
 @dataclasses.dataclass
 class GeoReference:
     """Latitude/longitude of the map's local origin.
 
     ``translation`` is subtracted from projected (geo-referenced) coordinates to get local
-    coordinates: the false easting/northing for ``tmerc``, the map centre for ``utm``.
+    coordinates: the map centre for ``utm`` and for ``tmerc`` with a false easting/northing, else zero.
     """
 
     lat: float
@@ -167,8 +164,9 @@ def parse_geo_reference(*, text: Optional[str], centre: Optional[Tuple[float, fl
         centre: The map centre in projected coordinates; needed for ``utm``.
 
     Returns:
-        ``tmerc``: origin ``(lat_0, lon_0)``, translation ``(x_0, y_0)``. ``utm``: origin at the map
-        centre, translation = the centre. ``None`` for a missing, unparseable or other projection.
+        ``tmerc`` without a false easting/northing: origin ``(lat_0, lon_0)``. ``utm``, and ``tmerc``
+        with one: origin at the map centre, translation = the centre. ``None`` for a missing,
+        unparseable or other projection.
     """
     if not text or not text.strip():
         return None
@@ -188,15 +186,16 @@ def parse_geo_reference(*, text: Optional[str], centre: Optional[Tuple[float, fl
         return None
     # pyproj validates; values are read as written, since its PROJ round trip keeps only 15 digits.
     params = dict(token[1:].split("=", 1) for token in text.split() if token.startswith("+") and "=" in token)
-    if params.get("proj") == "tmerc":
-        return GeoReference(
-            lat=float(params.get("lat_0", 0.0)),
-            lon=float(params.get("lon_0", 0.0)),
-            translation=(float(params.get("x_0", 0.0)), float(params.get("y_0", 0.0))),
-        )
-    if params.get("proj") == "utm" and centre is not None:
+    proj = params.get("proj")
+    false_origin = (float(params.get("x_0", 0.0)), float(params.get("y_0", 0.0)))
+    if proj == "tmerc" and (false_origin == (0.0, 0.0) or centre is None):
+        return GeoReference(lat=float(params.get("lat_0", 0.0)), lon=float(params.get("lon_0", 0.0)), translation=false_origin)
+    # UTM and false-origin coordinates run to millions of metres, past float32 mesh precision,
+    # so the local origin moves to the map centre.
+    if proj in ("tmerc", "utm") and centre is not None:
         lon, lat = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(*centre)
-        return GeoReference(lat=lat, lon=lon, translation=(float(centre[0]), float(centre[1])), zone=int(params["zone"]) if "zone" in params else None)
+        zone = int(params["zone"]) if proj == "utm" and "zone" in params else None
+        return GeoReference(lat=lat, lon=lon, translation=(float(centre[0]), float(centre[1])), zone=zone)
     return None
 
 
@@ -364,11 +363,6 @@ class CustomTransfomer:
         self.offset = offset
         self.translation = translation
 
-    @property
-    def rotation(self) -> float:
-        """Radians the header offset rotates local coordinates by."""
-        return math.radians(float(self.offset.hdg)) if self.offset is not None else 0.0
-
     def to_local(self, x, y):
         """Parsed OpenDRIVE ``(x, y)`` in the map's local metric frame."""
         if self.offset is not None:
@@ -437,12 +431,14 @@ def projected_centre(*, opendrive, geo_offset: Optional[GeoOffset]) -> Optional[
     box = [float(getattr(opendrive.header, side) or 0.0) for side in ("north", "south", "east", "west")]
     if any(box):
         north, south, east, west = box
-        return (east + west) / 2.0, (north + south) / 2.0
-    starts = [g.start_position for road in opendrive.roads for g in road.plan_view._geometries]
-    if not starts:
-        return None
-    xs, ys = zip(*(geo_offset.apply_offset(x, y) if geo_offset else (x, y) for x, y in starts))
-    return (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        centre = (east + west) / 2.0, (north + south) / 2.0
+    else:
+        starts = [g.start_position for road in opendrive.roads for g in road.plan_view._geometries]
+        if not starts:
+            return None
+        xs, ys = zip(*starts)
+        centre = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+    return geo_offset.apply_offset(*centre) if geo_offset else centre
 
 
 def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> ParsedXodr:
@@ -454,6 +450,12 @@ def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> Parse
     # Construct Lanelet2 projector
     if opendrive.header.offset is not None:
         geo_offset = GeoOffset.from_dict(opendrive.header.offset)
+        if geo_offset.hdg != 0.0 or geo_offset.z != 0.0:
+            # The standard does not pin the rotation's direction, and no sample exists to check it on.
+            logger.warning(
+                f'{os.path.abspath(opendrive_path)} header <offset> has hdg={geo_offset.hdg} rad and '
+                f'z={geo_offset.z} m; both are ignored, only the x/y shift is applied'
+            )
     else:
         geo_offset = None
     geo_reference = parse_geo_reference(
@@ -626,7 +628,6 @@ def extract_stoplines(
         else:
             z = 0.0
         x, y = (float(v) for v in frame.to_local(xy[0], xy[1]))
-        orientation = orientation + frame.rotation
 
         include_stopline = True
         if cfg.center is not None and cfg.trim_radius is not None:

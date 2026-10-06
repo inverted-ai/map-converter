@@ -672,7 +672,8 @@ def parse_opendrive_road(opendrive: OpenDrive, road: etree.ElementTree):
 
     # Plan view
     for road_geometry in road.find("planView").findall("geometry"):
-        parse_opendrive_road_geometry(new_road, road_geometry, opendrive.header.offset)
+        # Geometry stays in file coordinates; the header offset is applied when projecting.
+        parse_opendrive_road_geometry(new_road, road_geometry, {"x": "0", "y": "0", "hdg": "0"})
     # Elevation profile
     road_elevation_profile = road.find("elevationProfile")
     if road_elevation_profile is not None:

@@ -5,6 +5,7 @@ import json
 import os
 import time
 
+import numpy as np
 import pytest
 
 import conversion_common
@@ -222,6 +223,42 @@ def test_header_offset_applies_to_stoplines(tmp_path):
         assert min(c.distance(Point(row["x"], row["y"])) for c in centrelines) < 0.5
 
 
+def _joined_roads_centrelines(*, map_dir, offset) -> tuple[np.ndarray, str]:
+    """Convert road 1 (0..50 m) joined to road 2 (50..100 m); sorted lanelet centreline end points and stderr."""
+    import map_quality as mq
+
+    road1 = xb.straight_road(id="1", length=50.0, successor=xb.LinkSpec(element_type="road", element_id="2", contact_point="start"))
+    road2 = xb.straight_road(id="2", length=50.0, x=50.0, predecessor=xb.LinkSpec(element_type="road", element_id="1", contact_point="end"))
+    _write(map_dir=map_dir, name="joined", text=xb.build_xodr(roads=[road1, road2], offset=offset))
+    result = xb.run_convert_map(map_dir=str(map_dir))
+    assert result.returncode == 0, result.stderr
+    outputs = mq.ConversionOutputs.load(map_dir=str(map_dir))
+    ends = [((ll.centerline[0].x, ll.centerline[0].y), (ll.centerline[-1].x, ll.centerline[-1].y)) for ll in outputs.lanelet_map.laneletLayer]
+    return np.array(sorted(np.round(ends, 3).tolist())).reshape(-1, 2), result.stderr
+
+
+def test_header_offset_shifts_file_coordinates(tmp_path):
+    plain, _ = _joined_roads_centrelines(map_dir=tmp_path / "plain", offset=None)
+    shifted, _ = _joined_roads_centrelines(map_dir=tmp_path / "shifted", offset=(100.0, 50.0, 0.0, 0.0))
+    expected = plain + np.array([100.0, 50.0])
+    assert shifted == pytest.approx(expected, abs=1e-3)
+
+
+def test_header_offset_rotation_is_ignored_with_a_warning(tmp_path):
+    plain, _ = _joined_roads_centrelines(map_dir=tmp_path / "plain", offset=None)
+    rotated, stderr = _joined_roads_centrelines(map_dir=tmp_path / "rotated", offset=(0.0, 0.0, 0.0, 0.5))
+    assert rotated == pytest.approx(plain, abs=1e-3)  # roads stay joined, not torn apart
+    assert "hdg=0.5 rad" in stderr and "ignored" in stderr
+
+
+def test_parse_false_origin_tmerc_centres_origin_on_the_map():
+    text = "+proj=tmerc +lat_0=0 +lon_0=-117 +k=0.9996 +x_0=19951.4 +y_0=-3630930 +datum=WGS84"
+    geo = cm.parse_geo_reference(text=text, centre=(19951.4, 0.0))
+    assert geo.lon == pytest.approx(-117.0)
+    assert 32.5 < geo.lat < 33.1
+    assert geo.translation == (19951.4, 0.0)
+
+
 def test_false_northing_places_map_at_true_latitude(tmp_path):
     import map_quality as mq
     import lanelet2
@@ -235,3 +272,4 @@ def test_false_northing_places_map_at_true_latitude(tmp_path):
     lat0, lon0 = outputs.metadata["lanelet_map_origin"]
     gps = mq.utm_projector(origin_lat=lat0, origin_lon=lon0).reverse(lanelet2.core.BasicPoint3d(x, y, 0.0))
     assert 32.5 < gps.lat < 33.1  # y_0 = -3,630,930 m puts the road ~32.8 deg north, not on the equator
+    assert abs(outputs.points[:, :2]).max() < 100.0  # local origin at the map centre, not 3,630 km away

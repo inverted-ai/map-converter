@@ -72,3 +72,27 @@ def test_linked_lanelets_that_do_not_meet_keep_their_own_end_nodes():
     assert ways[converter.left_ways[1]].nodes[-1] != ways[converter.left_ways[2]].nodes[0]
     first_right = nodes[ways[converter.right_ways[2]].nodes[0]]
     assert abs(float(first_right.lon) * 111_000.0 - 20.0) < 0.01  # 2 still starts at x = 20 m
+
+
+def test_right_boundary_with_more_vertices_than_the_left_is_written_in_full():
+    # Simplification leaves the bounds with different vertex counts; 2 shares 1's end nodes
+    # at its start but has no successor, so its right boundary must still reach x = 20 m.
+    network = LaneletNetwork()
+    network.add_lanelet(_lanelet(lanelet_id=1, left=[[0, 3], [10, 3]], right=[[0, 0], [10, 0]], successor=[2]))
+    network.add_lanelet(
+        Lanelet(
+            left_vertices=np.array([[10, 3], [20, 3]], dtype=float),
+            center_vertices=np.array([[10, 1.5], [20, 1.5]], dtype=float),
+            right_vertices=np.array([[10, 0], [13, -0.5], [17, -0.5], [20, 0]], dtype=float),
+            lanelet_id=2,
+            predecessor=[1],
+        )
+    )
+    converter = CR2LaneletConverter()
+    converter.convert_lanelet_network(network, transformer=_DegreesTransformer())
+    ways, nodes = converter.osm.ways, converter.osm.nodes
+
+    right = ways[converter.right_ways[2]].nodes
+    assert len(right) == 4
+    assert right[0] == ways[converter.right_ways[1]].nodes[-1]
+    assert abs(float(nodes[right[-1]].lon) * 111_000.0 - 20.0) < 0.01

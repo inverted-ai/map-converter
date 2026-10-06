@@ -830,7 +830,7 @@ class CR2LaneletConverter:
         """
         left_nodes, right_nodes = [], []
         start_index = 0
-        end_index = len(lanelet.left_vertices)
+        end_index = None  # the bounds may have different vertex counts
         pot_first_left_node, pot_first_right_node = (
             self._get_shared_first_nodes_from_other_lanelets(lanelet)
         )

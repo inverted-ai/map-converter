@@ -282,6 +282,7 @@ class CR2LaneletConverter:
         # convert lanelets
         for lanelet in lanelet_network.lanelets:
             self._convert_lanelet(lanelet)
+        self._share_seam_nodes()
 
         # convert traffic signs
         for traffic_sign in lanelet_network.traffic_signs:
@@ -298,6 +299,48 @@ class CR2LaneletConverter:
         # self._add_regulatory_element_for_traffic_lights()
 
         return self.osm.serialize_to_xml()
+
+    def _share_seam_nodes(self, tolerance: float = 0.01):
+        """
+        Give every predecessor/successor seam one shared node per boundary.
+
+        A lanelet whose boundary reuses a neighbour's way takes that way's end nodes, which can be
+        different nodes at the same place as its predecessor's last nodes. Routing needs shared node ids,
+        so coinciding seam nodes (within tolerance metres, height included) are merged.
+
+        :param tolerance: Maximum distance in metres between two seam nodes that are merged.
+        """
+        degree_tolerance = tolerance / 111_000.0
+        replaced = {}
+
+        def resolve(node_id):
+            while node_id in replaced:
+                node_id = replaced[node_id]
+            return node_id
+
+        for lanelet in self.lanelet_network.lanelets:
+            last = self.last_nodes.get(lanelet.lanelet_id)
+            for successor_id in lanelet.successor:
+                first = self.first_nodes.get(successor_id)
+                if last is None or first is None:
+                    continue
+                for keep, drop in zip(last, first):
+                    keep, drop = resolve(keep), resolve(drop)
+                    if keep == drop:
+                        continue
+                    a, b = self.osm.nodes[keep], self.osm.nodes[drop]
+                    if (
+                        abs(float(a.lat) - float(b.lat)) <= degree_tolerance
+                        and abs(float(a.lon) - float(b.lon)) <= degree_tolerance
+                        and abs(float(a.ele) - float(b.ele)) <= tolerance
+                    ):
+                        replaced[drop] = keep
+        if not replaced:
+            return
+        for way in self.osm.ways.values():
+            way.nodes = [resolve(node_id) for node_id in way.nodes]
+        for node_id in replaced:
+            del self.osm.nodes[node_id]
 
     def _add_regulatory_element_for_traffic_lights(self):
         """

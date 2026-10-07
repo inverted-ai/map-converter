@@ -43,6 +43,7 @@ from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.network import Network
 from commonroad.scenario.lanelet import LaneletNetwork
 
+import conversion_report
 from conversion_common import REFUSED_EXIT_CODE, git_identity, sha256_file
 from opendrive_signal_groups import write_signal_groups
 
@@ -874,7 +875,9 @@ def convert_map(cfg: MapConversionConfig) -> str:
 
     Writes ``<map>.osm``, ``<map>_stoplines.json``, ``<map>_mesh.json``, ``metadata.json``,
     ``visualization.png``, ``<map>_signal_groups.json`` and ``<map>_provenance.json`` into
-    ``cfg.dir_path``, or for ``xodr_path`` into ``<xodr folder>/<map name>/``.
+    ``cfg.dir_path``, or for ``xodr_path`` into ``<xodr folder>/<map name>/``. Once the input is
+    known, ``<map>_conversion_report.json`` (:mod:`conversion_report`) is written whether or not the
+    conversion succeeds.
 
     Args:
         cfg: The run's settings, as a dataclass or the command line's ``DictConfig``.
@@ -889,6 +892,25 @@ def convert_map(cfg: MapConversionConfig) -> str:
         out_dir = os.path.join(os.path.dirname(opendrive_path), map_name(xodr_path=opendrive_path))
         os.makedirs(out_dir, exist_ok=True)
         cfg = dataclasses.replace(cfg, dir_path=out_dir)
+    report = conversion_report.attach()
+    error = None
+    try:
+        return _convert(cfg=cfg, opendrive_path=opendrive_path)
+    except BaseException as exc:
+        error = exc
+        raise
+    finally:
+        conversion_report.detach(handler=report)
+        path = report.write(
+            path=os.path.join(cfg.dir_path, f"{map_name(xodr_path=opendrive_path)}_conversion_report.json"),
+            xodr_path=opendrive_path,
+            error=error,
+        )
+        logger.info(f'Wrote conversion report ({len(report.records)} degradation records) to {path}')
+
+
+def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> str:
+    """The pipeline stages of :func:`convert_map`, on a validated config."""
     parsed = parse_xodr(opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin)
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
@@ -923,6 +945,7 @@ if __name__ == '__main__':
     )
     logger.setLevel(logging.DEBUG)
     logger.addHandler(logging.StreamHandler())
+    logging.getLogger(conversion_report.DEGRADATION_LOGGER).addHandler(logging.StreamHandler())
     try:
         convert_map(cfg)
     except ConfigError as exc:

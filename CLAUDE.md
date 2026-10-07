@@ -23,6 +23,7 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 - `opendrive_signal_groups.py` — reads the XODR's junction membership and controllers into `<map>_signal_groups.json` (called by `convert_map.py`; also a CLI).
 - `map_report.py`, `map_quality.py` — batch conversion report / comparison, and the quality metrics it records.
 - `conversion_common.py` — dependency-free helpers both `convert_map.py` and `map_report.py` use (file sha256, git identity, the refusal exit code 3).
+- `conversion_report.py` — the `logging.Handler` `convert_map` attaches to `crdesigner.degradation`; writes `<map>_conversion_report.json` (element counts, unrecognised tokens, every record), also for failed runs.
 - `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers.
 - `convert_lanelet_to_opendrive.py` — reverse direction via CARLA's tools.
 - `crdesigner/` — **vendored** CommonRoad Scenario Designer. Treat as upstream.
@@ -54,6 +55,8 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 6. `build_mesh` — `torchdrivesim.lanelet2.road_mesh_from_lanelet_map` / `lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
 7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
 
+Around stages 2–7, `convert_map` collects the `crdesigner.degradation` records (`conversion_report.attach`) and writes `<map>_conversion_report.json` whether the stages succeed or raise.
+
 Frame invariant: the vendored parser leaves road geometry in file coordinates; `CustomTransfomer.to_local` adds the header `<offset>` x/y shift (its `hdg` and `z` are ignored with a warning) and subtracts `GeoReference.translation` (the map centre for UTM and false-origin tmerc maps). The `.osm` (hence the mesh) and the stoplines both go through `to_local`, so they share one local frame.
 
 ## Where the IAI seams live
@@ -64,7 +67,7 @@ These are the names/files that diverge from upstream. Search for them when chang
 - `crdesigner/map_conversion/lanelet2/cr2lanelet.py` — small IAI tweaks (import / type-hint cleanup, the narrowed same-direction marking rule) and `_share_seam_nodes`, which merges coinciding predecessor/successor end nodes so routing sees the link; `_nodes_at` (`SHARED_NODE_TOLERANCE`) stops linked lanelets that do not meet from sharing end nodes; `one_way=no` for bidirectional vehicle lanes; `_create_nodes` writes each bound in full when the left and right bounds have different vertex counts (upstream cut the right bound to the left's length).
 - `crdesigner/map_conversion/common/conversion_lanelet_network.py` — `check_concatenation_potential` never concatenates bidirectional lanelets. `convert_map.bidirectional_fixes` drops the OpenDRIVE conversion's wrong links around them.
 - `crdesigner/map_conversion/opendrive/odr2cr/opendrive_conversion/plane_elements/` — elevation: `Border.calc_elevation` follows the reference chain, `ParametricLane.calc_elevation` (reversed lanes) and `ParametricLaneGroup.calc_elevation` (merge/split mirroring).
-- Vendored code reports degradations through `logging.getLogger("crdesigner.degradation")` with `extra={kind, element, id, value, action}` (no IAI imports inside `crdesigner/`).
+- Vendored code reports degradations through `logging.getLogger("crdesigner.degradation")` with `extra={kind, element, id, value, action}` (no IAI imports inside `crdesigner/`); `conversion_report.py` documents the kinds. Degrade-and-record sites: `opendrive_parser/parser.py` (decimal commas normalised as the XML is read; `parse_float`/`parse_required_float` raise `UnparseableNumber`, caught per record, road, signal, object and junction; unknown geometry, speed unit, contactPoint), the element setters in `opendrive_parser/elements/` (lane and object type, signal `dynamic`/`orientation`, object orientation), `plane_elements/traffic_signals.py` (country → `ZAM`) and `plane_group.convert_line_marking` (unmapped road marks).
 - Custom attributes on upstream objects: `iai_stoplines`, `_iai_stop_signs`, `_iai_yield_signs`, `opendrive_id`. Grep for `iai_` inside `crdesigner/` to find where they're attached.
 - `git diff master -- crdesigner/` (or whatever the upstream-tracking branch is) is the authoritative way to enumerate IAI deltas.
 

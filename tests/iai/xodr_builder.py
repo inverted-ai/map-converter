@@ -59,7 +59,7 @@ class SignalSpec:
     subtype: str = "-1"
     dynamic: Optional[str] = "yes"
     orientation: Optional[str] = "+"
-    country: str = "DEU"
+    country: Optional[str] = "DEU"
     name: str = ""
     validity: Optional[tuple[Optional[int], Optional[int]]] = None  # (fromLane, toLane)
 

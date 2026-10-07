@@ -77,9 +77,35 @@ several `.xodr` files, or `trim_radius` without `center`, stop the run with exit
 | `visualization.png` | 2048×2048 top-down render centred on `center`, `visualization_fov` metres wide | People |
 | `<map>_signal_groups.json` | Traffic-light structure the OpenDRIVE file declares: junction per signal id (`membership`, with the source it came from), `<controller>` groups and `sequence`, conflicts, non-integer ids | `traffic_light_fsm.py` |
 | `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), the visualization FOV used, the traffic side of the roads (`RHT`, `LHT` or `mixed`), Python and package versions, UTC time | People, `map_report.py` |
+| `<map>_conversion_report.json` | Everything in the input the converter could not use as written, and what it did instead (see below). Written even when the conversion fails, once the input file is known | People |
 
 `metadata.json` must stay loadable by `MapConfig(**json)`, which rejects unknown keys, so extra information is
 written to separate sidecar files.
+
+### The conversion report
+
+The converter keeps going past input it cannot use as written: it falls back to a default, drops the smallest
+element affected, and records it. `<map>_conversion_report.json` holds:
+
+1. `outcome` (`ok` or `failed`) and `error` (exception type and message) for a failed run.
+2. `elements`: per OpenDRIVE element (`road`, `geometry`, `lane`, `width`, `signal`, `object`, ...), how many
+   the file holds (`seen`), how many were `dropped`, `converted` (seen minus dropped) and `degraded` (kept
+   with a changed attribute).
+3. `unrecognised_tokens`: each unknown value (`element`, `value`), how often it occurred and the ids where
+   (up to 20).
+4. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
+   dropped, else `<tag>.<attribute>`), `id` (road, signal, object or junction), `value`, `action` and the
+   message. Each record is also printed as a warning.
+
+| `kind` | Example | What the converter does |
+|---|---|---|
+| `decimal_comma` | `length="29,7"` | Reads it as `29.7`; one record per attribute with the count |
+| `unparseable_number` | `<width a="wide">` | Drops that record (geometry, width, border, elevation, lateral-profile or lane-offset record, speed, access); a road, signal, object or junction whose own id or required numbers do not parse is dropped whole |
+| `unknown_value` | lane `type="fastLane"`, object type, signal `country="GBR"`, road-mark `type="custom"`, connection `contactPoint="none"`, unknown geometry type | Lane and object type `none`; country `ZAM` sign tables; marking unknown; connection or geometry record skipped |
+| `missing_attribute` | signal without `dynamic`, speed without `unit` | `dynamic="no"`, orientation `none`; the speed is left unset |
+| `coerced` | object `type="stopline"` | Read as `roadMark` |
+| `degenerate_geometry` | `<spiral>` with equal start and end curvature | Read as an arc (a line at zero curvature) |
+| `unknown_reference` | signal `<validity>` naming a lane that does not exist | That lane is skipped |
 
 Coordinates: one local frame in metres for every output: the file's coordinates plus the header `<offset>`
 shift, minus the map centre for `utm` maps and for `tmerc` maps with a false easting/northing (which keeps
@@ -357,18 +383,23 @@ options:
   routing graph connects them. Linked lanelets whose ends are further apart (a lane widening at a road
   joint, loops, gaps in the source) keep their own end points: their shape is kept, but Lanelet2 does not
   route across that link.
-- Object `orientation="undefined"` (seen in some vendor exports) is read as `none`, with a warning.
+- Object `orientation="undefined"` (seen in some vendor exports), or any other value than `+`, `-`, `none`, is
+  read as `none`, with a record in the conversion report; likewise a signal's.
 - Road-mark types outside the recognised set (see `road_mark_types_handled` in a `map_report` run) are written
-  without a marking type.
+  without a marking type. Both the ASAM names `solid broken`/`broken solid` and the older `solid dashed`/`dashed
+  solid` are recognised.
+- Lane speeds in `m/s`, `km/h` and `mph` are read; a `<speed>` without a `unit` is left unset (recorded).
+- Numbers written with a decimal comma are read as decimals (recorded).
 - `<controller>` groups and `sequence` are read for the traffic-light tool (levels B/C); the converter itself does not use them.
 - A signal `<validity>` without `fromLane`/`toLane`, or naming a lane that does not exist, is skipped with a warning; the signal itself is kept.
 - The XML encoding declaration is honoured (e.g. `ISO-8859-1` files convert).
 
 ## Troubleshooting
 
-- **A map fails or produces nothing useful**: run `map_report.py run --maps <folder> --out <dir>` on it. The
-  report gives the outcome and, for an exception, the class and the `file:line` where it was raised, together
-  with the input's vendor and element counts.
+- **A map fails or produces nothing useful**: read `<map>_conversion_report.json` first: it lists what was
+  dropped or defaulted and why. Then run `map_report.py run --maps <folder> --out <dir>` on it. The report
+  gives the outcome and, for an exception, the class and the `file:line` where it was raised, together with
+  the input's vendor and element counts.
 - **`Cannot convert: ... cannot be placed`**: the `.xodr` declares a `<geoReference>` the converter cannot use.
   Fix it, or set `allow_zero_origin=true` to convert at (0, 0). The warnings `has no <geoReference>` and
   `declares its origin at latitude/longitude (0, 0)` mean the map converted at (0, 0).

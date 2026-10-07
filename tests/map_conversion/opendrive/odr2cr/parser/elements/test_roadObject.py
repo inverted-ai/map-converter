@@ -48,13 +48,24 @@ class TestRoadObject(unittest.TestCase):
         self.assertEqual(float(hdg), r_object.hdg)
         self.assertEqual(float(pitch), r_object.pitch)
         self.assertEqual(float(roll), r_object.roll)
-        with self.assertRaises(AttributeError):
-            r_object.type = "test"
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
+            r_object.type = 'test'
+        self.assertEqual('none', r_object.type)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             r_object.type = 1
+        self.assertEqual('none', r_object.type)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             r_object.type = None
-            r_object.orientation = "test"
+        self.assertEqual('none', r_object.type)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
+            r_object.orientation = 'test'
+        self.assertEqual('none', r_object.orientation)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             r_object.orientation = 3
+        self.assertEqual('none', r_object.orientation)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             r_object.orientation = None
+        self.assertEqual('none', r_object.orientation)
 
 
 if __name__ == "__main__":

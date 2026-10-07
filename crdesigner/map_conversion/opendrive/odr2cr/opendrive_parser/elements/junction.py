@@ -44,7 +44,7 @@ class Junction:
 
     @name.setter
     def name(self, value: str):
-        self._name = str(value)
+        self._name = None if value is None else str(value)
 
     @property
     def connections(self) -> list[Connection]:

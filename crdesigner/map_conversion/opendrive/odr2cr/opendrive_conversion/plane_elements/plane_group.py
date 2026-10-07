@@ -1,4 +1,5 @@
 import copy
+import logging
 import math
 import warnings
 from typing import List, Optional, Tuple
@@ -48,11 +49,20 @@ def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
     elif plane_line_marking.type == "none":
         mark = LineMarking.NO_MARKING
 
-    elif plane_line_marking.type == "solid dashed":
+    # ASAM names "solid broken" / "broken solid"; the "dashed" spellings are kept as aliases
+    elif plane_line_marking.type in ("solid broken", "solid dashed"):
         mark = LineMarking.SOLID_DASHED
 
-    elif plane_line_marking.type == "dashed solid":
+    elif plane_line_marking.type in ("broken solid", "dashed solid"):
         mark = LineMarking.DASHED_SOLID
+
+    else:
+        logging.getLogger("crdesigner.degradation").warning(
+            "road mark type %r has no CommonRoad line marking - unknown",
+            plane_line_marking.type,
+            extra={"kind": "unknown_value", "element": "roadMark.type", "id": None,
+                   "value": plane_line_marking.type, "action": "unknown_marking"},
+        )
 
     return mark
 

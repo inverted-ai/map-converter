@@ -106,7 +106,7 @@ def assign_traffic_signals_to_road(
                 else:
                     additional_values = [str(signal.signal_value)]
 
-            signal_country = utils.get_signal_country(signal.country)
+            signal_country = utils.get_signal_country(signal.country or "")
             country_stop_line_id = {
                 "DEU": "294",
                 "ZAM": "294",
@@ -114,6 +114,20 @@ def assign_traffic_signals_to_road(
                 "CHN": "294",
                 "ESP": "294",
             }
+            if (
+                signal_country not in TrafficSignIDCountries
+                or signal_country not in country_stop_line_id
+                or (signal_country == "ZAM" and (signal.country or "").upper() != "ZAM")
+            ):
+                logging.getLogger("crdesigner.degradation").warning(
+                    "signal %s: no sign table for country %r - using ZAM",
+                    signal.id,
+                    signal.country,
+                    extra={"kind": "unknown_value" if signal.country else "missing_attribute",
+                           "element": "signal.country", "id": signal.id,
+                           "value": signal.country, "action": "defaulted"},
+                )
+                signal_country = "ZAM"
 
             if (
                 (signal_country == "DEU" or signal_country not in TrafficSignIDCountries.keys())

@@ -198,7 +198,9 @@ def test_unusable_geo_reference_fails_unless_allowed(tmp_path):
     refused = xb.run_convert_map(map_dir=str(tmp_path))
     assert refused.returncode == conversion_common.REFUSED_EXIT_CODE
     assert "allow_zero_origin" in refused.stderr
-    assert sorted(os.listdir(tmp_path)) == ["badgeo.xodr"]
+    assert sorted(os.listdir(tmp_path)) == ["badgeo.xodr", "badgeo_conversion_report.json"]  # no map outputs
+    with open(tmp_path / "badgeo_conversion_report.json") as f:
+        assert json.load(f)["error"]["type"] == "InputError"
     allowed = xb.run_convert_map(map_dir=str(tmp_path), allow_zero_origin="true")
     assert allowed.returncode == 0, allowed.stderr
     with open(tmp_path / "badgeo_provenance.json") as f:

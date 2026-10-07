@@ -1,4 +1,20 @@
+import logging
 from typing import Union
+
+
+def _degraded(signal, attribute: str, value, replacement: str):
+    """Record that a missing or unknown ``attribute`` value was replaced."""
+    logging.getLogger("crdesigner.degradation").warning(
+        "%s %s: %s %r - using %r",
+        type(signal).__name__.lower(),
+        getattr(signal, "_id", None),
+        attribute,
+        value,
+        replacement,
+        extra={"kind": "missing_attribute" if value is None else "unknown_value",
+               "element": f"{'signal' if type(signal).__name__ == 'Signal' else 'signalReference'}.{attribute}",
+               "id": getattr(signal, "_id", None), "value": value, "action": "defaulted"},
+    )
 
 
 class Signal:
@@ -103,7 +119,7 @@ class Signal:
 
     @name.setter
     def name(self, value):
-        self._name = str(value)
+        self._name = None if value is None else str(value)
 
     @property
     def dynamic(self) -> str:
@@ -118,7 +134,8 @@ class Signal:
     @dynamic.setter
     def dynamic(self, value):
         if value not in ["yes", "no"]:
-            raise AttributeError("Invalid input!")
+            _degraded(self, "dynamic", value, "no")
+            value = "no"
         self._dynamic = str(value)
 
     @property
@@ -135,7 +152,8 @@ class Signal:
     @orientation.setter
     def orientation(self, value):
         if value not in ["+", "-", "none"]:
-            raise AttributeError("Invalid input!")
+            _degraded(self, "orientation", value, "none")
+            value = "none"
         self._orientation = str(value)
 
     @property
@@ -150,7 +168,7 @@ class Signal:
 
     @country.setter
     def country(self, value):
-        self._country = str(value)
+        self._country = None if value is None else str(value)
 
     @property
     def signal_value(self) -> float:
@@ -259,7 +277,7 @@ class Signal:
 
     @signal_id.setter
     def signal_id(self, value: str):
-        self._signal_id = str(value)
+        self._signal_id = None if value is None else str(value)
 
 
 class SignalReference:
@@ -328,7 +346,8 @@ class SignalReference:
     @orientation.setter
     def orientation(self, value):
         if value not in ["+", "-", "none"]:
-            raise AttributeError("Invalid input!")
+            _degraded(self, "orientation", value, "none")
+            value = "none"
         self._orientation = str(value)
 
     @property
@@ -355,7 +374,7 @@ class SignalReference:
 
     @signal_id.setter
     def signal_id(self, value: str):
-        self._signal_id = str(value)
+        self._signal_id = None if value is None else str(value)
 
     @property
     def turn_relation(self) -> str:
@@ -363,4 +382,4 @@ class SignalReference:
 
     @turn_relation.setter
     def turn_relation(self, value: str):
-        self._turn_relation = str(value)
+        self._turn_relation = None if value is None else str(value)

@@ -92,7 +92,7 @@ def test_xodr_statistics_namespaced_root(tmp_path):
 
 def test_handled_road_marks_follow_converter():
     handled = mr.handled_road_mark_types(converter=REPO_ROOT, mark_types=["solid", "broken", "broken solid", "custom"])
-    assert handled == ["broken", "solid"]
+    assert handled == ["broken", "broken solid", "solid"]
 
 
 def test_canonical_mesh_digest_ignores_category_order(tmp_path):
@@ -131,8 +131,9 @@ def two_runs(tmp_path_factory):
     (maps / "good" / "fixture.xodr").write_text(_fixture_xodr())
     (maps / "bad").mkdir()
     roads = [xb.straight_road(id="1", length=30.0)]
-    text = xb.build_xodr(roads=roads).replace('length="30.0"', 'length="30,0"')
-    (maps / "bad" / "comma_decimal.xodr").write_text(text)
+    text = xb.build_xodr(roads=roads)
+    text = text[: text.index("<lanes>")] + text[text.index("</lanes>") + len("</lanes>") :]  # a road with no lanes
+    (maps / "bad" / "no_lanes.xodr").write_text(text)
     reports = []
     for name in ("run_a", "run_b"):
         out = tmp_path_factory.mktemp(name)
@@ -151,7 +152,7 @@ def two_runs(tmp_path_factory):
 def test_run_records_outcomes(two_runs):
     report = two_runs[0]
     by_rel = {m["relpath"]: m for m in report["maps"]}
-    good, bad = by_rel["good/fixture.xodr"], by_rel["bad/comma_decimal.xodr"]
+    good, bad = by_rel["good/fixture.xodr"], by_rel["bad/no_lanes.xodr"]
     assert good["conversion"]["outcome"] == "ok"
     assert good["metrics"]["stoplines_by_agent_type"] == {"traffic_light": 2}
     assert good["fsm"]["outcome"] == "ok"
@@ -160,7 +161,7 @@ def test_run_records_outcomes(two_runs):
     assert good["fsm"]["unassigned_lights"] == 0
     assert isinstance(good["fsm"]["flagged"], int)
     assert bad["conversion"]["outcome"] == "exception"
-    assert bad["conversion"]["exception"] == "ValueError"
+    assert bad["conversion"]["exception"] == "Exception"
     assert bad["conversion"]["location"].startswith("crdesigner/map_conversion/opendrive/odr2cr/opendrive_parser/")
     assert "custom" not in report["road_mark_types_handled"]
 

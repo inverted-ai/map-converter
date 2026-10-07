@@ -234,7 +234,16 @@ class Lane:
     @type.setter
     def type(self, value):
         if value not in self.laneTypes:
-            raise Exception()
+            logging.getLogger("crdesigner.degradation").warning(
+                "road %s lane %s: lane type %r not recognised - lane type none",
+                getattr(self._parent_road, "id", None),
+                getattr(self, "_id", None),
+                value,
+                extra={"kind": "unknown_value" if value is not None else "missing_attribute",
+                       "element": "lane.type", "id": getattr(self._parent_road, "id", None),
+                       "value": value, "action": "defaulted"},
+            )
+            value = "none"
 
         self._type = str(value)
 

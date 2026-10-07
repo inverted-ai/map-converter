@@ -110,10 +110,22 @@ class Object:
             value = "parkingSpace"
         if value == "stopline":
             # TODO: maybe we should treat them specially, and feed it through to how the output stoplines are made?
+            logging.getLogger("crdesigner.degradation").warning(
+                "object %s: type 'stopline' read as 'roadMark'",
+                self.id,
+                extra={"kind": "coerced", "element": "object.type", "id": self.id,
+                       "value": value, "action": "read_as_roadMark"},
+            )
             value = "roadMark"
         if value not in road_types and value not in customs:
-            logging.warning(f"Value {value} is not a supported road object type!")
-            raise AttributeError(f"Value {value} is not a supported object type!")
+            logging.getLogger("crdesigner.degradation").warning(
+                "object %s: type %r not supported - type none",
+                self.id,
+                value,
+                extra={"kind": "unknown_value", "element": "object.type", "id": self.id,
+                       "value": value, "action": "defaulted"},
+            )
+            value = "none"
         self._type = str(value)
 
     @property
@@ -251,16 +263,15 @@ class Object:
 
     @orientation.setter
     def orientation(self, value):
-        if value == "undefined":
+        if value not in ["+", "-", "none"]:
             logging.getLogger("crdesigner.degradation").warning(
-                "object %s: orientation 'undefined' - using 'none'",
+                "object %s: orientation %r - using 'none'",
                 self.id,
+                value,
                 extra={"kind": "unknown_value", "element": "object.orientation",
                        "id": self.id, "value": value, "action": "defaulted"},
             )
             value = "none"
-        if value not in ["+", "-", "none"]:
-            raise AttributeError("Value is not a valid orientation!")
         self._orientation = str(value)
 
     @property

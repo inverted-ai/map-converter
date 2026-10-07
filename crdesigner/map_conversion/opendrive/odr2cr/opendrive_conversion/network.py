@@ -206,7 +206,7 @@ class Network:
 
         :param value: Nae of location as a string.
         """
-        value = value.upper()
+        value = (value or "").upper()
         if value in iso3166.countries_by_name:
             self._country_ID = iso3166.countries_by_name[value].alpha3
         elif value in iso3166.countries_by_alpha2:

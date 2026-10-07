@@ -33,17 +33,27 @@ class TestRoadSignal(unittest.TestCase):
         for dynamic in ["yes", "no"]:
             signal.dynamic = dynamic
             self.assertEqual(dynamic, signal.dynamic)
-        with self.assertRaises(AttributeError):
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             signal.dynamic = None
+        self.assertEqual('no', signal.dynamic)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             signal.dynamic = 4
-            signal.dynamic = "test"
+        self.assertEqual('no', signal.dynamic)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
+            signal.dynamic = 'test'
+        self.assertEqual('no', signal.dynamic)
         for orientation in ["+", "-", "none"]:
             signal.orientation = orientation
             self.assertEqual(orientation, signal.orientation)
-        with self.assertRaises(AttributeError):
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             signal.orientation = None
+        self.assertEqual('none', signal.orientation)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             signal.orientation = 2
-            signal.orientation = "test"
+        self.assertEqual('none', signal.orientation)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
+            signal.orientation = 'test'
+        self.assertEqual('none', signal.orientation)
         signal.country = country
         self.assertEqual(country, signal.country)
         signal.signal_value = value
@@ -72,10 +82,15 @@ class TestRoadSignal(unittest.TestCase):
         for orientation in ["+", "-", "none"]:
             signal_reference.orientation = orientation
             self.assertEqual(orientation, signal_reference.orientation)
-        with self.assertRaises(AttributeError):
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             signal_reference.orientation = None
+        self.assertEqual('none', signal_reference.orientation)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             signal_reference.orientation = 2
-            signal_reference.orientation = "test"
+        self.assertEqual('none', signal_reference.orientation)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
+            signal_reference.orientation = 'test'
+        self.assertEqual('none', signal_reference.orientation)
 
 
 if __name__ == "__main__":

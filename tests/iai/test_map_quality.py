@@ -99,6 +99,8 @@ def test_osm_tag_counts(tmp_path):
     osm = tmp_path / "tags.osm"
     osm.write_text(
         '<osm><way id="1"><tag k="type" v="traffic_sign"/></way><way id="2"/>'
+        '<way id="5"><tag k="type" v="traffic_sign"/><tag k="subtype" v="de206"/></way>'
+        '<way id="6"><tag k="type" v="traffic_sign"/><tag k="subtype" v="de274"/></way>'
         '<way id="3"><tag k="type" v="line_thin"/></way>'
         '<relation id="4"><tag k="type" v="lanelet"/><tag k="one_way" v="no"/></relation></osm>'
     )
@@ -108,7 +110,8 @@ def test_osm_tag_counts(tmp_path):
     assert mq.untyped_way_count(outputs=outputs) == 1
     assert mq.one_way_no_count(outputs=outputs) == 1
     assert mq.sign_ways_vs_stoplines(outputs=outputs) == {
-        "traffic_sign_ways": 1,
+        "traffic_sign_ways": 3,
+        "stop_yield_sign_ways": 1,
         "traffic_light_ways": 0,
         "sign_stoplines": 1,
         "light_stoplines": 1,

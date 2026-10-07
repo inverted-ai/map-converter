@@ -249,11 +249,20 @@ def canonical_mesh_digest(*, path: str) -> str:
     return hashlib.sha256(json.dumps(mesh, sort_keys=True).encode()).hexdigest()
 
 
+def canonical_conversion_report_digest(*, path: str, map_dir: str) -> str:
+    """sha256 of a ``_conversion_report.json`` without the map verifier's run time, ``map_dir`` masked."""
+    report = json.loads(_read_text(path=path).replace(map_dir, "<RUN_DIR>"))
+    verifier = (report.get("validation") or {}).get("verifier") or {}
+    verifier.pop("seconds", None)
+    return hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
+
+
 def output_digests(*, map_dir: str) -> dict[str, str]:
     """Digest of every output in ``map_dir`` except the PNG, provenance, logs and FSM output.
 
-    ``metadata.json``, the ``.osm`` and ``_stoplines.json`` are hashed raw; ``_mesh.json``
-    canonically; any other JSON sidecar after replacing ``map_dir`` with ``<RUN_DIR>``.
+    ``metadata.json``, the ``.osm`` and ``_stoplines.json`` are hashed raw; ``_mesh.json`` and
+    ``_conversion_report.json`` canonically; any other JSON sidecar after replacing ``map_dir``
+    with ``<RUN_DIR>``.
     Keys are file names with the map stem replaced by ``<map>``.
     """
     digests = {}
@@ -263,6 +272,8 @@ def output_digests(*, map_dir: str) -> dict[str, str]:
             continue
         if name.endswith("_mesh.json"):
             digest = canonical_mesh_digest(path=path)
+        elif name.endswith("_conversion_report.json"):
+            digest = canonical_conversion_report_digest(path=path, map_dir=map_dir)
         elif name.endswith(CORE_OUTPUT_SUFFIXES):
             digest = sha256_file(path=path)
         else:

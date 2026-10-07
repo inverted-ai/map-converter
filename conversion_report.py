@@ -104,8 +104,21 @@ class ConversionReport(logging.Handler):
             "records_by_kind": dict(sorted(collections.Counter(str(r["kind"]) for r in self.records).items())),
         }
 
-    def write(self, *, path: str, xodr_path: str, error: Optional[BaseException] = None) -> str:
-        """Write the report for ``xodr_path``; ``error`` is the exception that ended the run, if any.
+    def write(
+        self,
+        *,
+        path: str,
+        xodr_path: str,
+        error: Optional[BaseException] = None,
+        validation: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Write the report for ``xodr_path``.
+
+        Args:
+            path: Where to write it.
+            xodr_path: The converted input.
+            error: The exception that ended the run, if any.
+            validation: The validation verdict (as a dict), for a run that got that far.
 
         Returns:
             Absolute path of the written file.
@@ -114,6 +127,7 @@ class ConversionReport(logging.Handler):
             "input": os.path.abspath(xodr_path),
             "outcome": "ok" if error is None else "failed",
             "error": None if error is None else {"type": type(error).__name__, "message": str(error)},
+            "validation": validation,
             **self.summary(elements_seen=count_elements(xodr_path=xodr_path)),
             "records": self.records,
         }
@@ -121,6 +135,21 @@ class ConversionReport(logging.Handler):
         with open(path, "w") as f:
             json.dump(report, f, indent=2)
         return path
+
+
+class FirstOccurrenceFilter(logging.Filter):
+    """Pass each (kind, element, value) degradation once; the report keeps every occurrence."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: set[tuple] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        key = (getattr(record, "kind", None), getattr(record, "element", None), str(getattr(record, "value", None)))
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
 
 
 def count_elements(*, xodr_path: str) -> dict[str, int]:

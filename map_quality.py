@@ -33,6 +33,7 @@ DEFAULT_VISUALIZATION_FOV = 800.0
 SEAM_TOLERANCE_M = 0.1
 Z_CONFLICT_MIN_M = 0.01
 CROSSED_BOUNDS_GAP_M = 1.0
+STOP_YIELD_SIGN_NUMBERS = ("206", "205")
 
 
 @dataclasses.dataclass(slots=True)
@@ -43,11 +44,14 @@ class OsmTagCounts:
         way_types: ``way`` count per ``type`` tag value.
         untyped_ways: ``way`` elements without a ``type`` tag.
         one_way_no: lanelet relations tagged ``one_way=no``.
+        stop_yield_sign_ways: ``traffic_sign`` ways for stop or yield signs (subtype ``<country>206`` /
+            ``<country>205``, the sign numbers every supported country table shares).
     """
 
     way_types: collections.Counter
     untyped_ways: int
     one_way_no: int
+    stop_yield_sign_ways: int = 0
 
 
 def osm_tag_counts(*, osm_path: str) -> OsmTagCounts:
@@ -55,6 +59,7 @@ def osm_tag_counts(*, osm_path: str) -> OsmTagCounts:
     way_types: collections.Counter = collections.Counter()
     untyped = 0
     one_way_no = 0
+    stop_yield = 0
     for _, elem in etree.iterparse(osm_path, events=("end",), tag=("way", "relation"), huge_tree=True):
         tags = {tag.get("k"): tag.get("v") for tag in elem.iter("tag")}
         if elem.tag == "way":
@@ -62,10 +67,14 @@ def osm_tag_counts(*, osm_path: str) -> OsmTagCounts:
                 way_types[tags["type"]] += 1
             else:
                 untyped += 1
+            if tags.get("type") == "traffic_sign" and tags.get("subtype", "").endswith(STOP_YIELD_SIGN_NUMBERS):
+                stop_yield += 1
         elif tags.get("type") == "lanelet" and tags.get("one_way") == "no":
             one_way_no += 1
         elem.clear()
-    return OsmTagCounts(way_types=way_types, untyped_ways=untyped, one_way_no=one_way_no)
+    return OsmTagCounts(
+        way_types=way_types, untyped_ways=untyped, one_way_no=one_way_no, stop_yield_sign_ways=stop_yield
+    )
 
 
 def point_array(*, lanelet_map) -> np.ndarray:
@@ -254,11 +263,12 @@ def stoplines_by_agent_type(*, outputs: ConversionOutputs) -> dict[str, int]:
 def sign_ways_vs_stoplines(*, outputs: ConversionOutputs) -> dict[str, int]:
     """``traffic_sign``/``traffic_light`` ways in the ``.osm`` against the stoplines emitted.
 
-    Sign ways with no stop/yield stopline mean traffic controls were drawn but not exported.
+    Stop/yield sign ways with no stop/yield stopline mean traffic controls were drawn but not exported.
     """
     by_agent = stoplines_by_agent_type(outputs=outputs)
     return {
         "traffic_sign_ways": outputs.osm_tags.way_types.get("traffic_sign", 0),
+        "stop_yield_sign_ways": outputs.osm_tags.stop_yield_sign_ways,
         "traffic_light_ways": outputs.osm_tags.way_types.get("traffic_light", 0),
         "sign_stoplines": by_agent.get("stop_sign", 0) + by_agent.get("yield_sign", 0),
         "light_stoplines": by_agent.get("traffic_light", 0),
@@ -273,6 +283,21 @@ def untyped_way_count(*, outputs: ConversionOutputs) -> int:
 def one_way_no_count(*, outputs: ConversionOutputs) -> int:
     """Lanelets tagged ``one_way=no`` (bidirectional)."""
     return outputs.osm_tags.one_way_no
+
+
+def lanelets_without_subtype(*, outputs: ConversionOutputs) -> int:
+    """Lanelets with no ``subtype`` tag (consumers that filter by subtype drop them)."""
+    return sum(1 for ll in outputs.lanelet_map.laneletLayer if "subtype" not in ll.attributes)
+
+
+def point_extent_m(*, outputs: ConversionOutputs) -> Optional[float]:
+    """Largest ``|x|`` or ``|y|`` of any point in the local frame; ``None`` for an empty map.
+
+    Large values mean the local origin is far from the map (the float32 mesh loses precision).
+    """
+    if not len(outputs.points):
+        return None
+    return float(np.abs(outputs.points[:, :2]).max())
 
 
 def osm_size_bytes(*, outputs: ConversionOutputs) -> int:
@@ -353,6 +378,8 @@ METRICS: dict[str, Callable[..., Any]] = {
     "crossed_geometry": crossed_geometry,
     "one_way_no_count": one_way_no_count,
     "mesh_in_frame_fraction": mesh_in_frame_fraction,
+    "lanelets_without_subtype": lanelets_without_subtype,
+    "point_extent_m": point_extent_m,
 }
 
 

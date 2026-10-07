@@ -65,6 +65,7 @@ several `.xodr` files, or `trim_radius` without `center`, stop the run with exit
 | `simplify_max_iterations` | `1` | Attempts at fitting the size budget. |
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
 | `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing. (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
+| `verifier_timeout_s` | `300` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it. A run that reaches the cap records `timeout` and carries on. |
 
 ## Output files
 
@@ -87,7 +88,8 @@ written to separate sidecar files.
 The converter keeps going past input it cannot use as written: it falls back to a default, drops the smallest
 element affected, and records it. `<map>_conversion_report.json` holds:
 
-1. `outcome` (`ok` or `failed`) and `error` (exception type and message) for a failed run.
+1. `outcome` (`ok` or `failed`) and `error` (exception type and message) for a failed run; `validation`, the
+   validation verdict (below), for a successful one.
 2. `elements`: per OpenDRIVE element (`road`, `geometry`, `lane`, `width`, `signal`, `object`, ...), how many
    the file holds (`seen`), how many were `dropped`, `converted` (seen minus dropped) and `degraded` (kept
    with a changed attribute).
@@ -95,7 +97,7 @@ element affected, and records it. `<map>_conversion_report.json` holds:
    (up to 20).
 4. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
    dropped, else `<tag>.<attribute>`), `id` (road, signal, object or junction), `value`, `action` and the
-   message. Each record is also printed as a warning.
+   message. Each record is also printed as a warning, once per `kind`, `element` and `value`.
 
 | `kind` | Example | What the converter does |
 |---|---|---|
@@ -106,6 +108,31 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 | `coerced` | object `type="stopline"` | Read as `roadMark` |
 | `degenerate_geometry` | `<spiral>` with equal start and end curvature | Read as an arc (a line at zero curvature) |
 | `unknown_reference` | signal `<validity>` naming a lane that does not exist | That lane is skipped |
+
+### Validation
+
+After writing the outputs, the converter checks them and stores the verdict under `validation` in the
+conversion report. Every number comes from `map_quality.py` (the same metrics `map_report.py` records); the
+thresholds are in `map_validation.ValidationConfig`. They are proposals from the test corpus and are not yet
+ratified, so a failed check prints a `Validation:` warning and sets `status` to `warn`; the conversion still
+succeeds.
+
+| Check | Fails when |
+|---|---|
+| `has_lanelets` | the `.osm` has no lanelets |
+| `routing_edge_pct` | fewer than 95% of lanelets have a predecessor, successor or neighbour in the routing graph |
+| `seam_handshake_pct` | fewer than 95% of the lanelet ends that meet share their nodes |
+| `crossed_fraction` | more than 2% of lanelets have an outline that folds or touches itself |
+| `traffic_light_stoplines` | the `.osm` has traffic-light ways but no traffic-light stoplines were written |
+| `stop_yield_stoplines` | the `.osm` has stop or yield sign ways (subtype `…206`/`…205`) but no stop/yield stoplines |
+| `lanelets_without_subtype` | any lanelet lacks a `subtype` |
+| `point_extent_m` | a point lies more than 20 km from the local origin |
+| `origin_in_range` | `lanelet_map_origin` is not a valid latitude/longitude |
+
+`verifier` holds the result of CommonRoad's map verifier (all formulas, report-only, never repairing): `status`
+(`ok`, `timeout`, `error` or `skipped`), whether the map was `partitioned` (above 200 lanelets), the run time,
+and per formula the number of invalid states with up to five example element ids. It runs in a separate
+process killed at `verifier_timeout_s`.
 
 Coordinates: one local frame in metres for every output: the file's coordinates plus the header `<offset>`
 shift, minus the map centre for `utm` maps and for `tmerc` maps with a false easting/northing (which keeps
@@ -133,7 +160,9 @@ clustered by distance and may join a nearby junction's intersection; they are li
 lacking data for the requested level uses the next lower one.
 
 It also writes `<map>_fsm_review.json`: per intersection, its junction, the level actually used, its lights and
-phase groups, and how certain the grouping is, plus the lights no junction claims. `certainty` is the lower of two
+phase groups, and how certain the grouping is, plus the lights no junction claims and `stopline_join`: whether
+every traffic-light `actor_id` in the stoplines appears in exactly one FSM and the FSMs name no other actor
+(`missing_from_fsm`, `not_in_stoplines`, `in_several_intersections`, `ok`). `certainty` is the lower of two
 parts in [0, 1]:
 
 1. `spatial`: distance to the nearest other intersection, divided by twice `--cluster-eps` (1.0 when an XODR

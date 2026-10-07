@@ -86,8 +86,11 @@ def test_degraded_input_converts_and_is_recorded(tmp_path, text, expected):
     assert report["outcome"] == "ok"
     recorded = {(r["kind"], r["element"]) for r in report["records"]}
     assert set(expected) <= recorded, recorded
+    first = {}
     for record in report["records"]:
-        assert record["message"] in result.stderr  # also printed for the person running the conversion
+        first.setdefault((record["kind"], record["element"], str(record["value"])), record["message"])
+    for message in first.values():
+        assert message in result.stderr  # printed once per kind/element/value for the person running it
 
 
 def test_report_counts_dropped_elements(tmp_path):

@@ -4,6 +4,7 @@ The input is either a folder `dir_path` with a single *.xodr file in it, or the 
 This script produces the required files for TorchDriveSim in `dir_path`, or for `xodr_path` in
 the folder `<xodr folder>/<map name>/`.
 """
+import copy
 import dataclasses
 import datetime
 import glob
@@ -44,6 +45,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.network imp
 from commonroad.scenario.lanelet import LaneletNetwork
 
 import conversion_report
+import map_validation
 from conversion_common import REFUSED_EXIT_CODE, git_identity, sha256_file
 from opendrive_signal_groups import write_signal_groups
 
@@ -86,6 +88,8 @@ class MapConversionConfig:
         allow_zero_origin: Convert a map whose ``<geoReference>`` is present but unusable at
             latitude/longitude (0, 0) instead of failing. A map with no ``<geoReference>`` always
             converts at (0, 0), with a warning.
+        verifier_timeout_s: Cap (s) on the CommonRoad map verifier the validation stage runs; 0
+            skips it. A run that hits the cap records ``timeout`` and continues.
     """
 
     dir_path: Optional[str] = None
@@ -102,6 +106,7 @@ class MapConversionConfig:
     simplify_max_iterations: int = 1
     simplify_tolerance_factor: float = 2.0
     allow_zero_origin: bool = False
+    verifier_timeout_s: float = 300.0
 
 
 @dataclasses.dataclass
@@ -447,11 +452,16 @@ class ParsedXodr:
 
 @dataclasses.dataclass(slots=True)
 class ExportedOsm:
-    """The CommonRoad network built from the input and the ``.osm`` written from it."""
+    """The CommonRoad network built from the input and the ``.osm`` written from it.
+
+    ``unsimplified_network`` is the network before boundary simplification, kept for the map verifier
+    (which assumes a lanelet's bounds have equal vertex counts); ``None`` when the verifier is off.
+    """
 
     road_network: Network
     lanelet_network: LaneletNetwork
     osm_path: str
+    unsimplified_network: Optional[LaneletNetwork] = None
 
 
 @dataclasses.dataclass(slots=True)
@@ -483,6 +493,8 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError('give exactly one of dir_path and xodr_path')
     if cfg.trim_radius is not None and cfg.center is None:
         raise ConfigError('trim_radius requires center')
+    if cfg.verifier_timeout_s < 0:
+        raise ConfigError('verifier_timeout_s must be 0 (skip the verifier) or positive')
     if cfg.xodr_path is not None:
         if not (cfg.xodr_path.endswith('.xodr') and os.path.isfile(cfg.xodr_path)):
             raise ConfigError(f'xodr_path {os.path.abspath(cfg.xodr_path)} is not an existing .xodr file')
@@ -608,6 +620,7 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
     commonroad_config = GeneralConfig()
     commonroad_config.proj_string_cr = parsed.geo_reference.proj_string  # not currently used - see CustomTransformer
 
+    unsimplified_network = copy.deepcopy(lanelet_network) if cfg.verifier_timeout_s > 0 else None
     tol = cfg.simplify_tolerance or 0.0
     size_budget_active = tol > 0 and cfg.osm_target_bytes is not None
     max_attempts = max(1, cfg.simplify_max_iterations) if size_budget_active else 1
@@ -646,7 +659,12 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
     logger.info(f'Writing converted Lanelet2 map to {osm_path}')
     with open(osm_path, "wb") as file_out:
         file_out.write(osm_bytes)
-    return ExportedOsm(road_network=road_network, lanelet_network=lanelet_network, osm_path=osm_path)
+    return ExportedOsm(
+        road_network=road_network,
+        lanelet_network=lanelet_network,
+        osm_path=osm_path,
+        unsimplified_network=unsimplified_network,
+    )
 
 
 def trim(*, cfg: MapConversionConfig, osm_path: str, projector) -> None:
@@ -877,7 +895,7 @@ def convert_map(cfg: MapConversionConfig) -> str:
     ``visualization.png``, ``<map>_signal_groups.json`` and ``<map>_provenance.json`` into
     ``cfg.dir_path``, or for ``xodr_path`` into ``<xodr folder>/<map name>/``. Once the input is
     known, ``<map>_conversion_report.json`` (:mod:`conversion_report`) is written whether or not the
-    conversion succeeds.
+    conversion succeeds; after a successful one it holds the :mod:`map_validation` verdict.
 
     Args:
         cfg: The run's settings, as a dataclass or the command line's ``DictConfig``.
@@ -893,9 +911,10 @@ def convert_map(cfg: MapConversionConfig) -> str:
         os.makedirs(out_dir, exist_ok=True)
         cfg = dataclasses.replace(cfg, dir_path=out_dir)
     report = conversion_report.attach()
-    error = None
+    error, verdict = None, None
     try:
-        return _convert(cfg=cfg, opendrive_path=opendrive_path)
+        osm_path, verdict = _convert(cfg=cfg, opendrive_path=opendrive_path)
+        return osm_path
     except BaseException as exc:
         error = exc
         raise
@@ -905,12 +924,13 @@ def convert_map(cfg: MapConversionConfig) -> str:
             path=os.path.join(cfg.dir_path, f"{map_name(xodr_path=opendrive_path)}_conversion_report.json"),
             xodr_path=opendrive_path,
             error=error,
+            validation=None if verdict is None else dataclasses.asdict(verdict),
         )
         logger.info(f'Wrote conversion report ({len(report.records)} degradation records) to {path}')
 
 
-def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> str:
-    """The pipeline stages of :func:`convert_map`, on a validated config."""
+def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map_validation.Verdict]:
+    """The pipeline stages of :func:`convert_map`, on a validated config: the ``.osm`` path and the verdict."""
     parsed = parse_xodr(opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin)
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
@@ -936,7 +956,13 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> str:
         traffic_side=parsed.traffic_side,
         geo_reference_status=parsed.geo_reference_status,
     )
-    return os.path.abspath(exported.osm_path)
+    verdict = map_validation.validate(
+        map_dir=cfg.dir_path,
+        lanelet_network=exported.unsimplified_network,
+        verifier_timeout_s=cfg.verifier_timeout_s,
+    )
+    logger.info(f'Validation: {verdict.status}')
+    return os.path.abspath(exported.osm_path), verdict
 
 
 if __name__ == '__main__':
@@ -945,7 +971,11 @@ if __name__ == '__main__':
     )
     logger.setLevel(logging.DEBUG)
     logger.addHandler(logging.StreamHandler())
-    logging.getLogger(conversion_report.DEGRADATION_LOGGER).addHandler(logging.StreamHandler())
+    console = logging.StreamHandler()
+    console.addFilter(conversion_report.FirstOccurrenceFilter())
+    logging.getLogger(conversion_report.DEGRADATION_LOGGER).addHandler(console)
+    logging.getLogger(map_validation.__name__).addHandler(logging.StreamHandler())
+    logging.getLogger(map_validation.__name__).setLevel(logging.INFO)
     try:
         convert_map(cfg)
     except ConfigError as exc:

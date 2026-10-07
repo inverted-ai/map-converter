@@ -27,7 +27,7 @@ import json
 import logging
 import math
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -721,6 +721,35 @@ def generate_fsms(
     return [build_fsm(groups=r.groups, actors=actors, config=config) for r in resolved]
 
 
+def stopline_fsm_join(*, stoplines_path: str, fsms: list[list[dict]]) -> dict[str, Any]:
+    """Check that the controller file and the stoplines name the same traffic lights.
+
+    Every traffic-light ``actor_id`` in the stoplines should appear in exactly one FSM, and the FSMs
+    should name no other actor.
+    """
+    with open(stoplines_path) as f:
+        stopline_ids = {str(row["actor_id"]) for row in json.load(f) if row.get("agent_type") == "traffic_light"}
+    seen: dict[str, int] = {}
+    for fsm in fsms:
+        for aid in {aid for state in fsm for aid in state["actor_states"]}:
+            seen[aid] = seen.get(aid, 0) + 1
+    missing = sorted(stopline_ids - set(seen), key=_id_order)
+    unknown = sorted(set(seen) - stopline_ids, key=_id_order)
+    several = sorted((aid for aid, n in seen.items() if n > 1), key=_id_order)
+    return {
+        "stopline_lights": len(stopline_ids),
+        "fsm_lights": len(seen),
+        "missing_from_fsm": missing,
+        "not_in_stoplines": unknown,
+        "in_several_intersections": several,
+        "ok": not (missing or unknown or several),
+    }
+
+
+def _id_order(actor_id: str) -> tuple:
+    return (0, int(actor_id), "") if actor_id.lstrip("-").isdigit() else (1, 0, actor_id)
+
+
 def find_signal_groups_path(*, stoplines_path: str) -> Optional[str]:
     """``<map>_signal_groups.json`` beside ``<map>_stoplines.json``, if it exists."""
     path = stoplines_path[: -len("_stoplines.json")] + "_signal_groups.json"
@@ -803,6 +832,7 @@ def run(
         config=config,
         signal_groups_path=signal_groups_path,
         signal_groups=signal_groups,
+        stopline_join=stopline_fsm_join(stoplines_path=stoplines_path, fsms=fsms),
     )
     logger.info("Wrote FSM review to %s", review_path)
 
@@ -834,11 +864,13 @@ def write_review(
     config: FsmConfig,
     signal_groups_path: Optional[str],
     signal_groups: Optional[dict],
+    stopline_join: Optional[dict] = None,
 ) -> str:
     """Write ``<map>_fsm_review.json``: per intersection, its lights, phase groups, XODR level and certainty.
 
     ``flagged`` repeats the intersections below ``config.review_threshold``. Also lists the lights no
-    XODR junction claims (placed by distance), when junctions are in use.
+    XODR junction claims (placed by distance), when junctions are in use, and ``stopline_join``
+    (:func:`stopline_fsm_join`) when given.
     """
     levels = effective_xodr_levels(config=config)
     intersections = [
@@ -870,6 +902,7 @@ def write_review(
         "flagged": [
             {"index": i, **intersections[i]} for i in flagged_intersections(resolved=resolved, config=config)
         ],
+        "stopline_join": stopline_join,
     }
     path = os.path.join(map_dir, f"{location}_fsm_review.json")
     with open(path, "w") as f:

@@ -1,4 +1,5 @@
 import collections
+import contextlib
 import logging
 import re
 import warnings
@@ -105,10 +106,18 @@ NON_NUMERIC_ATTRIBUTES = {
 class UnparseableNumber(ValueError):
     """An attribute that should hold a number does not; the enclosing element is dropped."""
 
+    kind = "unparseable_number"
+
     def __init__(self, name: str, value: Optional[str]):
         super().__init__(f"{name}={value!r} is not a number")
         self.name = name
         self.value = value
+
+
+class UnknownGeometry(ValueError):
+    """A ``<geometry>`` record of an unknown type; the road it belongs to is dropped."""
+
+    kind = "unknown_value"
 
 
 def _record_dropped(element: str, element_id, error: ValueError):
@@ -117,9 +126,36 @@ def _record_dropped(element: str, element_id, error: ValueError):
         element,
         element_id,
         error,
-        extra={"kind": "unparseable_number", "element": element, "id": element_id,
-               "value": str(error), "action": "dropped"},
+        extra={"kind": getattr(error, "kind", type(error).__name__), "element": element,
+               "id": element_id, "value": str(error), "action": "dropped"},
     )
+
+
+def _validity_lanes(validity: etree.ElementTree, element: str, element_id) -> Optional[range]:
+    """The lane ids a ``<validity>`` covers; ``None`` (recorded) if they are not integers."""
+    from_lane, to_lane = validity.get("fromLane"), validity.get("toLane")
+    try:
+        return range(int(from_lane), int(to_lane) + 1)
+    except ValueError:
+        degradation_logger.warning(
+            "%s %s: validity lanes %s..%s are not integers - validity skipped",
+            element,
+            element_id,
+            from_lane,
+            to_lane,
+            extra={"kind": "unparseable_number", "element": f"{element}.validity", "id": element_id,
+                   "value": f"{from_lane}..{to_lane}", "action": "skipped"},
+        )
+        return None
+
+
+@contextlib.contextmanager
+def _dropped_on_error(element: str, element_id):
+    """Drop (and record) the record built inside the block if one of its numbers does not parse."""
+    try:
+        yield
+    except UnparseableNumber as error:
+        _record_dropped(element, element_id, error)
 
 
 def parse_opendrive(file_path: Path, odr_conf: open_drive_config = open_drive_config) -> OpenDrive:
@@ -142,7 +178,7 @@ def parse_opendrive(file_path: Path, odr_conf: open_drive_config = open_drive_co
             ):
                 elem.tag = etree.QName(elem).localname
                 for attr, value in list(elem.attrib.items()):
-                    if attr not in NON_NUMERIC_ATTRIBUTES and DECIMAL_COMMA.match(value):
+                    if "," in value and attr not in NON_NUMERIC_ATTRIBUTES and DECIMAL_COMMA.match(value):
                         elem.set(attr, value.replace(",", "."))
                         decimal_commas[f"{elem.tag}.{attr}"] += 1
         etree.cleanup_namespaces(root_node)
@@ -287,6 +323,7 @@ def parse_opendrive_road_geometry(
     :param road_geometry: XML element which contains the information
     :param offset: Offset defined in OpenDRIVE.
     :raises UnparseableNumber: if a required number is missing or not a number
+    :raises UnknownGeometry: if the record is of an unknown type
     """
     start_coord = np.array(
         [
@@ -296,9 +333,16 @@ def parse_opendrive_road_geometry(
     )
     hdg = parse_required_float(road_geometry.get("hdg"), "geometry.hdg")
     length = parse_required_float(road_geometry.get("length"), "geometry.length")
+    local_hdg = hdg - float(offset["hdg"])
+
+    def add_arc_or_line(curvature: float):
+        if curvature != 0:
+            new_road.plan_view.add_arc(start_coord, local_hdg, length, curvature)
+        else:
+            new_road.plan_view.add_line(start_coord, local_hdg, length)
 
     if road_geometry.find("line") is not None:
-        new_road.plan_view.add_line(start_coord, hdg - float(offset["hdg"]), length)
+        new_road.plan_view.add_line(start_coord, local_hdg, length)
 
     elif road_geometry.find("spiral") is not None:
         curv_start = parse_float(road_geometry.find("spiral").get("curvStart"), "spiral.curvStart")
@@ -311,24 +355,17 @@ def parse_opendrive_road_geometry(
                 extra={"kind": "degenerate_geometry", "element": "geometry.spiral", "id": new_road.id,
                        "value": curv_start, "action": "read_as_arc"},
             )
-            if curv_start != 0:
-                new_road.plan_view.add_arc(start_coord, hdg - float(offset["hdg"]), length, curv_start)
-            else:
-                new_road.plan_view.add_line(start_coord, hdg - float(offset["hdg"]), length)
+            add_arc_or_line(curv_start)
         else:
             new_road.plan_view.add_spiral(
                 start_coord,
-                hdg - float(offset["hdg"]),
+                local_hdg,
                 length,
                 curv_start,
                 curv_end,
             )
     elif road_geometry.find("arc") is not None:
-        curvature = parse_required_float(road_geometry.find("arc").get("curvature"), "arc.curvature")
-        if curvature != 0:
-            new_road.plan_view.add_arc(start_coord, hdg - float(offset["hdg"]), length, curvature)
-        else:
-            new_road.plan_view.add_line(start_coord, hdg - float(offset["hdg"]), length)
+        add_arc_or_line(parse_required_float(road_geometry.find("arc").get("curvature"), "arc.curvature"))
 
     elif road_geometry.find("poly3") is not None:
         new_road.plan_view.add_poly3(
@@ -368,13 +405,7 @@ def parse_opendrive_road_geometry(
 
     else:
         child = next((c.tag for c in road_geometry if isinstance(c.tag, str)), None)
-        degradation_logger.warning(
-            "road %s: unknown geometry type %s - geometry record dropped",
-            new_road.id,
-            child,
-            extra={"kind": "unknown_value", "element": "geometry", "id": new_road.id,
-                   "value": child, "action": "dropped"},
-        )
+        raise UnknownGeometry(f"unknown geometry type {child!r}")
 
 
 def parse_opendrive_road_elevation_profile(
@@ -387,7 +418,7 @@ def parse_opendrive_road_elevation_profile(
     :param road_elevation_profile: XML element which contains the information
     """
     for elevation in road_elevation_profile.findall("elevation"):
-        try:
+        with _dropped_on_error("elevation", new_road.id):
             new_elevation = RoadElevationProfile(
                 parse_float(elevation.get("a"), "elevation.a"),
                 parse_float(elevation.get("b"), "elevation.b"),
@@ -397,8 +428,6 @@ def parse_opendrive_road_elevation_profile(
             )
 
             new_road.elevation_profile.elevations.append(new_elevation)
-        except UnparseableNumber as error:
-            _record_dropped("elevation", new_road.id, error)
 
 
 def parse_opendrive_road_lateral_profile(new_road: Road, road_lateral_profile: etree.ElementTree):
@@ -409,7 +438,7 @@ def parse_opendrive_road_lateral_profile(new_road: Road, road_lateral_profile: e
     :param road_lateral_profile: XML element which contains the information
     """
     for super_elevation in road_lateral_profile.findall("superelevation"):
-        try:
+        with _dropped_on_error("superelevation", new_road.id):
             new_super_elevation = RoadLateralProfileSuperelevation(
                 parse_float(super_elevation.get("a"), "super_elevation.a"),
                 parse_float(super_elevation.get("b"), "super_elevation.b"),
@@ -419,11 +448,9 @@ def parse_opendrive_road_lateral_profile(new_road: Road, road_lateral_profile: e
             )
 
             new_road.lateral_profile.superelevations.append(new_super_elevation)
-        except UnparseableNumber as error:
-            _record_dropped("superelevation", new_road.id, error)
 
     for crossfall in road_lateral_profile.findall("crossfall"):
-        try:
+        with _dropped_on_error("crossfall", new_road.id):
             new_crossfall = RoadLateralProfileCrossfall(
                 parse_float(crossfall.get("a"), "crossfall.a"),
                 parse_float(crossfall.get("b"), "crossfall.b"),
@@ -434,11 +461,9 @@ def parse_opendrive_road_lateral_profile(new_road: Road, road_lateral_profile: e
             )
 
             new_road.lateral_profile.crossfalls.append(new_crossfall)
-        except UnparseableNumber as error:
-            _record_dropped("crossfall", new_road.id, error)
 
     for shape in road_lateral_profile.findall("shape"):
-        try:
+        with _dropped_on_error("shape", new_road.id):
             new_shape = RoadLateralProfileShape(
                 parse_float(shape.get("a"), "shape.a"),
                 parse_float(shape.get("b"), "shape.b"),
@@ -449,8 +474,6 @@ def parse_opendrive_road_lateral_profile(new_road: Road, road_lateral_profile: e
             )
 
             new_road.lateral_profile.shapes.append(new_shape)
-        except UnparseableNumber as error:
-            _record_dropped("shape", new_road.id, error)
 
 
 def parse_opendrive_road_lane_offset(new_road: Road, lane_offset: etree.ElementTree):
@@ -521,7 +544,7 @@ def parse_opendrive_road_lane_section(
 
             # Width
             for widthIdx, width in enumerate(lane.findall("width")):
-                try:
+                with _dropped_on_error("width", new_road.id):
                     new_width = RoadLaneSectionLaneWidth(
                         parse_float(width.get("a"), "width.a"),
                         parse_float(width.get("b"), "width.b"),
@@ -532,12 +555,10 @@ def parse_opendrive_road_lane_section(
                     )
 
                     new_lane.widths.append(new_width)
-                except UnparseableNumber as error:
-                    _record_dropped("width", new_road.id, error)
 
             # Border
             for borderIdx, border in enumerate(lane.findall("border")):
-                try:
+                with _dropped_on_error("border", new_road.id):
                     new_border = RoadLaneSectionLaneBorder(
                         parse_float(border.get("a"), "border.a"),
                         parse_float(border.get("b"), "border.b"),
@@ -548,8 +569,6 @@ def parse_opendrive_road_lane_section(
                     )
 
                     new_lane.borders.append(new_border)
-                except UnparseableNumber as error:
-                    _record_dropped("border", new_road.id, error)
 
             if lane.find("width") is None and lane.find("border") is not None:
                 new_lane.widths = new_lane.borders
@@ -573,9 +592,10 @@ def parse_opendrive_road_lane_section(
 
             # Speed
             new_lane.speed = None
-            if lane.find("speed") is not None:
+            speed = lane.find("speed")
+            if speed is not None:
                 # speed is always converted to m/s
-                unit = lane.find("speed").get("unit")
+                unit = speed.get("unit")
                 divisor = SPEED_UNIT_DIVISORS.get(unit)
                 if divisor is None:
                     degradation_logger.warning(
@@ -588,14 +608,12 @@ def parse_opendrive_road_lane_section(
                                "action": "speed_unset"},
                     )
                 else:
-                    try:
-                        new_lane.speed = parse_required_float(lane.find("speed").get("max"), "speed.max") / divisor
-                    except UnparseableNumber as error:
-                        _record_dropped("speed", new_road.id, error)
+                    with _dropped_on_error("speed", new_road.id):
+                        new_lane.speed = parse_required_float(speed.get("max"), "speed.max") / divisor
 
             # Access
             for _access in lane.findall("access"):
-                try:
+                with _dropped_on_error("access", new_road.id):
                     new_lane.access += [
                         [
                             str(_access.get("restriction")),
@@ -603,8 +621,6 @@ def parse_opendrive_road_lane_section(
                             parse_float(_access.get("sOffset"), "access.sOffset"),
                         ]
                     ]
-                except UnparseableNumber as error:
-                    _record_dropped("access", new_road.id, error)
             # Lane Height
             # TODO implementation
 
@@ -656,20 +672,10 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
                            "id": new_signal.id, "value": None, "action": "skipped"},
                 )
                 continue
-            try:
-                fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
-            except ValueError:
-                degradation_logger.warning(
-                    "signal %s: validity lanes %s..%s are not integers - validity skipped",
-                    new_signal.id,
-                    child.get('fromLane'),
-                    child.get('toLane'),
-                    extra={"kind": "unparseable_number", "element": "signal.validity",
-                           "id": new_signal.id, "value": f"{child.get('fromLane')}..{child.get('toLane')}",
-                           "action": "skipped"},
-                )
+            lanes = _validity_lanes(child, "signal", new_signal.id)
+            if lanes is None:
                 continue
-            for lane_idx in range(fromLane, toLane + 1):
+            for lane_idx in lanes:
                 lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
                     degradation_logger.warning(
@@ -736,20 +742,10 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
                            "id": new_signal_reference.id, "value": None, "action": "skipped"},
                 )
                 continue
-            try:
-                fromLane, toLane = (int(child.get('fromLane')), int(child.get('toLane')))
-            except ValueError:
-                degradation_logger.warning(
-                    "signalReference %s: validity lanes %s..%s are not integers - validity skipped",
-                    new_signal_reference.id,
-                    child.get('fromLane'),
-                    child.get('toLane'),
-                    extra={"kind": "unparseable_number", "element": "signalReference.validity",
-                           "id": new_signal_reference.id, "value": f"{child.get('fromLane')}..{child.get('toLane')}",
-                           "action": "skipped"},
-                )
+            lanes = _validity_lanes(child, "signalReference", new_signal_reference.id)
+            if lanes is None:
                 continue
-            for lane_idx in range(fromLane, toLane+1):
+            for lane_idx in lanes:
                 lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
                     degradation_logger.warning(
@@ -809,10 +805,7 @@ def parse_opendrive_road(opendrive: OpenDrive, road: etree.ElementTree):
     # Plan view
     for road_geometry in road.find("planView").findall("geometry"):
         # Geometry stays in file coordinates; the header offset is applied when projecting.
-        try:
-            parse_opendrive_road_geometry(new_road, road_geometry, {"x": "0", "y": "0", "hdg": "0"})
-        except UnparseableNumber as error:
-            _record_dropped("geometry", new_road.id, error)
+        parse_opendrive_road_geometry(new_road, road_geometry, {"x": "0", "y": "0", "hdg": "0"})
     # Elevation profile
     road_elevation_profile = road.find("elevationProfile")
     if road_elevation_profile is not None:
@@ -831,10 +824,8 @@ def parse_opendrive_road(opendrive: OpenDrive, road: etree.ElementTree):
 
     # Lane offset
     for lane_offset in lanes.findall("laneOffset"):
-        try:
+        with _dropped_on_error("laneOffset", new_road.id):
             parse_opendrive_road_lane_offset(new_road, lane_offset)
-        except UnparseableNumber as error:
-            _record_dropped("laneOffset", new_road.id, error)
 
     # Lane sections
     for lane_section_id, lane_section in enumerate(road.find("lanes").findall("laneSection")):
@@ -1026,21 +1017,22 @@ def parse_opendrive_junction(opendrive: OpenDrive, junction: etree.ElementTree):
         new_connection.incomingRoad = connection.get("incomingRoad")
         
         connecting_road = connection.get("connectingRoad")
-        if connection.get("contactPoint") not in ["start", "end"]:
+        contact_point = connection.get("contactPoint")
+        if contact_point not in ["start", "end"]:
             degradation_logger.warning(
                 "junction %s connection %s: contactPoint %r - connection skipped",
                 new_junction.id,
                 connection.get("id"),
-                connection.get("contactPoint"),
-                extra={"kind": "unknown_value" if connection.get("contactPoint") is not None else "missing_attribute",
+                contact_point,
+                extra={"kind": "unknown_value" if contact_point is not None else "missing_attribute",
                        "element": "connection.contactPoint", "id": new_junction.id,
-                       "value": connection.get("contactPoint"), "action": "skipped"},
+                       "value": contact_point, "action": "skipped"},
             )
             continue
         if connecting_road is None:  # sometimes we observed linkedRoad being used instead
             connecting_road = connection.get("linkedRoad")
         new_connection.connectingRoad = connecting_road
-        new_connection.contactPoint = connection.get("contactPoint")
+        new_connection.contactPoint = contact_point
 
         for laneLink in connection.findall("laneLink"):
             new_lane_link = JunctionConnectionLaneLink()

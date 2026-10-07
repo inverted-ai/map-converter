@@ -1,6 +1,7 @@
 """Self-validation: threshold checks on a conversion's outputs and the map verifier run."""
 
 import json
+from typing import Optional
 
 import numpy as np
 from commonroad.scenario.lanelet import Lanelet, LaneletNetwork
@@ -28,8 +29,9 @@ CLEAN_METRICS = {
 }
 
 
-def _failed(*, metrics: dict) -> list[str]:
-    return [c.name for c in mv.evaluate(metrics=metrics, config=mv.ValidationConfig()) if not c.passed]
+def _failed(*, metrics: dict, metric_errors: Optional[dict] = None) -> list[str]:
+    checks = mv.evaluate(metrics=metrics, metric_errors=metric_errors or {}, config=mv.ValidationConfig())
+    return [c.name for c in checks if not c.passed]
 
 
 def test_clean_metrics_pass_every_check():
@@ -45,9 +47,13 @@ def test_stop_sign_ways_without_stoplines_fail():
     assert _failed(metrics={**CLEAN_METRICS, "sign_ways_vs_stoplines": signs}) == ["stop_yield_stoplines"]
 
 
-def test_missing_metric_fails_its_check():
-    metrics = {k: v for k, v in CLEAN_METRICS.items() if k != "point_extent_m"}
-    assert _failed(metrics=metrics) == ["point_extent_m"]
+def test_metric_that_raised_fails_its_check():
+    metrics = {k: v for k, v in CLEAN_METRICS.items() if k != "routing_edge_pct"}
+    assert _failed(metrics=metrics, metric_errors={"routing_edge_pct": "RuntimeError: boom"}) == ["routing_edge_pct"]
+
+
+def test_metric_with_nothing_to_measure_passes():
+    assert _failed(metrics={**CLEAN_METRICS, "seam_handshake_pct": None}) == []
 
 
 def test_verifier_past_its_cap_records_timeout():
@@ -83,11 +89,11 @@ def test_negative_verifier_timeout_is_refused(tmp_path):
 
 
 def test_stopline_fsm_join_reports_lights_missing_from_the_fsms(tmp_path):
-    stoplines = tmp_path / "m_stoplines.json"
-    rows = [{"actor_id": i, "agent_type": "traffic_light"} for i in (1, 2, 3)] + [{"actor_id": 9, "agent_type": "stop_sign"}]
-    stoplines.write_text(json.dumps(rows))
+    actors = [tlf.Actor(actor_id=i, center=np.zeros(2), axis=0.0, lane_count=1) for i in (1, 2, 3)]
+    controller = tmp_path / "m_traffic_light_controller.json"
     fsms = [[{"actor_states": {"1": "green", "2": "red"}}], [{"actor_states": {"2": "green", "7": "red"}}]]
-    join = tlf.stopline_fsm_join(stoplines_path=str(stoplines), fsms=fsms)
+    controller.write_text(json.dumps(fsms))
+    join = tlf.stopline_fsm_join(actors=actors, controller_path=str(controller))
     assert join == {
         "stopline_lights": 3,
         "fsm_lights": 3,

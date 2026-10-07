@@ -23,7 +23,7 @@ def _replace_first(*, text: str, old: str, new: str) -> str:
 def _object(**attrs: str) -> str:
     base = {"id": "7", "type": "pole", "s": "5.0", "t": "-6.0", "zOffset": "0.0", "orientation": "none", "hdg": "0.0"}
     base.update(attrs)
-    return "<objects><object " + " ".join(f'{k}="{v}"' for k, v in base.items()) + "/></objects>"
+    return f"<objects><object {xb._attrs(**base)}/></objects>"
 
 
 def _junction_text(*, contact_point: str) -> str:
@@ -46,7 +46,8 @@ CASES = [
      [("coerced", "object.type")]),
     ("unknown_object_orientation", _replace_first(text=_road_text(), old="<objects/>", new=_object(orientation="sideways")),
      [("unknown_value", "object.orientation")]),
-    ("unknown_lane_type", _replace_first(text=_road_text(), old='type="driving"', new='type="fastLane"'),
+    ("unknown_lane_type", xb.build_xodr(roads=[xb.RoadSpec(id="1", length=30.0, lane_sections=[
+        xb.LaneSectionSpec(s=0.0, lanes=[xb.LaneSpec(id=1), xb.LaneSpec(id=-1, type="fastLane")])])]),
      [("unknown_value", "lane.type")]),
     ("unknown_country", _road_text(signals=[xb.SignalSpec(id="5", s=10.0, country="GBR", dynamic="no", type="206")]),
      [("unknown_value", "signal.country")]),
@@ -55,9 +56,10 @@ CASES = [
         text=_road_text(), old="<line/>", new='<spiral curvStart="0.01" curvEnd="0.01"/>'),
      [("degenerate_geometry", "geometry.spiral")]),
     ("unknown_geometry_child", _replace_first(
-        text=_road_text(), old='<geometry s="0.0" x="0.0" y="0.0" hdg="0.0" length="30.0"><line/></geometry>',
+        text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0), xb.straight_road(id="2", length=30.0, y=50.0)]),
+        old='<geometry s="0.0" x="0.0" y="0.0" hdg="0.0" length="30.0"><line/></geometry>',
         new=EXTRA_GEOMETRY),
-     [("unknown_value", "geometry")]),
+     [("unknown_value", "road")]),
     ("signal_missing_dynamic_undefined_orientation",
      _road_text(signals=[xb.SignalSpec(id="5", s=10.0, dynamic=None, orientation="undefined")]),
      [("missing_attribute", "signal.dynamic"), ("unknown_value", "signal.orientation")]),
@@ -71,7 +73,8 @@ CASES = [
      [("unparseable_number", "width")]),
     ("unparseable_elevation", _road_text(elevation=[(0.0, 1.0, 0.0, 0.0, 0.0)]).replace('a="1.0"', 'a="high"'),
      [("unparseable_number", "elevation")]),
-    ("unmapped_road_mark", _replace_first(text=_road_text(), old='type="solid" weight', new='type="custom" weight'),
+    ("unmapped_road_mark", xb.build_xodr(roads=[xb.RoadSpec(id="1", length=30.0, lane_sections=[
+        xb.LaneSectionSpec(s=0.0, lanes=xb.standard_lanes(n_left=1, n_right=1, road_mark="custom"))])]),
      [("unknown_value", "roadMark.type")]),
 ]
 

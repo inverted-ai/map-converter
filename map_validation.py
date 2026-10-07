@@ -77,80 +77,91 @@ class Verdict:
     verifier: dict[str, Any]
 
 
-def evaluate(*, metrics: dict[str, Any], config: ValidationConfig) -> list[Check]:
-    """The threshold checks over :func:`map_quality.compute_all` metrics; a missing metric fails its check."""
+def evaluate(*, metrics: dict[str, Any], metric_errors: dict[str, str], config: ValidationConfig) -> list[Check]:
+    """The threshold checks over :func:`map_quality.compute_all` results.
+
+    A metric that raised (in ``metric_errors``) fails its check; one that returned ``None`` has nothing
+    to measure (e.g. no seams) and passes.
+    """
     checks = []
 
-    def at_least(name: str, value: Optional[float], limit: float, detail: str) -> None:
-        checks.append(Check(name=name, value=value, limit=limit, passed=value is None or value >= limit, detail=detail))
+    def add(*, name: str, metric: str, value: Any, limit: Any, passed: bool, detail: str) -> None:
+        if metric in metric_errors:
+            value, passed, detail = None, False, f"metric failed: {metric_errors[metric]}"
+        checks.append(Check(name=name, value=value, limit=limit, passed=passed, detail=detail))
 
-    def at_most(name: str, value: Optional[float], limit: float, detail: str) -> None:
-        checks.append(Check(name=name, value=value, limit=limit, passed=value is not None and value <= limit, detail=detail))
+    def at_least(*, name: str, limit: float, detail: str) -> None:
+        value = metrics.get(name)
+        add(name=name, metric=name, value=value, limit=limit, passed=value is None or value >= limit, detail=detail)
+
+    def at_most(*, name: str, metric: str, value: Optional[float], limit: float, detail: str) -> None:
+        add(name=name, metric=metric, value=value, limit=limit, passed=value is None or value <= limit, detail=detail)
+
+    def controls_have_stoplines(*, name: str, ways: int, stoplines: int, what: str) -> None:
+        add(
+            name=name,
+            metric="sign_ways_vs_stoplines",
+            value=stoplines,
+            limit=1 if ways else 0,
+            passed=not ways or stoplines > 0,
+            detail=f"{ways} {what} ways in the .osm",
+        )
 
     lanelets = metrics.get("lanelet_count")
-    checks.append(Check(name="has_lanelets", value=lanelets, limit=1, passed=bool(lanelets), detail="the map is not empty"))
+    add(name="has_lanelets", metric="lanelet_count", value=lanelets, limit=1, passed=bool(lanelets), detail="the map is not empty")
     at_least(
-        "routing_edge_pct",
-        metrics.get("routing_edge_pct"),
-        config.min_routing_edge_pct,
-        "share of lanelets with a predecessor, successor or neighbour in the routing graph",
+        name="routing_edge_pct",
+        limit=config.min_routing_edge_pct,
+        detail="share of lanelets with a predecessor, successor or neighbour in the routing graph",
     )
     at_least(
-        "seam_handshake_pct",
-        metrics.get("seam_handshake_pct"),
-        config.min_seam_handshake_pct,
-        "share of meeting lanelet ends that share their nodes",
+        name="seam_handshake_pct",
+        limit=config.min_seam_handshake_pct,
+        detail="share of meeting lanelet ends that share their nodes",
     )
     crossed = metrics.get("crossed_geometry")
     at_most(
-        "crossed_fraction",
-        None if crossed is None or not lanelets else sum(crossed.values()) / lanelets,
-        config.max_crossed_fraction,
-        "share of lanelets whose outline folds or touches itself",
+        name="crossed_fraction",
+        metric="crossed_geometry",
+        value=None if crossed is None or not lanelets else sum(crossed.values()) / lanelets,
+        limit=config.max_crossed_fraction,
+        detail="share of lanelets whose outline folds or touches itself",
     )
-    signs = metrics.get("sign_ways_vs_stoplines")
-    if signs is None:
-        checks.append(Check(name="stoplines", value=None, limit=None, passed=False, detail="metric unavailable"))
-    else:
-        checks.append(
-            Check(
-                name="traffic_light_stoplines",
-                value=signs["light_stoplines"],
-                limit=1 if signs["traffic_light_ways"] else 0,
-                passed=not signs["traffic_light_ways"] or signs["light_stoplines"] > 0,
-                detail=f"{signs['traffic_light_ways']} traffic-light ways in the .osm",
-            )
-        )
-        checks.append(
-            Check(
-                name="stop_yield_stoplines",
-                value=signs["sign_stoplines"],
-                limit=1 if signs["stop_yield_sign_ways"] else 0,
-                passed=not signs["stop_yield_sign_ways"] or signs["sign_stoplines"] > 0,
-                detail=f"{signs['stop_yield_sign_ways']} stop/yield sign ways in the .osm",
-            )
-        )
-    at_most(
-        "lanelets_without_subtype",
-        metrics.get("lanelets_without_subtype"),
-        config.max_lanelets_without_subtype,
-        "lanelets consumers that filter by subtype would drop",
+    signs = metrics.get("sign_ways_vs_stoplines") or {}
+    controls_have_stoplines(
+        name="traffic_light_stoplines",
+        ways=signs.get("traffic_light_ways", 0),
+        stoplines=signs.get("light_stoplines", 0),
+        what="traffic-light",
+    )
+    controls_have_stoplines(
+        name="stop_yield_stoplines",
+        ways=signs.get("stop_yield_sign_ways", 0),
+        stoplines=signs.get("sign_stoplines", 0),
+        what="stop/yield sign",
     )
     at_most(
-        "point_extent_m",
-        metrics.get("point_extent_m"),
-        config.max_point_extent_m,
-        "furthest point from the local origin",
+        name="lanelets_without_subtype",
+        metric="lanelets_without_subtype",
+        value=metrics.get("lanelets_without_subtype"),
+        limit=config.max_lanelets_without_subtype,
+        detail="lanelets consumers that filter by subtype would drop",
+    )
+    at_most(
+        name="point_extent_m",
+        metric="point_extent_m",
+        value=metrics.get("point_extent_m"),
+        limit=config.max_point_extent_m,
+        detail="furthest point from the local origin",
     )
     origin = metrics.get("origin")
-    checks.append(
-        Check(
-            name="origin_in_range",
-            value=origin,
-            limit=[90.0, 180.0],
-            passed=origin is not None and abs(origin[0]) <= 90.0 and abs(origin[1]) <= 180.0,
-            detail="lanelet_map_origin is a valid latitude/longitude",
-        )
+    add(
+        name="origin_in_range",
+        metric="origin",
+        value=origin,
+        limit=[90.0, 180.0],
+        passed=origin is not None and abs(origin[0]) <= 90.0 and abs(origin[1]) <= 180.0,
+        detail="lanelet_map_origin is a valid latitude/longitude",
     )
     return checks
 
@@ -163,7 +174,7 @@ def run_map_verifier(*, lanelet_network: Optional[Any], timeout_s: float, partit
     raises there is lost without a trace (upstream behaviour), so a partitioned ``ok`` is a lower bound.
 
     Returns:
-        ``status`` (``ok``, ``timeout``, ``error`` or ``skipped`` when ``timeout_s <= 0``),
+        ``status`` (``ok``, ``timeout``, ``error``, or ``skipped`` with no network or ``timeout_s <= 0``),
         ``partitioned``, ``lanelets``, ``seconds`` and, when ``ok``, ``invalid_states``: per formula,
         the count and up to :data:`VERIFIER_EXAMPLES` locations (element ids).
     """
@@ -246,7 +257,8 @@ def validate(
     Args:
         map_dir: The conversion's output folder (with ``metadata.json``).
         lanelet_network: The CommonRoad lanelet network before boundary simplification (see
-            :func:`run_map_verifier`); ``None`` skips the verifier.
+            :func:`run_map_verifier`); ``None`` skips the verifier (``convert_map`` passes ``None``
+            for a trimmed map, whose untrimmed network the other checks do not judge).
         verifier_timeout_s: Cap on the map verifier; ``0`` skips it.
         config: Thresholds; the defaults when ``None``.
 
@@ -256,7 +268,7 @@ def validate(
     config = config or ValidationConfig()
     outputs = map_quality.ConversionOutputs.load(map_dir=map_dir)
     metrics, errors = map_quality.compute_all(outputs=outputs)
-    checks = evaluate(metrics=metrics, config=config)
+    checks = evaluate(metrics=metrics, metric_errors=errors, config=config)
     failed = [c for c in checks if not c.passed]
     for check in failed:
         logger.warning(f"Validation: {check.name} = {check.value} (limit {check.limit}): {check.detail}")

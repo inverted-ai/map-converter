@@ -250,10 +250,12 @@ def canonical_mesh_digest(*, path: str) -> str:
 
 
 def canonical_conversion_report_digest(*, path: str, map_dir: str) -> str:
-    """sha256 of a ``_conversion_report.json`` without the map verifier's run time, ``map_dir`` masked."""
+    """sha256 of a ``_conversion_report.json`` without the map verifier's result, ``map_dir`` masked.
+
+    Whether the verifier finishes before its cap depends on wall-clock time, so its block is left out.
+    """
     report = json.loads(_read_text(path=path).replace(map_dir, "<RUN_DIR>"))
-    verifier = (report.get("validation") or {}).get("verifier") or {}
-    verifier.pop("seconds", None)
+    (report.get("validation") or {}).pop("verifier", None)
     return hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()
 
 

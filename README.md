@@ -91,8 +91,8 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 1. `outcome` (`ok` or `failed`) and `error` (exception type and message) for a failed run; `validation`, the
    validation verdict (below), for a successful one.
 2. `elements`: per OpenDRIVE element (`road`, `geometry`, `lane`, `width`, `signal`, `object`, ...), how many
-   the file holds (`seen`), how many were `dropped`, `converted` (seen minus dropped) and `degraded` (kept
-   with a changed attribute).
+   the file holds (`seen`), how many were `dropped`, `converted` (seen minus dropped; elements inside a
+   dropped road are not subtracted) and `degraded` (kept with a changed attribute).
 3. `unrecognised_tokens`: each unknown value (`element`, `value`), how often it occurred and the ids where
    (up to 20).
 4. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
@@ -102,8 +102,8 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 | `kind` | Example | What the converter does |
 |---|---|---|
 | `decimal_comma` | `length="29,7"` | Reads it as `29.7`; one record per attribute with the count |
-| `unparseable_number` | `<width a="wide">` | Drops that record (geometry, width, border, elevation, lateral-profile or lane-offset record, speed, access); a road, signal, object or junction whose own id or required numbers do not parse is dropped whole |
-| `unknown_value` | lane `type="fastLane"`, object type, signal `country="GBR"`, road-mark `type="custom"`, connection `contactPoint="none"`, unknown geometry type | Lane and object type `none`; country `ZAM` sign tables; marking unknown; connection or geometry record skipped |
+| `unparseable_number` | `<width a="wide">` | Drops that record (width, border, elevation, lateral-profile or lane-offset record, speed, access); a road whose `<geometry>` numbers, own id or lane-section start do not parse, and a signal, object or junction whose own numbers do not, is dropped whole (a road's reference line cannot lose a record: every later record would shift along the road) |
+| `unknown_value` | lane `type="fastLane"`, object type, signal `country="GBR"`, road-mark `type="custom"`, connection `contactPoint="none"`, unknown geometry type | Lane and object type `none`; a country without a CommonRoad sign table uses the `ZAM` tables; marking unknown; connection skipped; a road with an unknown geometry type is dropped |
 | `missing_attribute` | signal without `dynamic`, speed without `unit` | `dynamic="no"`, orientation `none`; the speed is left unset |
 | `coerced` | object `type="stopline"` | Read as `roadMark` |
 | `degenerate_geometry` | `<spiral>` with equal start and end curvature | Read as an arc (a line at zero curvature) |
@@ -132,7 +132,9 @@ succeeds.
 `verifier` holds the result of CommonRoad's map verifier (all formulas, report-only, never repairing): `status`
 (`ok`, `timeout`, `error` or `skipped`), whether the map was `partitioned` (above 200 lanelets), the run time,
 and per formula the number of invalid states with up to five example element ids. It runs in a separate
-process killed at `verifier_timeout_s`.
+process killed at `verifier_timeout_s`, on the CommonRoad network before boundary simplification; it is skipped for a
+trimmed map (`trim_radius`), whose checks judge only the trimmed outputs. A metric that raises fails its check;
+one with nothing to measure (no seams, say) passes.
 
 Coordinates: one local frame in metres for every output: the file's coordinates plus the header `<offset>`
 shift, minus the map centre for `utm` maps and for `tmerc` maps with a false easting/northing (which keeps

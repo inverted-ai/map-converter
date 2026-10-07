@@ -156,10 +156,12 @@ def count_elements(*, xodr_path: str) -> dict[str, int]:
     """How many of each :data:`COUNTED_TAGS` element the file holds (namespaces ignored)."""
     counts: collections.Counter = collections.Counter()
     try:
-        for _, elem in etree.iterparse(xodr_path, events=("start",)):
+        for _, elem in etree.iterparse(xodr_path, events=("end",), huge_tree=True):
             tag = etree.QName(elem).localname if isinstance(elem.tag, str) else None
             if tag in COUNTED_TAGS:
                 counts[tag] += 1
+            if tag == "road":
+                elem.clear()  # roads hold almost every counted element; keep memory flat
     except etree.XMLSyntaxError:
         return {}
     return {tag: counts[tag] for tag in COUNTED_TAGS if counts[tag]}

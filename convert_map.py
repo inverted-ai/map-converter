@@ -455,7 +455,8 @@ class ExportedOsm:
     """The CommonRoad network built from the input and the ``.osm`` written from it.
 
     ``unsimplified_network`` is the network before boundary simplification, kept for the map verifier
-    (which assumes a lanelet's bounds have equal vertex counts); ``None`` when the verifier is off.
+    (which assumes a lanelet's bounds have equal vertex counts); ``None`` when the verifier is off or
+    the map is trimmed.
     """
 
     road_network: Network
@@ -620,8 +621,10 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
     commonroad_config = GeneralConfig()
     commonroad_config.proj_string_cr = parsed.geo_reference.proj_string  # not currently used - see CustomTransformer
 
-    unsimplified_network = copy.deepcopy(lanelet_network) if cfg.verifier_timeout_s > 0 else None
     tol = cfg.simplify_tolerance or 0.0
+    unsimplified_network = None  # the verifier skips trimmed maps: the other checks judge the trimmed outputs
+    if cfg.verifier_timeout_s > 0 and cfg.trim_radius is None:
+        unsimplified_network = copy.deepcopy(lanelet_network) if tol > 0 else lanelet_network
     size_budget_active = tol > 0 and cfg.osm_target_bytes is not None
     max_attempts = max(1, cfg.simplify_max_iterations) if size_budget_active else 1
     osm_bytes = None
@@ -906,8 +909,9 @@ def convert_map(cfg: MapConversionConfig) -> str:
     if not dataclasses.is_dataclass(cfg):
         cfg = OmegaConf.to_object(cfg)
     opendrive_path = validate_config(cfg=cfg)
+    location = map_name(xodr_path=opendrive_path)
     if cfg.xodr_path is not None:
-        out_dir = os.path.join(os.path.dirname(opendrive_path), map_name(xodr_path=opendrive_path))
+        out_dir = os.path.join(os.path.dirname(opendrive_path), location)
         os.makedirs(out_dir, exist_ok=True)
         cfg = dataclasses.replace(cfg, dir_path=out_dir)
     report = conversion_report.attach()
@@ -921,7 +925,7 @@ def convert_map(cfg: MapConversionConfig) -> str:
     finally:
         conversion_report.detach(handler=report)
         path = report.write(
-            path=os.path.join(cfg.dir_path, f"{map_name(xodr_path=opendrive_path)}_conversion_report.json"),
+            path=os.path.join(cfg.dir_path, f"{location}_conversion_report.json"),
             xodr_path=opendrive_path,
             error=error,
             validation=None if verdict is None else dataclasses.asdict(verdict),

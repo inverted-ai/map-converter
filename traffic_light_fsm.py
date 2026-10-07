@@ -21,6 +21,7 @@ Run with ``python traffic_light_fsm.py <map-dir>``.
 from __future__ import annotations
 
 import argparse
+import collections
 import dataclasses
 import glob
 import json
@@ -495,6 +496,7 @@ LEVEL_OFF = "off"
 LEVEL_JUNCTIONS = "junctions"
 LEVEL_GROUPS = "groups"
 LEVEL_SEQUENCE = "sequence"
+DECLARED_LEVELS = (LEVEL_GROUPS, LEVEL_SEQUENCE)  # XODR controllers fix the phase groups
 
 
 @dataclasses.dataclass(slots=True)
@@ -528,7 +530,7 @@ class IntersectionResult:
     @property
     def reason(self) -> str:
         """``declared`` when XODR fixes both parts, ``clear`` at 1.0, else the limiting part."""
-        if self.level in (LEVEL_GROUPS, LEVEL_SEQUENCE):
+        if self.level in DECLARED_LEVELS:
             return "declared"
         if self.certainty >= 1.0:
             return "clear"
@@ -597,6 +599,13 @@ def _controller_groups(
     return [g for _, g in ordered], LEVEL_GROUPS
 
 
+def _centroids(*, intersections: list[list[int]], actors: list[Actor]) -> np.ndarray:
+    """Mean stopline centre of each intersection, shape ``(n, 2)``."""
+    if not intersections:
+        return np.empty((0, 2))
+    return np.array([np.mean([actors[i].center for i in inter], axis=0) for inter in intersections])
+
+
 def resolve_intersection_groups(
     *,
     actors: list[Actor],
@@ -623,9 +632,7 @@ def resolve_intersection_groups(
         logger.warning("No signal groups sidecar - XODR junctions, groups and sequence are not used")
     membership = xodr_membership(signal_groups=signal_groups, levels=levels)
     intersections = cluster_intersections(actors=actors, config=config, membership=membership)
-    centroids = np.array(
-        [np.mean([actors[i].center for i in inter], axis=0) for inter in intersections]
-    ) if intersections else np.empty((0, 2))
+    centroids = _centroids(intersections=intersections, actors=actors)
 
     resolved: list[tuple[list[int], bool]] = []  # (intersection, topology_refined)
     for idx, inter in enumerate(intersections):
@@ -665,7 +672,7 @@ def resolve_intersection_groups(
                 )
             resolved.append((inter, False))
 
-    final_centroids = np.array([np.mean([actors[i].center for i in inter], axis=0) for inter, _ in resolved])
+    final_centroids = _centroids(intersections=[inter for inter, _ in resolved], actors=actors)
     results = []
     for idx, (inter, refined) in enumerate(resolved):
         junction = _junction_of(intersection=inter, actors=actors, membership=membership)
@@ -688,7 +695,7 @@ def resolve_intersection_groups(
                 if junction is not None
                 else spatial_certainty(all_centroids=final_centroids, centroid_index=idx, config=config),
                 axis=1.0
-                if level in (LEVEL_GROUPS, LEVEL_SEQUENCE)
+                if level in DECLARED_LEVELS
                 else axis_certainty(groups=groups, actors=actors, config=config),
                 topology_refined=refined,
             )
@@ -721,18 +728,16 @@ def generate_fsms(
     return [build_fsm(groups=r.groups, actors=actors, config=config) for r in resolved]
 
 
-def stopline_fsm_join(*, stoplines_path: str, fsms: list[list[dict]]) -> dict[str, Any]:
-    """Check that the controller file and the stoplines name the same traffic lights.
+def stopline_fsm_join(*, actors: list[Actor], controller_path: str) -> dict[str, Any]:
+    """Check that the written controller file and the stoplines name the same traffic lights.
 
-    Every traffic-light ``actor_id`` in the stoplines should appear in exactly one FSM, and the FSMs
-    should name no other actor.
+    Every traffic-light actor from the stoplines should appear in exactly one FSM of the controller file,
+    and the file should name no other actor.
     """
-    with open(stoplines_path) as f:
-        stopline_ids = {str(row["actor_id"]) for row in json.load(f) if row.get("agent_type") == "traffic_light"}
-    seen: dict[str, int] = {}
-    for fsm in fsms:
-        for aid in {aid for state in fsm for aid in state["actor_states"]}:
-            seen[aid] = seen.get(aid, 0) + 1
+    with open(controller_path) as f:
+        fsms = json.load(f)
+    stopline_ids = {str(a.actor_id) for a in actors}
+    seen = collections.Counter(aid for fsm in fsms for aid in {aid for state in fsm for aid in state["actor_states"]})
     missing = sorted(stopline_ids - set(seen), key=_id_order)
     unknown = sorted(set(seen) - stopline_ids, key=_id_order)
     several = sorted((aid for aid, n in seen.items() if n > 1), key=_id_order)
@@ -832,7 +837,7 @@ def run(
         config=config,
         signal_groups_path=signal_groups_path,
         signal_groups=signal_groups,
-        stopline_join=stopline_fsm_join(stoplines_path=stoplines_path, fsms=fsms),
+        stopline_join=stopline_fsm_join(actors=actors, controller_path=out_path),
     )
     logger.info("Wrote FSM review to %s", review_path)
 

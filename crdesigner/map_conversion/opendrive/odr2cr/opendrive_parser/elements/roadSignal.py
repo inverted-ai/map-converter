@@ -4,16 +4,18 @@ from typing import Union
 
 def _degraded(signal, attribute: str, value, replacement: str):
     """Record that a missing or unknown ``attribute`` value was replaced."""
+    name = type(signal).__name__
+    tag = name[0].lower() + name[1:]  # the OpenDRIVE element: signal / signalReference
+    signal_id = getattr(signal, "_id", None)
     logging.getLogger("crdesigner.degradation").warning(
         "%s %s: %s %r - using %r",
-        type(signal).__name__.lower(),
-        getattr(signal, "_id", None),
+        tag,
+        signal_id,
         attribute,
         value,
         replacement,
         extra={"kind": "missing_attribute" if value is None else "unknown_value",
-               "element": f"{'signal' if type(signal).__name__ == 'Signal' else 'signalReference'}.{attribute}",
-               "id": getattr(signal, "_id", None), "value": value, "action": "defaulted"},
+               "element": f"{tag}.{attribute}", "id": signal_id, "value": value, "action": "defaulted"},
     )
 
 

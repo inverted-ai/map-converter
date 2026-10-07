@@ -96,6 +96,15 @@ def test_degraded_input_converts_and_is_recorded(tmp_path, text, expected):
         assert message in result.stderr  # printed once per kind/element/value for the person running it
 
 
+def test_clean_map_has_no_records(tmp_path):
+    # Lanes beyond +-1 get the converter's own "unknown" inner marking, which is not an input problem.
+    road = xb.straight_road(id="1", length=30.0, n_left=2, n_right=2)
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[road]))
+    assert xb.run_convert_map(map_dir=str(tmp_path), verifier_timeout_s="0").returncode == 0
+    with open(tmp_path / "case_conversion_report.json") as f:
+        assert json.load(f)["records"] == []
+
+
 def test_report_counts_dropped_elements(tmp_path):
     text = _replace_first(text=_road_text(), old='a="3.5"', new='a="wide"')
     xb.write_xodr(map_dir=tmp_path, name="case", text=text)

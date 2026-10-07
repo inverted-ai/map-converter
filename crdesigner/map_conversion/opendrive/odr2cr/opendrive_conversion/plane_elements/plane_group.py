@@ -56,7 +56,7 @@ def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
     elif plane_line_marking.type in ("broken solid", "dashed solid"):
         mark = LineMarking.DASHED_SOLID
 
-    else:
+    elif plane_line_marking.type != "unknown":  # "unknown" is ParametricLaneGroup's placeholder, not input
         logging.getLogger("crdesigner.degradation").warning(
             "road mark type %r has no CommonRoad line marking - unknown",
             plane_line_marking.type,

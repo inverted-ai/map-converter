@@ -250,7 +250,7 @@ options:
                         Visualization max image dimension in pixels (default from VizConfig)
 ```
 
-`fsm_visualization.py` renders the whole map with each intersection's phase groups coloured, for review
+`fsm_visualization.py` renders the whole map to `<map>_fsm_visualization.png` with each intersection's phase groups coloured, for review
 (also available as `traffic_light_fsm.py --visualize`). Each intersection is labelled `#<index> <certainty>`,
 with `*` when topology split it:
 
@@ -270,9 +270,10 @@ to ``traffic_light_fsm.py``. It renders the converted map's road birdview (reusi
 ``torchdrivesim`` path that ``convert_map.py`` uses for ``visualization.png``) and overlays the
 FSM tool's output so a human can verify the automatic grouping at a glance: * stoplines are drawn
 as markers coloured by their phase subgroup, * a dashed grey convex-hull outline marks each
-intersection's membership, * each traffic-light ``actor_id`` is labelled. For large maps the
-birdview is rendered as a grid of square tiles and stitched into one image, at a fixed pixels-per-
-metre detail capped to a maximum dimension (both tunable in :class:`VizConfig`). Runs standalone
+intersection's membership, labelled with its index and grouping certainty (``*`` marks topology-
+refined intersections), * each traffic-light ``actor_id`` is labelled. For large maps the birdview
+is rendered as a grid of square tiles and stitched into one image, at a fixed pixels-per-metre
+detail capped to a maximum dimension (both tunable in :class:`VizConfig`). Runs standalone
 (``python fsm_visualization.py <map-dir>``) or is invoked by ``traffic_light_fsm.py --visualize``.
 Heavy dependencies (torch, torchdrivesim, PIL) are imported lazily so importing this module stays
 cheap.

@@ -65,6 +65,20 @@ class SignalSpec:
 
 
 @dataclasses.dataclass(slots=True)
+class ObjectSpec:
+    """An ``<object>``, by default a painted stop stencil."""
+
+    id: str
+    s: float
+    t: float = -1.75
+    name: str = "Stencil_STOP"
+    type: str = "roadMark"
+    orientation: str = "+"
+    width: float = 1.8
+    length: float = 2.3
+
+
+@dataclasses.dataclass(slots=True)
 class RoadSpec:
     """A straight road from ``(x, y)`` along heading ``hdg``."""
 
@@ -83,6 +97,7 @@ class RoadSpec:
     rule: Optional[str] = None  # "RHT" / "LHT"
     name: Optional[str] = None  # defaults to road<id>
     signals: list[SignalSpec] = dataclasses.field(default_factory=list)
+    objects: list[ObjectSpec] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(slots=True)
@@ -217,6 +232,22 @@ def _signal(*, signal: SignalSpec) -> str:
     return f"<signal {attrs}>{validity}</signal>"
 
 
+def _object(*, obj: ObjectSpec) -> str:
+    attrs = _attrs(
+        id=obj.id,
+        name=obj.name,
+        s=_num(value=obj.s),
+        t=_num(value=obj.t),
+        zOffset="0.0",
+        hdg="0.0",
+        orientation=obj.orientation,
+        type=obj.type,
+        width=_num(value=obj.width),
+        length=_num(value=obj.length),
+    )
+    return f"<object {attrs}/>"
+
+
 def _road(*, road: RoadSpec) -> str:
     attrs = _attrs(
         name=road.name if road.name is not None else f"road{road.id}",
@@ -238,12 +269,14 @@ def _road(*, road: RoadSpec) -> str:
         for s, a, b, c, d in road.elevation
     )
     signals = "".join(_signal(signal=sig) for sig in road.signals)
+    objects = "".join(_object(obj=obj) for obj in road.objects)
+    objects = f"<objects>{objects}</objects>" if objects else "<objects/>"
     sections = "".join(_lane_section(section=sec) for sec in road.lane_sections)
     return (
         f"<road {attrs}><link>{link}</link><type s=\"0.0\" type=\"town\"/>"
         f"<planView>{geometry}</planView>"
         f"<elevationProfile>{elevations}</elevationProfile><lateralProfile/>"
-        f"<lanes>{sections}</lanes><objects/><signals>{signals}</signals></road>"
+        f"<lanes>{sections}</lanes>{objects}<signals>{signals}</signals></road>"
     )
 
 

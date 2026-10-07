@@ -65,7 +65,8 @@ several `.xodr` files, or `trim_radius` without `center`, stop the run with exit
 | `simplify_max_iterations` | `1` | Attempts at fitting the size budget. |
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
 | `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing. (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
-| `verifier_timeout_s` | `300` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it. A run that reaches the cap records `timeout` and carries on. |
+| `verifier_timeout_s` | `0` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it (on large maps it takes minutes). A run that reaches the cap records `timeout` and carries on. |
+| `validation_profile` | `perfect` | Which validation profile the verdict uses: `perfect` (no fault of any kind) or `strict` (bounded faults); see "Validation" below. |
 
 ## Output files
 
@@ -112,29 +113,51 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 ### Validation
 
 After writing the outputs, the converter checks them and stores the verdict under `validation` in the
-conversion report. Every number comes from `map_quality.py` (the same metrics `map_report.py` records); the
-thresholds are in `map_validation.ValidationConfig`. They are proposals from the test corpus and are not yet
-ratified, so a failed check prints a `Validation:` warning and sets `status` to `warn`; the conversion still
-succeeds.
+conversion report. The checks run under two profiles, defined in `map_validation.PROFILES`:
 
-| Check | Fails when |
-|---|---|
-| `has_lanelets` | the `.osm` has no lanelets |
-| `routing_edge_pct` | fewer than 95% of lanelets have a predecessor, successor or neighbour in the routing graph |
-| `seam_handshake_pct` | fewer than 95% of the lanelet ends that meet share their nodes |
-| `crossed_fraction` | more than 2% of lanelets have an outline that folds or touches itself |
-| `traffic_light_stoplines` | the `.osm` has traffic-light ways but no traffic-light stoplines were written |
-| `stop_yield_stoplines` | the `.osm` has stop or yield sign ways (subtype `…206`/`…205`) but no stop/yield stoplines |
-| `lanelets_without_subtype` | any lanelet lacks a `subtype` |
-| `point_extent_m` | a point lies more than 20 km from the local origin |
-| `origin_in_range` | `lanelet_map_origin` is not a valid latitude/longitude |
+1. `perfect` (the default): no fault of any kind.
+2. `strict`: small, bounded faults are accepted.
 
-`verifier` holds the result of CommonRoad's map verifier (all formulas, report-only, never repairing): `status`
-(`ok`, `timeout`, `error` or `skipped`), whether the map was `partitioned` (above 200 lanelets), the run time,
-and per formula the number of invalid states with up to five example element ids. It runs in a separate
-process killed at `verifier_timeout_s`, on the CommonRoad network before boundary simplification; it is skipped for a
-trimmed map (`trim_radius`), whose checks judge only the trimmed outputs. A metric that raises fails its check;
-one with nothing to measure (no seams, say) passes.
+Both profiles are evaluated on every run. `status` (`pass` or `fail`) is that of `profile`, the one
+`validation_profile` chose, and `profiles` gives each profile's status and failed checks. A failed check prints a
+`Validation:` warning. A failed `perfect` verdict also says whether `strict` passes: if it does, convert with
+`validation_profile=strict` and review the listed faults by hand. A failed verdict never stops the conversion.
+
+| # | Check | `perfect` fails when | `strict` fails when |
+|---|---|---|---|
+| L1 | `has_lanelets` | the `.osm` has no lanelets | same |
+| L2 | `routing_edge_pct` | any lanelet has no predecessor, successor or neighbour in the routing graph | fewer than 95% have one |
+| L3 | `seam_handshake_pct` | any pair of meeting lanelet ends does not share its nodes | fewer than 95% share them |
+| L4 | `crossed_lanelets` | any lanelet outline folds or touches itself | at least 3 lanelets fold and they are more than 2% of all lanelets |
+| L5 | `traffic_light_stoplines` | any traffic light has no stopline | same |
+| L6 | `stop_yield_stoplines` | any stop or yield sign has no stopline | same |
+| L7 | `point_extent_m` | a point lies more than 100 km from the local origin | same |
+| L8 | `lanelets_without_subtype` | any lanelet lacks a `subtype` | same |
+| L9 | `origin_in_range` | `lanelet_map_origin` is not a valid latitude/longitude | same |
+
+The output metrics come from `map_quality.py` (the same metrics `map_report.py` records). A metric that raises
+fails its check; one with nothing to measure (no seams, say) passes.
+
+L5 and L6 count, inside `trim_radius` when it is set, every control the converter read. `controls` in the verdict
+lists those with no stopline by OpenDRIVE id:
+
+1. A traffic light needs a stopline row naming its id.
+2. A stop or yield sign needs a stopline. A sign can be a signal that the country's sign table reads as stop or
+   yield (`206`/`205` in Germany, `R1-1` in the USA, for example), or a `Stencil_STOP`, `Stencil_GiveWay` or
+   `Stencil_Yield_Triangles` object. Stoplines come only from stencils. A signal counts as covered when a
+   stencil stopline of the same kind lies within 10 m of it.
+
+`verifier` holds the result of CommonRoad's map verifier, which is off unless `verifier_timeout_s` is set. It
+runs all formulas, report-only and never repairing. The result has:
+
+1. `status`: `ok`, `timeout`, `error` or `skipped`.
+2. whether the map was `partitioned` (above 200 lanelets).
+3. the run time.
+4. per formula, the number of invalid states with up to five example element ids.
+
+The verifier does not change the verdict. It runs in a separate process killed at `verifier_timeout_s`, on the
+CommonRoad network before boundary simplification. It is skipped for a trimmed map (`trim_radius`), whose
+checks judge only the trimmed outputs.
 
 Coordinates: one local frame in metres for every output: the file's coordinates plus the header `<offset>`
 shift, minus the map centre for `utm` maps and for `tmerc` maps with a false easting/northing (which keeps

@@ -1,9 +1,11 @@
 """Self-validation of one conversion: threshold checks on its outputs plus the CommonRoad map verifier.
 
 ``convert_map.py`` runs :func:`validate` after writing the outputs and stores the :class:`Verdict` in
-``<map>_conversion_report.json``. Every number comes from :mod:`map_quality`; the thresholds live in
-:class:`ValidationConfig`. Until they are ratified (``ValidationConfig.ratified``), a failed check
-only warns.
+``<map>_conversion_report.json``. Two :data:`PROFILES` set the thresholds: ``perfect`` (the default,
+no fault of any kind) and ``strict`` (bounded faults). Every run is judged against both; the verdict
+is the chosen one's. The output metrics come from :mod:`map_quality`; whether each traffic light and
+stop/yield sign got a stopline (:class:`ControlCoverage`) comes from the converter, because the
+``.osm`` does not carry the OpenDRIVE ids of the controls.
 """
 
 from __future__ import annotations
@@ -22,29 +24,65 @@ import map_quality
 logger = logging.getLogger(__name__)
 
 VERIFIER_EXAMPLES = 5
+VERIFIER_PARTITION_ABOVE = 200
+LISTED_IDS = 10
 
 
-@dataclasses.dataclass(slots=True)
+@dataclasses.dataclass(slots=True, frozen=True)
 class ValidationConfig:
-    """Thresholds of the self-validation checks (proposed from the corpus, not yet ratified).
+    """Thresholds of the self-validation checks.
 
     Attributes:
         min_routing_edge_pct: Lowest share of lanelets with a routing edge.
         min_seam_handshake_pct: Lowest share of geometric seams whose end nodes are shared.
-        max_crossed_fraction: Highest share of lanelets whose outline folds or touches itself.
+        min_crossed_count: Crossed lanelets (outline folds or touches itself) fail the check only
+            from this many on ...
+        max_crossed_fraction: ... and only above this share of all lanelets.
         max_point_extent_m: Furthest a point may lie from the local origin.
         max_lanelets_without_subtype: Most lanelets allowed without a ``subtype`` tag.
-        verifier_partition_above: Partition the map verifier's work above this many lanelets.
-        ratified: Whether a failed check fails the verdict (``fail``) or only warns (``warn``).
     """
 
-    min_routing_edge_pct: float = 95.0
-    min_seam_handshake_pct: float = 95.0
-    max_crossed_fraction: float = 0.02
-    max_point_extent_m: float = 20_000.0
+    min_routing_edge_pct: float
+    min_seam_handshake_pct: float
+    min_crossed_count: int
+    max_crossed_fraction: float
+    max_point_extent_m: float = 100_000.0
     max_lanelets_without_subtype: int = 0
-    verifier_partition_above: int = 200
-    ratified: bool = False
+
+
+PROFILES = {
+    "perfect": ValidationConfig(
+        min_routing_edge_pct=100.0,
+        min_seam_handshake_pct=100.0,
+        min_crossed_count=1,
+        max_crossed_fraction=0.0,
+    ),
+    "strict": ValidationConfig(
+        min_routing_edge_pct=95.0,
+        min_seam_handshake_pct=95.0,
+        min_crossed_count=3,
+        max_crossed_fraction=0.02,
+    ),
+}
+DEFAULT_PROFILE = "perfect"
+
+
+@dataclasses.dataclass(slots=True)
+class ControlCoverage:
+    """The traffic lights and stop/yield signs in the converted area, and those without a stopline.
+
+    Attributes:
+        lights: Traffic lights (OpenDRIVE dynamic signals converted to lights).
+        lights_without_stopline: OpenDRIVE ids of the lights no stopline row names.
+        stop_yield_signs: Stop and yield signs: signals the sign tables read as STOP or YIELD, plus
+            stop/yield stencil objects.
+        signs_without_stopline: Those with no stopline, as ``"signal <id>"`` / ``"object <id>"``.
+    """
+
+    lights: int
+    lights_without_stopline: list[str]
+    stop_yield_signs: int
+    signs_without_stopline: list[str]
 
 
 @dataclasses.dataclass(slots=True)
@@ -63,29 +101,39 @@ class Verdict:
     """The outcome of :func:`validate`.
 
     Attributes:
-        status: ``pass``, ``warn`` (a check failed, thresholds not ratified) or ``fail``.
-        ratified: Whether the thresholds were ratified.
-        checks: Every check, passed or not.
+        status: ``pass`` or ``fail`` under ``profile``.
+        profile: The profile the verdict uses.
+        profiles: Per profile, its ``status`` and the names of its ``failed`` checks.
+        checks: Every check of ``profile``, passed or not.
+        controls: The lights and signs checked for stoplines.
         metric_errors: Metrics that raised, as ``"<Class>: <message>"``.
         verifier: The map verifier's result (see :func:`run_map_verifier`).
     """
 
     status: str
-    ratified: bool
+    profile: str
+    profiles: dict[str, dict[str, Any]]
     checks: list[Check]
+    controls: ControlCoverage
     metric_errors: dict[str, str]
     verifier: dict[str, Any]
 
 
-def evaluate(*, metrics: dict[str, Any], metric_errors: dict[str, str], config: ValidationConfig) -> list[Check]:
-    """The threshold checks over :func:`map_quality.compute_all` results.
+def evaluate(
+    *,
+    metrics: dict[str, Any],
+    metric_errors: dict[str, str],
+    controls: ControlCoverage,
+    config: ValidationConfig,
+) -> list[Check]:
+    """The threshold checks over :func:`map_quality.compute_all` results and ``controls``.
 
     A metric that raised (in ``metric_errors``) fails its check; one that returned ``None`` has nothing
     to measure (e.g. no seams) and passes.
     """
     checks = []
 
-    def add(*, name: str, metric: str, value: Any, limit: Any, passed: bool, detail: str) -> None:
+    def add(*, name: str, metric: Optional[str], value: Any, limit: Any, passed: bool, detail: str) -> None:
         if metric in metric_errors:
             value, passed, detail = None, False, f"metric failed: {metric_errors[metric]}"
         checks.append(Check(name=name, value=value, limit=limit, passed=passed, detail=detail))
@@ -97,14 +145,15 @@ def evaluate(*, metrics: dict[str, Any], metric_errors: dict[str, str], config: 
     def at_most(*, name: str, metric: str, value: Optional[float], limit: float, detail: str) -> None:
         add(name=name, metric=metric, value=value, limit=limit, passed=value is None or value <= limit, detail=detail)
 
-    def controls_have_stoplines(*, name: str, ways: int, stoplines: int, what: str) -> None:
+    def every_control(*, name: str, total: int, missing: list[str], what: str) -> None:
+        listed = ", ".join(missing[:LISTED_IDS]) + (", ..." if len(missing) > LISTED_IDS else "")
         add(
             name=name,
-            metric="sign_ways_vs_stoplines",
-            value=stoplines,
-            limit=1 if ways else 0,
-            passed=not ways or stoplines > 0,
-            detail=f"{ways} {what} ways in the .osm",
+            metric=None,
+            value=len(missing),
+            limit=0,
+            passed=not missing,
+            detail=f"{len(missing)} of {total} {what} have no stopline" + (f": {listed}" if missing else ""),
         )
 
     lanelets = metrics.get("lanelet_count")
@@ -120,25 +169,27 @@ def evaluate(*, metrics: dict[str, Any], metric_errors: dict[str, str], config: 
         detail="share of meeting lanelet ends that share their nodes",
     )
     crossed = metrics.get("crossed_geometry")
-    at_most(
-        name="crossed_fraction",
+    count = None if crossed is None else sum(crossed.values())
+    fraction = None if count is None or not lanelets else count / lanelets
+    add(
+        name="crossed_lanelets",
         metric="crossed_geometry",
-        value=None if crossed is None or not lanelets else sum(crossed.values()) / lanelets,
-        limit=config.max_crossed_fraction,
-        detail="share of lanelets whose outline folds or touches itself",
+        value=None if count is None else {"count": count, "fraction": fraction},
+        limit={"min_count": config.min_crossed_count, "max_fraction": config.max_crossed_fraction},
+        passed=count is None or count < config.min_crossed_count or (fraction or 0.0) <= config.max_crossed_fraction,
+        detail="lanelets whose outline folds or touches itself; fails at min_count or more above max_fraction",
     )
-    signs = metrics.get("sign_ways_vs_stoplines") or {}
-    controls_have_stoplines(
+    every_control(
         name="traffic_light_stoplines",
-        ways=signs.get("traffic_light_ways", 0),
-        stoplines=signs.get("light_stoplines", 0),
-        what="traffic-light",
+        total=controls.lights,
+        missing=controls.lights_without_stopline,
+        what="traffic lights",
     )
-    controls_have_stoplines(
+    every_control(
         name="stop_yield_stoplines",
-        ways=signs.get("stop_yield_sign_ways", 0),
-        stoplines=signs.get("sign_stoplines", 0),
-        what="stop/yield sign",
+        total=controls.stop_yield_signs,
+        missing=controls.signs_without_stopline,
+        what="stop/yield signs",
     )
     at_most(
         name="lanelets_without_subtype",
@@ -164,6 +215,29 @@ def evaluate(*, metrics: dict[str, Any], metric_errors: dict[str, str], config: 
         detail="lanelet_map_origin is a valid latitude/longitude",
     )
     return checks
+
+
+def outcome_message(*, profile: str, failed: dict[str, list[str]]) -> Optional[str]:
+    """The warning for a failed verdict, or ``None`` when ``profile`` passed.
+
+    Args:
+        profile: The chosen profile.
+        failed: Per profile, the names of its failed checks.
+    """
+    if not failed[profile]:
+        return None
+    message = f"Validation ({profile}) failed: {', '.join(failed[profile])}."
+    if profile == "perfect":
+        if failed["strict"]:
+            message += f" The strict profile fails too ({', '.join(failed['strict'])}): review the map by hand."
+        else:
+            message += (
+                " The strict profile passes: convert with validation_profile=strict to accept these faults,"
+                " and review them by hand."
+            )
+    else:
+        message += " Review the map by hand."
+    return message
 
 
 def run_map_verifier(*, lanelet_network: Optional[Any], timeout_s: float, partition_above: int) -> dict[str, Any]:
@@ -245,38 +319,54 @@ def _kill_process_group(*, pid: Optional[int]) -> None:
         pass
 
 
+
 def validate(
     *,
     map_dir: str,
     lanelet_network: Optional[Any],
+    controls: ControlCoverage,
     verifier_timeout_s: float,
-    config: Optional[ValidationConfig] = None,
+    profile: str = DEFAULT_PROFILE,
 ) -> Verdict:
-    """Check a converted map: :mod:`map_quality` metrics against ``config`` and the map verifier.
+    """Check a converted map: :mod:`map_quality` metrics and ``controls`` under every profile, and the map verifier.
 
     Args:
         map_dir: The conversion's output folder (with ``metadata.json``).
         lanelet_network: The CommonRoad lanelet network before boundary simplification (see
             :func:`run_map_verifier`); ``None`` skips the verifier (``convert_map`` passes ``None``
             for a trimmed map, whose untrimmed network the other checks do not judge).
+        controls: The lights and stop/yield signs and which of them got a stopline.
         verifier_timeout_s: Cap on the map verifier; ``0`` skips it.
-        config: Thresholds; the defaults when ``None``.
+        profile: The :data:`PROFILES` entry the verdict uses.
 
     Returns:
-        The verdict. Failed checks are logged as warnings.
+        The verdict. Its failed checks, and :func:`outcome_message`, are logged as warnings.
     """
-    config = config or ValidationConfig()
     outputs = map_quality.ConversionOutputs.load(map_dir=map_dir)
     metrics, errors = map_quality.compute_all(outputs=outputs)
-    checks = evaluate(metrics=metrics, metric_errors=errors, config=config)
-    failed = [c for c in checks if not c.passed]
-    for check in failed:
-        logger.warning(f"Validation: {check.name} = {check.value} (limit {check.limit}): {check.detail}")
+    checks = {
+        name: evaluate(metrics=metrics, metric_errors=errors, controls=controls, config=config)
+        for name, config in PROFILES.items()
+    }
+    failed = {name: [c.name for c in profile_checks if not c.passed] for name, profile_checks in checks.items()}
+    for check in checks[profile]:
+        if not check.passed:
+            logger.warning(f"Validation: {check.name} = {check.value} (limit {check.limit}): {check.detail}")
+    message = outcome_message(profile=profile, failed=failed)
+    if message is not None:
+        logger.warning(message)
     verifier = run_map_verifier(
         lanelet_network=lanelet_network,
         timeout_s=verifier_timeout_s,
-        partition_above=config.verifier_partition_above,
+        partition_above=VERIFIER_PARTITION_ABOVE,
     )
     logger.info(f"Map verifier: {verifier['status']} in {verifier['seconds']} s")
-    status = "pass" if not failed else ("fail" if config.ratified else "warn")
-    return Verdict(status=status, ratified=config.ratified, checks=checks, metric_errors=errors, verifier=verifier)
+    return Verdict(
+        status="fail" if failed[profile] else "pass",
+        profile=profile,
+        profiles={name: {"status": "fail" if names else "pass", "failed": names} for name, names in failed.items()},
+        checks=checks[profile],
+        controls=controls,
+        metric_errors=errors,
+        verifier=verifier,
+    )

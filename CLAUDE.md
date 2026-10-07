@@ -23,7 +23,7 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 - `opendrive_signal_groups.py` — reads the XODR's junction membership and controllers into `<map>_signal_groups.json` (called by `convert_map.py`; also a CLI).
 - `map_report.py`, `map_quality.py` — batch conversion report / comparison, and the quality metrics it records.
 - `conversion_common.py` — dependency-free helpers both `convert_map.py` and `map_report.py` use (file sha256, git identity, the refusal exit code 3).
-- `map_validation.py` — the validation stage: `ValidationConfig` thresholds (unratified, so checks only warn), `evaluate` over `map_quality` metrics, and `run_map_verifier` (CommonRoad `MapVerifier`, report-only, in a spawned child process group killed at `verifier_timeout_s`).
+- `map_validation.py` — the validation stage: `PROFILES` (`perfect`, the default, and `strict`) of `ValidationConfig` thresholds, `evaluate` over `map_quality` metrics plus `ControlCoverage` (per-light and per-sign stoplines, counted by `convert_map.control_coverage` because the `.osm` has no OpenDRIVE ids), and `run_map_verifier` (CommonRoad `MapVerifier`, report-only, off by default, in a spawned child process group killed at `verifier_timeout_s`).
 - `conversion_report.py` — the `logging.Handler` `convert_map` attaches to `crdesigner.degradation`; writes `<map>_conversion_report.json` (element counts, unrecognised tokens, every record), also for failed runs.
 - `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers.
 - `convert_lanelet_to_opendrive.py` — reverse direction via CARLA's tools.
@@ -52,11 +52,11 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then `parse_geo_reference` (pyproj; `tmerc` and `utm`) and the header `<offset>`, combined in one `CustomTransfomer` local frame; no geo-reference → origin (0, 0) with a warning; a present but unusable one raises `InputError` unless `allow_zero_origin`.
 3. `export_osm` — `Network.load_opendrive` → `Network.export_lanelet_network` builds a CommonRoad lanelet network in the OpenDRIVE inertial frame (`filter_types`: `driving`, `onRamp`, `offRamp`, `exit`, `entry`), simplified, then `CR2LaneletConverter` (`crdesigner/map_conversion/lanelet2/cr2lanelet.py`) with a `CustomTransfomer` wrapping a Lanelet2 `UtmProjector` writes `<map>.osm`.
 4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).
-5. `extract_stoplines` — `traffic_light.iai_stoplines` from each traffic light, plus `Network._iai_stop_signs` / `_iai_yield_signs`, trim-filtered → `<map>_stoplines.json`; then `write_signal_groups` → `<map>_signal_groups.json`.
+5. `extract_stoplines` — `traffic_light.iai_stoplines` from each traffic light, plus `Network._iai_stop_signs` / `_iai_yield_signs`, trim-filtered → `<map>_stoplines.json`; `control_coverage` counts the lights and stop/yield signs without a stopline; then `write_signal_groups` → `<map>_signal_groups.json`.
 6. `build_mesh` — `torchdrivesim.lanelet2.road_mesh_from_lanelet_map` / `lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
 7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
 
-8. `map_validation.validate` — reloads the outputs (`map_quality.ConversionOutputs`), checks the metrics against `ValidationConfig` and runs the map verifier on the exported CommonRoad network; the `Verdict` goes into the conversion report.
+8. `map_validation.validate` — reloads the outputs (`map_quality.ConversionOutputs`), checks the metrics and control coverage under every profile (the verdict is `validation_profile`'s) and, when `verifier_timeout_s` > 0, runs the map verifier on the exported CommonRoad network; the `Verdict` goes into the conversion report.
 
 Around stages 2–8, `convert_map` collects the `crdesigner.degradation` records (`conversion_report.attach`) and writes `<map>_conversion_report.json` whether the stages succeed or raise.
 
@@ -71,7 +71,7 @@ These are the names/files that diverge from upstream. Search for them when chang
 - `crdesigner/map_conversion/common/conversion_lanelet_network.py` — `check_concatenation_potential` never concatenates bidirectional lanelets. `convert_map.bidirectional_fixes` drops the OpenDRIVE conversion's wrong links around them.
 - `crdesigner/map_conversion/opendrive/odr2cr/opendrive_conversion/plane_elements/` — elevation: `Border.calc_elevation` follows the reference chain, `ParametricLane.calc_elevation` (reversed lanes) and `ParametricLaneGroup.calc_elevation` (merge/split mirroring).
 - Vendored code reports degradations through `logging.getLogger("crdesigner.degradation")` with `extra={kind, element, id, value, action}` (no IAI imports inside `crdesigner/`); `conversion_report.py` documents the kinds. Degrade-and-record sites: `opendrive_parser/parser.py` (decimal commas normalised as the XML is read; `parse_float`/`parse_required_float` raise `UnparseableNumber`, caught per record by `_dropped_on_error` and per road, signal, object and junction; a bad or unknown `<geometry>` (`UnknownGeometry`) drops its road because `PlanView` places records by summed length; speed unit, contactPoint), the element setters in `opendrive_parser/elements/` (lane and object type, signal `dynamic`/`orientation`, object orientation), `plane_elements/traffic_signals.py` (a country without a sign table → `ZAM`) and `plane_group.convert_line_marking` (unmapped road marks).
-- Custom attributes on upstream objects: `iai_stoplines`, `_iai_stop_signs`, `_iai_yield_signs`, `opendrive_id`. Grep for `iai_` inside `crdesigner/` to find where they're attached.
+- Custom attributes on upstream objects: `iai_stoplines`, `_iai_stop_signs`, `_iai_yield_signs`, `opendrive_id` (traffic lights and signs). Grep for `iai_` inside `crdesigner/` to find where they're attached.
 - `git diff master -- crdesigner/` (or whatever the upstream-tracking branch is) is the authoritative way to enumerate IAI deltas.
 
 ## Dependencies worth knowing

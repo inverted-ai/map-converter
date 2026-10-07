@@ -159,6 +159,7 @@ def assign_traffic_signals_to_road(
                 position=position,
                 virtual=False,
             )
+            traffic_sign.opendrive_id = signal.id
 
             road.add_traffic_sign((traffic_sign, lanes, signal.s))
             traffic_signs.append(traffic_sign)

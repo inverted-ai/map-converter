@@ -55,6 +55,9 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_VISUALIZATION_FOV = 800.0
 FOV_MARGIN = 1.05
+SIGN_AGENT_TYPES = {'STOP': 'stop_sign', 'YIELD': 'yield_sign'}  # sign-table element names -> stopline agent_type
+# CARLA paints a stop/yield stencil a few metres from its sign, rarely on the sign's own road.
+SIGN_STENCIL_MATCH_M = 10.0
 PROVENANCE_PACKAGES = (
     'torchdrivesim', 'torch', 'lanelet2', 'commonroad-io', 'numpy', 'lxml', 'pyproj', 'shapely', 'omegaconf',
 )
@@ -89,7 +92,9 @@ class MapConversionConfig:
             latitude/longitude (0, 0) instead of failing. A map with no ``<geoReference>`` always
             converts at (0, 0), with a warning.
         verifier_timeout_s: Cap (s) on the CommonRoad map verifier the validation stage runs; 0
-            skips it. A run that hits the cap records ``timeout`` and continues.
+            (the default) skips it. A run that hits the cap records ``timeout`` and continues.
+        validation_profile: The ``map_validation.PROFILES`` entry the verdict uses: ``perfect``
+            (no fault of any kind) or ``strict`` (bounded faults). Both are always evaluated.
     """
 
     dir_path: Optional[str] = None
@@ -106,7 +111,8 @@ class MapConversionConfig:
     simplify_max_iterations: int = 1
     simplify_tolerance_factor: float = 2.0
     allow_zero_origin: bool = False
-    verifier_timeout_s: float = 300.0
+    verifier_timeout_s: float = 0.0
+    validation_profile: str = map_validation.DEFAULT_PROFILE
 
 
 @dataclasses.dataclass
@@ -487,8 +493,9 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
 
     Raises:
         ConfigError: neither or both of ``dir_path`` and ``xodr_path``, ``trim_radius`` without
-            ``center``, ``xodr_path`` not an existing ``.xodr`` file, or ``dir_path`` not holding
-            exactly one ``.xodr``.
+            ``center``, a negative ``verifier_timeout_s``, an unknown ``validation_profile``,
+            ``xodr_path`` not an existing ``.xodr`` file, or ``dir_path`` not holding exactly one
+            ``.xodr``.
     """
     if (cfg.dir_path is None) == (cfg.xodr_path is None):
         raise ConfigError('give exactly one of dir_path and xodr_path')
@@ -496,6 +503,10 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError('trim_radius requires center')
     if cfg.verifier_timeout_s < 0:
         raise ConfigError('verifier_timeout_s must be 0 (skip the verifier) or positive')
+    if cfg.validation_profile not in map_validation.PROFILES:
+        raise ConfigError(
+            f'validation_profile must be one of {", ".join(map_validation.PROFILES)}, not {cfg.validation_profile!r}'
+        )
     if cfg.xodr_path is not None:
         if not (cfg.xodr_path.endswith('.xodr') and os.path.isfile(cfg.xodr_path)):
             raise ConfigError(f'xodr_path {os.path.abspath(cfg.xodr_path)} is not an existing .xodr file')
@@ -680,6 +691,16 @@ def trim(*, cfg: MapConversionConfig, osm_path: str, projector) -> None:
         lanelet2.io.write(osm_path, trimmed_map, projector)
 
 
+def _within_trim(*, cfg: MapConversionConfig, x: float, y: float, z: Optional[float] = None) -> bool:
+    """Whether a local point survives ``trim_radius`` around ``center`` and, given ``z``, ``trim_vertical_limits``."""
+    if cfg.center is not None and cfg.trim_radius is not None:
+        if (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 > cfg.trim_radius ** 2:
+            return False
+    return z is None or cfg.trim_vertical_limits is None or (
+        cfg.trim_vertical_limits[0] <= z <= cfg.trim_vertical_limits[1]
+    )
+
+
 def extract_stoplines(
     *,
     cfg: MapConversionConfig,
@@ -706,16 +727,7 @@ def extract_stoplines(
             center = (left + right) / 2
             right_to_left = left - right
             x, y, z = float(center[0]), float(center[1]), float(center[2])
-
-            include_stopline = True
-            if cfg.center is not None and cfg.trim_radius is not None:
-                within_radius = (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 <= cfg.trim_radius ** 2
-                include_stopline = include_stopline and within_radius
-            if cfg.trim_vertical_limits is not None:
-                within_limits = cfg.trim_vertical_limits[0] <= z <= cfg.trim_vertical_limits[1]
-                include_stopline = include_stopline and within_limits
-
-            if include_stopline:
+            if _within_trim(cfg=cfg, x=x, y=y, z=z):
                 stopline = Stopline(
                     actor_id=opendrive_id, agent_type=agent_type, x=float(center[0]), y=float(center[1]),
                     length=1.0, width=float(np.linalg.norm(left - right)),
@@ -731,16 +743,7 @@ def extract_stoplines(
         else:
             z = 0.0
         x, y = (float(v) for v in frame.to_local(xy[0], xy[1]))
-
-        include_stopline = True
-        if cfg.center is not None and cfg.trim_radius is not None:
-            within_radius = (x - cfg.center[0]) ** 2 + (y - cfg.center[1]) ** 2 <= cfg.trim_radius ** 2
-            include_stopline = include_stopline and within_radius
-        if cfg.trim_vertical_limits is not None:
-            within_limits = cfg.trim_vertical_limits[0] <= z <= cfg.trim_vertical_limits[1]
-            include_stopline = include_stopline and within_limits
-
-        if include_stopline:
+        if _within_trim(cfg=cfg, x=x, y=y, z=z):
             stopline = Stopline(
                 actor_id=opendrive_id, agent_type=agent_type, x=x, y=y,
                 length=float(length), width=float(width), orientation=float(orientation),
@@ -751,6 +754,61 @@ def extract_stoplines(
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
         json.dump(stoplines, f, indent=4)
     return stoplines_path
+
+
+def control_coverage(
+    *,
+    cfg: MapConversionConfig,
+    road_network: Network,
+    frame: CustomTransfomer,
+    stoplines_path: str,
+) -> map_validation.ControlCoverage:
+    """Which traffic lights and stop/yield signs inside ``trim_radius`` got at least one stopline row.
+
+    A light is covered by a row naming its OpenDRIVE id, and a stop/yield stencil by its own row. A
+    sign signal never writes a row (sign stoplines come only from stencils), so it counts as covered
+    by a row of its kind within :data:`SIGN_STENCIL_MATCH_M` of it.
+    """
+    with open(stoplines_path) as f:
+        rows = json.load(f)
+    written = {(row['agent_type'], str(row['actor_id'])) for row in rows}
+
+    def local(position) -> np.ndarray:
+        return np.array(frame.to_local(position[0], position[1]))
+
+    def in_area(position, z: Optional[float] = None) -> bool:
+        x, y = local(position)
+        return _within_trim(cfg=cfg, x=x, y=y, z=z)
+
+    lights = sorted(
+        {str(light.opendrive_id) for light in road_network._traffic_lights if in_area(light.position)}
+    )
+    signs, missing = 0, []
+    for agent_type, stencils in (('stop_sign', road_network._iai_stop_signs), ('yield_sign', road_network._iai_yield_signs)):
+        for xy, _, _, _, object_id in stencils:
+            if in_area(xy, z=float(xy[2]) if len(xy) > 2 else 0.0):  # the same test extract_stoplines applies
+                signs += 1
+                if (agent_type, str(object_id)) not in written:
+                    missing.append(f'object {object_id}')
+    stencil_rows = {
+        agent_type: np.array([[row['x'], row['y']] for row in rows if row['agent_type'] == agent_type]).reshape(-1, 2)
+        for agent_type in SIGN_AGENT_TYPES.values()
+    }
+    for sign in road_network._traffic_signs:
+        names = {element.traffic_sign_element_id.name for element in sign.traffic_sign_elements}
+        agent_type = next((SIGN_AGENT_TYPES[name] for name in sorted(names) if name in SIGN_AGENT_TYPES), None)
+        if agent_type is None or not in_area(sign.position):
+            continue
+        signs += 1
+        distances = np.linalg.norm(stencil_rows[agent_type] - local(sign.position), axis=1)
+        if not (distances <= SIGN_STENCIL_MATCH_M).any():
+            missing.append(f'signal {sign.opendrive_id}')
+    return map_validation.ControlCoverage(
+        lights=len(lights),
+        lights_without_stopline=[i for i in lights if ('traffic_light', i) not in written],
+        stop_yield_signs=signs,
+        signs_without_stopline=sorted(missing),
+    )
 
 
 def build_mesh(*, cfg: MapConversionConfig, location: str, osm_path: str, projector) -> BuiltMesh:
@@ -945,6 +1003,12 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map
         road_network=exported.road_network,
         frame=parsed.frame,
     )
+    controls = control_coverage(
+        cfg=cfg,
+        road_network=exported.road_network,
+        frame=parsed.frame,
+        stoplines_path=stoplines_path,
+    )
     write_signal_groups(
         xodr_path=opendrive_path, out_path=os.path.join(cfg.dir_path, f"{parsed.location}_signal_groups.json")
     )
@@ -963,7 +1027,9 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map
     verdict = map_validation.validate(
         map_dir=cfg.dir_path,
         lanelet_network=exported.unsimplified_network,
+        controls=controls,
         verifier_timeout_s=cfg.verifier_timeout_s,
+        profile=cfg.validation_profile,
     )
     logger.info(f'Validation: {verdict.status}')
     return os.path.abspath(exported.osm_path), verdict

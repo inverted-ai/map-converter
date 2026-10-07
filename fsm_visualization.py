@@ -5,7 +5,8 @@ the same ``torchdrivesim`` path that ``convert_map.py`` uses for ``visualization
 overlays the FSM tool's output so a human can verify the automatic grouping at a glance:
 
   * stoplines are drawn as markers coloured by their phase subgroup,
-  * a dashed grey convex-hull outline marks each intersection's membership,
+  * a dashed grey convex-hull outline marks each intersection's membership, labelled with its
+    index and grouping certainty (``*`` marks topology-refined intersections),
   * each traffic-light ``actor_id`` is labelled.
 
 For large maps the birdview is rendered as a grid of square tiles and stitched into one image,
@@ -295,7 +296,7 @@ def draw_overlays(
 
         hull_top = min(hull, key=lambda p: p[1])
         _text_with_halo(draw, xy=(hull_top[0], hull_top[1] - config.font_size - 4),
-                        text=f"#{index}", font=font)
+                        text=f"#{index} {result.certainty:.2f}{'*' if result.topology_refined else ''}", font=font)
 
         single = len(groups) == 1
         for phase, group in enumerate(groups):

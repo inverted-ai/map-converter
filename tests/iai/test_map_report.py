@@ -158,6 +158,7 @@ def test_run_records_outcomes(two_runs):
     assert good["fsm"]["lights"] == 2
     assert good["fsm"]["junction_seeded_intersections"] >= 1
     assert good["fsm"]["unassigned_lights"] == 0
+    assert isinstance(good["fsm"]["flagged"], int)
     assert bad["conversion"]["outcome"] == "exception"
     assert bad["conversion"]["exception"] == "ValueError"
     assert bad["conversion"]["location"].startswith("crdesigner/map_conversion/opendrive/odr2cr/opendrive_parser/")

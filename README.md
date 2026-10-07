@@ -107,7 +107,17 @@ clustered by distance and may join a nearby junction's intersection; they are li
 lacking data for the requested level uses the next lower one.
 
 It also writes `<map>_fsm_review.json`: per intersection, its junction, the level actually used, its lights and
-phase groups, plus the lights no junction claims.
+phase groups, and how certain the grouping is, plus the lights no junction claims. `certainty` is the lower of two
+parts in [0, 1]:
+
+1. `spatial`: distance to the nearest other intersection, divided by twice `--cluster-eps` (1.0 when an XODR
+   junction declares the membership).
+2. `axis`: how cleanly the two phase groups' stopline directions separate (1.0 for one group, or when XODR
+   controllers declare the groups).
+
+`reason` names the limiting part (`spatial` or `axis`), or is `clear` (1.0) or `declared` (levels B and C).
+`topology_refined` marks intersections split by lanelet topology. `flagged` lists the intersections below
+`--review-threshold` (default 0.7) for a human to check. The controller file is unchanged.
 
 To add `<map>_signal_groups.json` to a map converted before this file existed:
 
@@ -127,6 +137,7 @@ usage: traffic_light_fsm.py [-h] [--cluster-eps CLUSTER_EPS]
                             [--green-per-extra-lane GREEN_PER_EXTRA_LANE] [--green-min GREEN_MIN]
                             [--green-max GREEN_MAX] [--yellow YELLOW] [--all-red ALL_RED]
                             [--certainty-threshold CERTAINTY_THRESHOLD]
+                            [--review-threshold REVIEW_THRESHOLD]
                             [--topology-max-hops TOPOLOGY_MAX_HOPS] [--no-topology]
                             [--xodr-junctions | --no-xodr-junctions]
                             [--xodr-groups | --no-xodr-groups]
@@ -161,6 +172,8 @@ options:
   --yellow YELLOW
   --all-red ALL_RED
   --certainty-threshold CERTAINTY_THRESHOLD
+  --review-threshold REVIEW_THRESHOLD
+                        Flag intersections below this certainty in <map>_fsm_review.json
   --topology-max-hops TOPOLOGY_MAX_HOPS
   --no-topology         Disable lanelet topology refinement
   --xodr-junctions, --no-xodr-junctions
@@ -183,7 +196,8 @@ options:
 ```
 
 `fsm_visualization.py` renders the whole map with each intersection's phase groups coloured, for review
-(also available as `traffic_light_fsm.py --visualize`):
+(also available as `traffic_light_fsm.py --visualize`). Each intersection is labelled `#<index> <certainty>`,
+with `*` when topology split it:
 
 ```bash
 /path/to/map-converter/.venv/bin/python /path/to/map-converter/fsm_visualization.py /path/to/maps/MyMap

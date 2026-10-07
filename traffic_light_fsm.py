@@ -53,6 +53,8 @@ class FsmConfig:
         yellow: Yellow duration (seconds).
         all_red: All-red clearance duration (seconds) between phases.
         certainty_threshold: Below this, an intersection is refined with lanelet topology.
+        review_threshold: Below this, an intersection is flagged for review in
+            ``<map>_fsm_review.json``.
         topology_max_hops: Hops over the routing graph when testing shared-junction links.
         use_xodr_junctions: Keep each OpenDRIVE junction's lights in one intersection (needs the
             ``<map>_signal_groups.json`` sidecar). Off: distance clustering only.
@@ -70,6 +72,7 @@ class FsmConfig:
     yellow: float = 5.0
     all_red: float = 3.0
     certainty_threshold: float = 0.5
+    review_threshold: float = 0.7
     topology_max_hops: int = 3
     use_xodr_junctions: bool = True
     use_xodr_groups: bool = False
@@ -366,6 +369,25 @@ def build_fsm(*, groups: list[list[int]], actors: list[Actor], config: FsmConfig
 # --------------------------------------------------------------------------------------
 
 
+def spatial_certainty(*, all_centroids: np.ndarray, centroid_index: int, config: FsmConfig) -> float:
+    """Separation from the nearest other intersection, in ``[0, 1]`` (1 at ``2 * cluster_eps`` or more)."""
+    if len(all_centroids) <= 1:
+        return 1.0
+    dists = np.linalg.norm(all_centroids - all_centroids[centroid_index], axis=1)
+    dists[centroid_index] = np.inf
+    return min(1.0, float(dists.min()) / (2.0 * config.cluster_eps))
+
+
+def axis_certainty(*, groups: list[list[int]], actors: list[Actor], config: FsmConfig) -> float:
+    """How cleanly two phase groups' axes separate, in ``[0, 1]`` (1 for a single group)."""
+    if len(groups) != 2:
+        return 1.0
+    means = [_circular_mean_mod_pi(angles=np.array([actors[i].axis for i in g])) for g in groups]
+    between = _axis_distance(a=means[0], b=means[1])
+    within = max(_axis_distance(a=actors[i].axis, b=mean) for g, mean in zip(groups, means) for i in g)
+    return min(1.0, between / (within + config.axis_split_threshold))
+
+
 def intersection_certainty(
     *,
     intersection: list[int],
@@ -377,35 +399,13 @@ def intersection_certainty(
 ) -> float:
     """Score in ``[0, 1]`` for how confidently geometry resolved this intersection.
 
-    Combines (via min) spatial separation from the nearest other intersection and the
-    quality of the axis split. Low scores flag candidates for topology refinement.
+    The lower of :func:`spatial_certainty` and :func:`axis_certainty`. Low scores flag
+    candidates for topology refinement.
     """
-    spatial = 1.0
-    if len(all_centroids) > 1:
-        deltas = all_centroids - all_centroids[centroid_index]
-        dists = np.linalg.norm(deltas, axis=1)
-        dists[centroid_index] = np.inf
-        nearest = float(dists.min())
-        spatial = min(1.0, nearest / (2.0 * config.cluster_eps))
-
-    axis_quality = 1.0
-    if len(groups) == 2:
-        axes0 = [actors[i].axis for i in groups[0]]
-        axes1 = [actors[i].axis for i in groups[1]]
-        mean0 = _circular_mean_mod_pi(angles=np.array(axes0))
-        mean1 = _circular_mean_mod_pi(angles=np.array(axes1))
-        between = _axis_distance(a=mean0, b=mean1)
-        within = max(
-            (_axis_distance(a=actors[i].axis, b=mean0) for i in groups[0]),
-            default=0.0,
-        )
-        within = max(
-            within,
-            max((_axis_distance(a=actors[i].axis, b=mean1) for i in groups[1]), default=0.0),
-        )
-        axis_quality = min(1.0, between / (within + config.axis_split_threshold))
-
-    return min(spatial, axis_quality)
+    return min(
+        spatial_certainty(all_centroids=all_centroids, centroid_index=centroid_index, config=config),
+        axis_certainty(groups=groups, actors=actors, config=config),
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -506,12 +506,33 @@ class IntersectionResult:
         groups: Ordered phase groups (indices into the actor list).
         junction: OpenDRIVE junction id the intersection was seeded from, or ``None``.
         level: XODR structure actually used: ``off``, ``junctions``, ``groups`` or ``sequence``.
+        spatial: :func:`spatial_certainty` among the final intersections; 1.0 when an XODR
+            junction declares the membership.
+        axis: :func:`axis_certainty` of the phase groups; 1.0 when XODR controllers declare them.
+        topology_refined: Split out of a low-certainty intersection by lanelet topology.
     """
 
     actors: list[int]
     groups: list[list[int]]
     junction: Optional[str]
     level: str
+    spatial: float = 1.0
+    axis: float = 1.0
+    topology_refined: bool = False
+
+    @property
+    def certainty(self) -> float:
+        """The lower of the spatial and axis parts."""
+        return min(self.spatial, self.axis)
+
+    @property
+    def reason(self) -> str:
+        """``declared`` when XODR fixes both parts, ``clear`` at 1.0, else the limiting part."""
+        if self.level in (LEVEL_GROUPS, LEVEL_SEQUENCE):
+            return "declared"
+        if self.certainty >= 1.0:
+            return "clear"
+        return "spatial" if self.spatial <= self.axis else "axis"
 
 
 def effective_xodr_levels(*, config: FsmConfig) -> FsmConfig:
@@ -606,10 +627,10 @@ def resolve_intersection_groups(
         [np.mean([actors[i].center for i in inter], axis=0) for inter in intersections]
     ) if intersections else np.empty((0, 2))
 
-    resolved: list[list[int]] = []
+    resolved: list[tuple[list[int], bool]] = []  # (intersection, topology_refined)
     for idx, inter in enumerate(intersections):
         if _junction_of(intersection=inter, actors=actors, membership=membership) is not None:
-            resolved.append(inter)
+            resolved.append((inter, False))
             continue
         groups = group_actors(intersection=inter, actors=actors, config=config)
         certainty = intersection_certainty(
@@ -628,7 +649,8 @@ def resolve_intersection_groups(
                 config.certainty_threshold,
             )
             resolved.extend(
-                refine_intersection_with_topology(
+                (part, True)
+                for part in refine_intersection_with_topology(
                     intersection=inter, actors=actors, topology=topology, config=config
                 )
             )
@@ -641,10 +663,11 @@ def resolve_intersection_groups(
                     certainty,
                     config.certainty_threshold,
                 )
-            resolved.append(inter)
+            resolved.append((inter, False))
 
+    final_centroids = np.array([np.mean([actors[i].center for i in inter], axis=0) for inter, _ in resolved])
     results = []
-    for inter in resolved:
+    for idx, (inter, refined) in enumerate(resolved):
         junction = _junction_of(intersection=inter, actors=actors, membership=membership)
         groups, level = None, LEVEL_OFF
         if junction is not None:
@@ -655,7 +678,21 @@ def resolve_intersection_groups(
                 )
         if groups is None:
             groups = group_actors(intersection=inter, actors=actors, config=config)
-        results.append(IntersectionResult(actors=inter, groups=groups, junction=junction, level=level))
+        results.append(
+            IntersectionResult(
+                actors=inter,
+                groups=groups,
+                junction=junction,
+                level=level,
+                spatial=1.0
+                if junction is not None
+                else spatial_certainty(all_centroids=final_centroids, centroid_index=idx, config=config),
+                axis=1.0
+                if level in (LEVEL_GROUPS, LEVEL_SEQUENCE)
+                else axis_certainty(groups=groups, actors=actors, config=config),
+                topology_refined=refined,
+            )
+        )
     unassigned = unassigned_light_ids(actors=actors, membership=membership)
     if unassigned:
         placed = {actors[i].actor_id: r.junction for r in results for i in r.actors}
@@ -665,6 +702,11 @@ def resolve_intersection_groups(
             ", ".join(f"{aid}->{placed[aid] or 'own intersection'}" for aid in unassigned),
         )
     return results
+
+
+def flagged_intersections(*, resolved: list[IntersectionResult], config: FsmConfig) -> list[int]:
+    """Indices of the intersections whose certainty is below ``config.review_threshold``."""
+    return [i for i, r in enumerate(resolved) if r.certainty < config.review_threshold]
 
 
 def generate_fsms(
@@ -793,11 +835,26 @@ def write_review(
     signal_groups_path: Optional[str],
     signal_groups: Optional[dict],
 ) -> str:
-    """Write ``<map>_fsm_review.json``: per intersection, its lights, phase groups and XODR level used.
+    """Write ``<map>_fsm_review.json``: per intersection, its lights, phase groups, XODR level and certainty.
 
-    Also lists the lights no XODR junction claims (placed by distance), when junctions are in use.
+    ``flagged`` repeats the intersections below ``config.review_threshold``. Also lists the lights no
+    XODR junction claims (placed by distance), when junctions are in use.
     """
     levels = effective_xodr_levels(config=config)
+    intersections = [
+        {
+            "junction": r.junction,
+            "level": r.level,
+            "lights": sorted(actors[i].actor_id for i in r.actors),
+            "groups": [sorted(actors[i].actor_id for i in g) for g in r.groups],
+            "certainty": round(r.certainty, 3),
+            "spatial": round(r.spatial, 3),
+            "axis": round(r.axis, 3),
+            "reason": r.reason,
+            "topology_refined": r.topology_refined,
+        }
+        for r in resolved
+    ]
     review = {
         "levels_requested": {
             "use_xodr_junctions": levels.use_xodr_junctions,
@@ -808,14 +865,10 @@ def write_review(
         "unassigned_lights": unassigned_light_ids(
             actors=actors, membership=xodr_membership(signal_groups=signal_groups, levels=levels)
         ) if signal_groups is not None and levels.use_xodr_junctions else None,
-        "intersections": [
-            {
-                "junction": r.junction,
-                "level": r.level,
-                "lights": sorted(actors[i].actor_id for i in r.actors),
-                "groups": [sorted(actors[i].actor_id for i in g) for g in r.groups],
-            }
-            for r in resolved
+        "review_threshold": config.review_threshold,
+        "intersections": intersections,
+        "flagged": [
+            {"index": i, **intersections[i]} for i in flagged_intersections(resolved=resolved, config=config)
         ],
     }
     path = os.path.join(map_dir, f"{location}_fsm_review.json")
@@ -837,6 +890,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yellow", type=float, default=d.yellow)
     parser.add_argument("--all-red", type=float, default=d.all_red)
     parser.add_argument("--certainty-threshold", type=float, default=d.certainty_threshold)
+    parser.add_argument(
+        "--review-threshold",
+        type=float,
+        default=d.review_threshold,
+        help="Flag intersections below this certainty in <map>_fsm_review.json",
+    )
     parser.add_argument("--topology-max-hops", type=int, default=d.topology_max_hops)
     parser.add_argument("--no-topology", action="store_true", help="Disable lanelet topology refinement")
     parser.add_argument(
@@ -896,6 +955,7 @@ def main() -> None:
         yellow=args.yellow,
         all_red=args.all_red,
         certainty_threshold=args.certainty_threshold,
+        review_threshold=args.review_threshold,
         topology_max_hops=args.topology_max_hops,
         use_xodr_junctions=args.xodr_junctions,
         use_xodr_groups=args.xodr_groups,

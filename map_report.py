@@ -313,7 +313,7 @@ def fsm_summary(*, controller_path: str) -> dict[str, Any]:
 
 
 def fsm_review_summary(*, review_path: str) -> dict[str, Any]:
-    """Per-level intersection counts and unassigned lights from ``<map>_fsm_review.json``."""
+    """Per-level intersection counts, unassigned lights and flagged intersections from ``<map>_fsm_review.json``."""
     with open(review_path) as f:
         review = json.load(f)
     levels = collections.Counter(i["level"] for i in review["intersections"])
@@ -322,6 +322,7 @@ def fsm_review_summary(*, review_path: str) -> dict[str, Any]:
         "levels": dict(sorted(levels.items())),
         "junction_seeded_intersections": sum(n for level, n in levels.items() if level != "off"),
         "unassigned_lights": None if unassigned is None else len(unassigned),
+        "flagged": len(review.get("flagged", [])),
     }
 
 

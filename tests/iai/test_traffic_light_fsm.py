@@ -1,5 +1,6 @@
 """Tests for the standalone traffic-light FSM generator (``traffic_light_fsm.py``)."""
 
+import json
 import math
 import os
 
@@ -368,3 +369,109 @@ def test_no_light_is_dropped_at_any_level(town15_signal_groups):
     ):
         resolved = t.resolve_intersection_groups(actors=actors, config=config, signal_groups=town15_signal_groups)
         assert sorted(i for r in resolved for g in r.groups for i in g) == list(range(len(actors)))
+
+
+# --------------------------------------------------------------------------------------
+# Certainty and the review file
+# --------------------------------------------------------------------------------------
+
+
+def _four_way(*, first_id: int, x: float) -> list[t.Actor]:
+    return [
+        _actor(actor_id=first_id, x=x - 5, y=0, axis=0.0),
+        _actor(actor_id=first_id + 1, x=x + 5, y=0, axis=0.0),
+        _actor(actor_id=first_id + 2, x=x, y=-5, axis=math.pi / 2),
+        _actor(actor_id=first_id + 3, x=x, y=5, axis=math.pi / 2),
+    ]
+
+
+def test_clean_four_way_is_certain_and_not_flagged():
+    actors = _four_way(first_id=1, x=0)
+    [result] = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(use_xodr_junctions=False))
+    assert result.certainty == 1.0
+    assert not result.topology_refined
+    assert t.flagged_intersections(resolved=[result], config=t.FsmConfig()) == []
+
+
+def test_intersection_near_another_is_flagged_for_spacing():
+    # Centres 62 m apart (nearest lights 52 m, beyond eps 50 m): separate, spatial part 0.62.
+    actors = _four_way(first_id=1, x=0) + _four_way(first_id=11, x=62)
+    resolved = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(use_xodr_junctions=False))
+    assert [round(r.spatial, 2) for r in resolved] == [0.62, 0.62]
+    assert {r.reason for r in resolved} == {"spatial"}
+    assert t.flagged_intersections(resolved=resolved, config=t.FsmConfig()) == [0, 1]
+
+
+def test_ambiguous_axes_are_flagged_for_the_axis_split():
+    # The least clear split four lights can give under the default split threshold scores ~0.83.
+    actors = [
+        _actor(actor_id=1, x=-5, y=0, axis=1.3),
+        _actor(actor_id=2, x=5, y=0, axis=1.8),
+        _actor(actor_id=3, x=0, y=-5, axis=1.9),
+        _actor(actor_id=4, x=0, y=5, axis=2.4),
+    ]
+    config = t.FsmConfig(use_xodr_junctions=False, review_threshold=0.9)
+    [result] = t.resolve_intersection_groups(actors=actors, config=config)
+    assert len(result.groups) == 2
+    assert round(result.axis, 2) == 0.83
+    assert result.reason == "axis"
+    assert t.flagged_intersections(resolved=[result], config=config) == [0]
+
+
+def test_declared_phase_groups_score_one():
+    actors = _four_way(first_id=1, x=0) + _four_way(first_id=11, x=62)
+    groups = _signal_groups(
+        membership={str(a.actor_id): ("A" if a.actor_id < 10 else "B") for a in actors},
+        controllers=[
+            {"id": "a1", "signal_ids": ["1", "2"]},
+            {"id": "a2", "signal_ids": ["3", "4"]},
+            {"id": "b1", "signal_ids": ["11", "12"]},
+            {"id": "b2", "signal_ids": ["13", "14"]},
+        ],
+    )
+    resolved = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(use_xodr_groups=True), signal_groups=groups)
+    assert [(r.certainty, r.reason) for r in resolved] == [(1.0, "declared"), (1.0, "declared")]
+
+
+def test_topology_refined_intersections_are_tagged_and_rescored():
+    actors = [
+        _actor(actor_id=10, x=0, y=0, axis=0.0),
+        _actor(actor_id=11, x=5, y=0, axis=0.3),
+        _actor(actor_id=12, x=10, y=0, axis=0.6),
+    ]
+    sentinels = [object() for _ in actors]
+
+    class Topo:
+        def lanelet_for(self, *, center):
+            return next(s for a, s in zip(actors, sentinels) if np.allclose(a.center, center))
+
+        def shares_junction(self, *, a, b, max_hops):
+            return {sentinels.index(a), sentinels.index(b)} == {0, 1}
+
+    resolved = t.resolve_intersection_groups(
+        actors=actors, config=t.FsmConfig(use_xodr_junctions=False, certainty_threshold=1.01), topology=Topo()
+    )
+    assert len(resolved) == 2
+    assert all(r.topology_refined for r in resolved)
+    assert all(r.spatial < 1.0 for r in resolved)  # the split parts sit metres apart
+
+
+def test_review_file_lists_certainty_and_flagged(tmp_path):
+    actors = _four_way(first_id=1, x=0) + _four_way(first_id=11, x=62) + _four_way(first_id=21, x=1000)
+    config = t.FsmConfig(use_xodr_junctions=False)
+    resolved = t.resolve_intersection_groups(actors=actors, config=config)
+    path = t.write_review(
+        map_dir=str(tmp_path),
+        location="m",
+        resolved=resolved,
+        actors=actors,
+        config=config,
+        signal_groups_path=None,
+        signal_groups=None,
+    )
+    with open(path) as f:
+        review = json.load(f)
+    assert review["review_threshold"] == 0.7
+    assert [i["certainty"] for i in review["intersections"]] == [0.62, 0.62, 1.0]
+    assert [f["lights"] for f in review["flagged"]] == [[1, 2, 3, 4], [11, 12, 13, 14]]
+    assert review["flagged"][0]["reason"] == "spatial"

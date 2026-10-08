@@ -39,7 +39,7 @@ All commands: `PYTHONPATH` unset (a sourced ROS environment breaks pytest), the 
 
 - Setup: `python3 -m venv <repo>/.venv && <repo>/.venv/bin/pip install -r <repo>/requirements-tests.txt`. `requirements.txt` is the runtime manifest; `pyproject.toml` is upstream's poetry packaging and is left untouched (`tests/iai/test_requirements.py` keeps the two in step).
 - **Run a conversion:** `<repo>/.venv/bin/python <repo>/convert_map.py dir_path=<folder-with-single-.xodr>` (or `xodr_path=<file.xodr>`, outputs in `<file folder>/<stem>/`; `convert_map()` returns the `.osm` path). Other `MapConversionConfig` fields are OmegaConf dotlist args; see README.
-- **Batch report:** `<repo>/.venv/bin/python <repo>/map_report.py run --maps <dir> --out <dir> [--fsm]`; `compare <a/report.json> <b/report.json> --out <dir>`.
+- **Batch report:** `<repo>/.venv/bin/python <repo>/map_report.py run --maps <dir> --out <dir> [--fsm] [--workers N --memory-budget-mb MB --cost-hints <earlier report.json>]`; `compare <a/report.json> <b/report.json> --out <dir>`.
 - Tests: `QT_QPA_PLATFORM=offscreen <repo>/.venv/bin/python -m pytest <repo>/tests` (set `IAI_MAPS_DIR` to a maps folder for the Town15 FSM tests). The upstream suite writes files into the tree; they are git-ignored.
 - Lint: `ruff check .` and `ruff format --check .`. Config in `pyproject.toml` (line-length 100, double quotes, rules `E4,E7,E9,I`). The ANTLR-generated parser at `crdesigner/verification_repairing/verification/hol/parser/gen/` is excluded — do not lint or reformat it.
 - GUI (upstream, not the IAI workflow): `python crdesigner/ui/gui/start_gui.py`. Requires system Qt libs and is rarely needed for IAI work.

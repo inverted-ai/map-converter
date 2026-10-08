@@ -135,10 +135,10 @@ def two_runs(tmp_path_factory):
     text = text[: text.index("<lanes>")] + text[text.index("</lanes>") + len("</lanes>") :]  # a road with no lanes
     (maps / "bad" / "no_lanes.xodr").write_text(text)
     reports = []
-    for name in ("run_a", "run_b"):
+    for name, extra in (("run_a", []), ("run_b", []), ("run_parallel", ["--workers", "2", "--memory-budget-mb", "8000"])):
         out = tmp_path_factory.mktemp(name)
         subprocess.run(
-            [sys.executable, os.path.join(REPO_ROOT, "map_report.py"), "run", "--maps", str(maps), "--out", str(out), "--fsm"],
+            [sys.executable, os.path.join(REPO_ROOT, "map_report.py"), "run", "--maps", str(maps), "--out", str(out), "--fsm", *extra],
             check=True,
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -177,7 +177,7 @@ def test_run_paths_are_absolute(two_runs):
 
 
 def test_digests_identical_across_output_dirs(two_runs):
-    a, b = ({m["relpath"]: m for m in r["maps"]} for r in two_runs)
+    a, b = ({m["relpath"]: m for m in r["maps"]} for r in two_runs[:2])
     digests = a["good/fixture.xodr"]["digests"]
     assert {"metadata.json", "<map>.osm", "<map>_stoplines.json", "<map>_mesh.json"} <= set(digests)
     assert digests == b["good/fixture.xodr"]["digests"]
@@ -188,6 +188,54 @@ def test_compare_identical_runs_has_no_moves(two_runs, tmp_path):
     comparison = mr.compare_reports(before=two_runs[0], after=two_runs[1])
     assert comparison["maps_with_moves"] == []
     assert len(comparison["maps"]) == 2
+
+
+def test_parallel_run_matches_serial_run(two_runs):
+    serial, parallel = two_runs[0], two_runs[2]
+    assert [m["relpath"] for m in parallel["maps"]] == [m["relpath"] for m in serial["maps"]]
+    assert mr.compare_reports(before=serial, after=parallel)["maps_with_moves"] == []
+    assert (parallel["workers"], parallel["memory_budget_mb"]) == (2, 8000.0)
+
+
+def _costs(**peaks_mb: float) -> dict[str, mr.MapCost]:
+    return {rel: mr.MapCost(wall_s=1.0, peak_rss_mb=peak) for rel, peak in peaks_mb.items()}
+
+
+def test_next_to_start_waits_for_a_free_worker():
+    costs = _costs(a=100.0)
+    assert mr.next_to_start(pending=["a"], costs=costs, running=["x", "y"], workers=2, budget_mb=None) is None
+
+
+def test_next_to_start_skips_a_map_over_the_remaining_budget():
+    costs = _costs(big=900.0, small=200.0, x=500.0)
+    assert mr.next_to_start(pending=["big", "small"], costs=costs, running=["x"], workers=4, budget_mb=1000.0) == "small"
+
+
+def test_next_to_start_runs_an_oversized_map_alone():
+    costs = _costs(huge=5000.0, x=10.0)
+    assert mr.next_to_start(pending=["huge"], costs=costs, running=[], workers=4, budget_mb=1000.0) == "huge"
+    assert mr.next_to_start(pending=["huge"], costs=costs, running=["x"], workers=4, budget_mb=1000.0) is None
+
+
+def test_next_to_start_without_budget_takes_the_head():
+    costs = _costs(a=1e6, b=1.0)
+    assert mr.next_to_start(pending=["a", "b"], costs=costs, running=[], workers=2, budget_mb=None) == "a"
+
+
+def test_cost_hints_take_the_larger_of_conversion_and_fsm_peak(tmp_path):
+    report = {"maps": [
+        {"relpath": "a.xodr", "conversion": {"wall_s": 3.0, "peak_rss_mb": 100.0}, "fsm": {"wall_s": 2.0, "peak_rss_mb": 300.0}},
+        {"relpath": "b.xodr", "conversion": {"wall_s": 1.0, "peak_rss_mb": 50.0}},
+    ]}
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report))
+    hints = mr.load_cost_hints(report_path=str(path))
+    assert hints == {"a.xodr": mr.MapCost(wall_s=5.0, peak_rss_mb=300.0), "b.xodr": mr.MapCost(wall_s=1.0, peak_rss_mb=50.0)}
+
+
+def test_workers_must_be_positive(tmp_path):
+    with pytest.raises(ValueError, match="workers"):
+        mr.run_report(maps_dir=str(tmp_path), out_dir=str(tmp_path / "out"), converter=REPO_ROOT, only=None, timeout_s=10, with_fsm=False, workers=0)
 
 
 def test_convert_args_reach_the_converter(tmp_path):

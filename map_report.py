@@ -11,6 +11,10 @@ Usage::
     python /abs/clone/map_report.py run --maps /abs/maps --out /abs/report_b --converter /abs/other_clone
     python /abs/clone/map_report.py compare /abs/report_a/report.json /abs/report_b/report.json --out /abs/cmp
 
+``--workers N`` converts N maps at once, each in a fresh process; ``--memory-budget-mb`` with
+``--cost-hints <earlier report.json>`` keeps the summed peak memory of the running maps under a
+budget. The report is the same as a serial run's, apart from times.
+
 Outputs (all paths printed absolute): ``<out>/report.json`` and ``<out>/report.html`` for
 ``run``; ``<out>/compare.json`` and ``<out>/compare.html`` for ``compare``. Each map is
 converted in ``<out>/maps/<relative path without .xodr>/``, and those outputs are kept.
@@ -30,14 +34,16 @@ import html
 import io
 import json
 import logging
+import multiprocessing
 import os
+import queue
 import re
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from lxml import etree
 
@@ -55,6 +61,7 @@ NEVER_MOVES = ("wall_s", "peak_rss_mb")
 FLOAT_MOVE_FRACTION = 0.01
 THUMBNAIL_PX = 384
 POLL_S = 0.2
+UNKNOWN_PEAK_RSS_MB = 2000.0
 
 
 # --------------------------------------------------------------------------------------
@@ -430,6 +437,93 @@ def run_fsm(*, map_dir: str, converter: str, timeout_s: float) -> dict[str, Any]
 
 
 
+@dataclasses.dataclass(slots=True)
+class MapCost:
+    """What one map cost in an earlier run: conversion plus FSM time, and the larger peak memory."""
+
+    wall_s: float
+    peak_rss_mb: float
+
+
+def load_cost_hints(*, report_path: str) -> dict[str, MapCost]:
+    """Per-map costs from an earlier ``report.json``, keyed by relative path."""
+    with open(report_path) as f:
+        maps = json.load(f)["maps"]
+    hints = {}
+    for record in maps:
+        stages = [record["conversion"], *([record["fsm"]] if record.get("fsm") else [])]
+        hints[record["relpath"]] = MapCost(
+            wall_s=sum(stage["wall_s"] for stage in stages),
+            peak_rss_mb=max(stage["peak_rss_mb"] for stage in stages),
+        )
+    return hints
+
+
+def next_to_start(
+    *,
+    pending: list[str],
+    costs: dict[str, MapCost],
+    running: list[str],
+    workers: int,
+    budget_mb: Optional[float],
+) -> Optional[str]:
+    """The first pending map that fits beside the running ones, or None.
+
+    A map fits while a worker is free and the running maps' peaks plus its own stay within
+    ``budget_mb``; a map over the whole budget starts only when nothing else runs.
+    """
+    if len(running) >= workers:
+        return None
+    if budget_mb is None or not running:
+        return pending[0] if pending else None
+    used_mb = sum(costs[rel].peak_rss_mb for rel in running)
+    return next((rel for rel in pending if used_mb + costs[rel].peak_rss_mb <= budget_mb), None)
+
+
+def _convert_in_worker(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return convert_one(**kwargs)
+
+
+def _convert_all(
+    *,
+    jobs: dict[str, dict[str, Any]],
+    costs: dict[str, MapCost],
+    workers: int,
+    budget_mb: Optional[float],
+    on_done: Callable[..., None],
+) -> None:
+    """Run ``convert_one(**jobs[rel])`` for every map, longest first, ``workers`` at a time.
+
+    Each map runs in a fresh spawned process, so its memory is returned when it finishes.
+    ``on_done(rel=, record=)`` is called in this process as each map finishes.
+    """
+    pending = sorted(jobs, key=lambda rel: -costs[rel].wall_s)
+    done: queue.Queue = queue.Queue()
+    running: list[str] = []
+    with multiprocessing.get_context("spawn").Pool(processes=workers, maxtasksperchild=1) as pool:
+        while pending or running:
+            while rel := next_to_start(
+                pending=pending,
+                costs=costs,
+                running=running,
+                workers=workers,
+                budget_mb=budget_mb,
+            ):
+                pending.remove(rel)
+                running.append(rel)
+                pool.apply_async(
+                    _convert_in_worker,
+                    (jobs[rel],),
+                    callback=lambda record, rel=rel: done.put((rel, record)),
+                    error_callback=lambda exc, rel=rel: done.put((rel, exc)),
+                )
+            rel, result = done.get()
+            running.remove(rel)
+            if isinstance(result, BaseException):
+                raise result
+            on_done(rel=rel, record=result)
+
+
 def run_report(
     *,
     maps_dir: str,
@@ -440,14 +534,24 @@ def run_report(
     with_fsm: bool,
     convert_args: tuple[str, ...] = (),
     exclude: tuple[str, ...] = (),
+    workers: int = 1,
+    memory_budget_mb: Optional[float] = None,
+    cost_hints: Optional[dict[str, MapCost]] = None,
 ) -> str:
     """Convert and measure every map; write ``report.json`` and ``report.html``.
 
-    ``report.json`` is rewritten after each map, so an interrupted run keeps its progress.
+    ``report.json`` is rewritten after each map, so an interrupted run keeps its progress. With
+    ``workers`` > 1 maps convert in parallel (see :func:`next_to_start`); maps missing from
+    ``cost_hints`` count as ``UNKNOWN_PEAK_RSS_MB``. Maps stay in discovery order either way.
 
     Returns:
         Absolute path of ``report.json``.
+
+    Raises:
+        ValueError: ``workers`` is below 1.
     """
+    if workers < 1:
+        raise ValueError(f"workers must be at least 1, got {workers}")
     maps_dir = os.path.abspath(maps_dir)
     out_dir = os.path.abspath(out_dir)
     converter = os.path.abspath(converter)
@@ -468,40 +572,63 @@ def run_report(
         "convert_args": list(convert_args),
         "exclude": list(exclude),
         "fsm": with_fsm,
+        "workers": workers,
+        "memory_budget_mb": memory_budget_mb,
         "maps": [],
     }
+    inputs: dict[str, dict[str, Any]] = {}
     first_by_sha: dict[str, str] = {}
-    for index, rel in enumerate(discover_maps(maps_dir=maps_dir, only=only, exclude=exclude), start=1):
+    for rel in discover_maps(maps_dir=maps_dir, only=only, exclude=exclude):
         xodr_path = os.path.join(maps_dir, rel)
         sha = sha256_file(path=xodr_path)
-        logger.info("[%d] converting %s", index, xodr_path)
-        record = {
-            "relpath": rel,
-            "input": {
-                "path": xodr_path,
-                "sha256": sha,
-                "duplicate_of": first_by_sha.get(sha),
-                "size_bytes": os.path.getsize(xodr_path),
-                **xodr_statistics(path=xodr_path),
-            },
-            **convert_one(
-                xodr_path=xodr_path,
-                map_dir=os.path.join(out_dir, "maps", rel[: -len(".xodr")]),
-                converter=converter,
-                timeout_s=timeout_s,
-                with_fsm=with_fsm,
-                convert_args=convert_args,
-            ),
+        inputs[rel] = {
+            "path": xodr_path,
+            "sha256": sha,
+            "duplicate_of": first_by_sha.get(sha),
+            "size_bytes": os.path.getsize(xodr_path),
+            **xodr_statistics(path=xodr_path),
         }
         first_by_sha.setdefault(sha, rel)
+    jobs = {
+        rel: {
+            "xodr_path": inputs[rel]["path"],
+            "map_dir": os.path.join(out_dir, "maps", rel[: -len(".xodr")]),
+            "converter": converter,
+            "timeout_s": timeout_s,
+            "with_fsm": with_fsm,
+            "convert_args": convert_args,
+        }
+        for rel in inputs
+    }
+    records: dict[str, dict[str, Any]] = {}
+
+    def finished(*, rel: str, record: dict[str, Any]) -> None:
+        records[rel] = {"relpath": rel, "input": inputs[rel], **record}
         logger.info(
-            "    %s in %.1f s, peak %.0f MB",
+            "[%d/%d] %s: %s in %.1f s, peak %.0f MB",
+            len(records),
+            len(inputs),
+            inputs[rel]["path"],
             record["conversion"]["outcome"],
             record["conversion"]["wall_s"],
             record["conversion"]["peak_rss_mb"],
         )
-        report["maps"].append(record)
+        report["maps"] = [records[r] for r in inputs if r in records]
         _write_json(path=report_path, data=report)
+
+    if workers == 1:
+        for rel, job in jobs.items():
+            logger.info("converting %s", inputs[rel]["path"])
+            finished(rel=rel, record=convert_one(**job))
+    else:
+        hints = cost_hints or {}
+        _convert_all(
+            jobs=jobs,
+            costs={rel: hints.get(rel, MapCost(wall_s=0.0, peak_rss_mb=UNKNOWN_PEAK_RSS_MB)) for rel in jobs},
+            workers=workers,
+            budget_mb=memory_budget_mb,
+            on_done=finished,
+        )
     seen = sorted({t for m in report["maps"] for t in m["input"]["road_marks"]})
     report["road_mark_types_handled"] = handled_road_mark_types(converter=converter, mark_types=seen)
     _write_json(path=report_path, data=report)
@@ -897,6 +1024,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="FIELD=VALUE",
         help="Pass a MapConversionConfig field to convert_map.py, e.g. allow_zero_origin=true; repeatable",
     )
+    run.add_argument("--workers", type=int, default=1, help="Maps converted at once, each in a fresh process (default 1)")
+    run.add_argument(
+        "--memory-budget-mb",
+        type=float,
+        default=None,
+        help="With --workers > 1: start a map only while the running maps' peak memory stays within this",
+    )
+    run.add_argument(
+        "--cost-hints",
+        default=None,
+        metavar="REPORT_JSON",
+        help="An earlier report.json whose per-map times and peak memory order and budget the maps",
+    )
     compare = sub.add_parser("compare", help="List every metric that moved between two runs")
     compare.add_argument("before", help="report.json of the earlier run")
     compare.add_argument("after", help="report.json of the later run")
@@ -918,6 +1058,9 @@ def main() -> None:
             with_fsm=args.fsm,
             convert_args=tuple(args.convert_arg),
             exclude=tuple(args.exclude),
+            workers=args.workers,
+            memory_budget_mb=args.memory_budget_mb,
+            cost_hints=load_cost_hints(report_path=args.cost_hints) if args.cost_hints else None,
         )
     else:
         run_compare(before_path=args.before, after_path=args.after, out_dir=args.out)

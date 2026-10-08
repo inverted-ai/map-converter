@@ -171,7 +171,7 @@ behind it and the kind of map that breaks it. Each can be switched off or retune
 | H3 | `facing_lanes` | on | A light (or, with H6, a sign) no validity binds covers the drivable lanes its `orientation` faces, on its references' roads or else its own |
 | H4 | `stop_at_signal_s` | on | Outside a junction a stopline sits at the signal's (or reference's) s; on a junction's connecting road it sits where the lane enters |
 | H5 | `sign_stencil_match` | on, `sign_stencil_match_m=10` | A stop/yield stencil of the same kind within the distance of a sign (or, with H6, inside a lane the sign binds, within the distance of its row) is that sign's stopline |
-| H6 | `sign_signal_stoplines` | off | Stop/yield sign signals write their own rows, one per lane they bind (where H5 finds no stencil) |
+| H6 | `sign_signal_stoplines` | off | The converter creates stopline rows for stop/yield sign signals (where H5 finds no stencil): lanes read in the lane section at the sign's (or reference's) s, on a junction road where the lane enters it, one row per lane |
 | H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
 | H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |
 | H9 | `painted_stop_line` | on | Objects of type `stopLine` or named `StopLine`, and signals of type `294` or named `StopLine`, are painted stop lines (listed, never converted) |

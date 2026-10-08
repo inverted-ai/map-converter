@@ -224,6 +224,33 @@ def test_sign_referenced_twice_on_one_lane_writes_one_row(tmp_path):
     assert _rows(out=out, agent_type="stop_sign") == [("83", 50.0, LANE_RIGHT_Y, 0.0)]
 
 
+def test_sign_reference_lanes_are_read_in_the_lane_section_at_its_s(tmp_path):
+    # Lane -2 is a shoulder in the first section and the driving lane in the second (fed by lane -1).
+    roads, junctions, _ = xb.junction_map(with_signals=False)
+    road2 = roads[1]
+    road2.lane_sections = [
+        xb.LaneSectionSpec(s=0.0, lanes=[xb.LaneSpec(id=1, predecessor=1, successor=1), xb.LaneSpec(id=-1, predecessor=-1, successor=-2),
+                                         xb.LaneSpec(id=-2, type="shoulder", width=0.5)]),
+        xb.LaneSectionSpec(s=10.0, lanes=[xb.LaneSpec(id=1, predecessor=1, successor=1), xb.LaneSpec(id=-1, type="shoulder", width=0.5),
+                                          xb.LaneSpec(id=-2, predecessor=-1, successor=-1)]),
+    ]
+    roads[0].signals.append(xb.SignalSpec(id="84", s=45.0, t=-5.0, dynamic="no", type="206", validity=(0, 0)))
+    road2.signal_references.append(xb.SignalReferenceSpec(id="84", s=15.0, validity=(-2, -2)))
+    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **{"heuristics.sign_signal_stoplines": "true"})
+    # Where driving lane -1 enters the connecting road, not on the first section's shoulder.
+    assert _rows(out=out, agent_type="stop_sign") == [("84", 50.0, LANE_RIGHT_Y, 0.0)]
+
+
+def test_two_signs_stopping_the_same_lane_write_one_row(tmp_path):
+    stops = [
+        xb.SignalSpec(id="85", s=40.0, t=-5.0, dynamic="no", type="206", validity=(-1, -1)),
+        xb.SignalSpec(id="86", s=40.0, t=5.0, dynamic="no", type="206", orientation="+"),
+    ]
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=stops)], **{"heuristics.sign_signal_stoplines": "true"})
+    assert _rows(out=out, agent_type="stop_sign") == [("85", 40.0, LANE_RIGHT_Y, 0.0)]
+    assert out["controls"]["signs_without_stopline"] == []
+
+
 def test_painted_stop_lines_are_reported_and_write_no_row(tmp_path):
     road = _plain_road(objects=[xb.ObjectSpec(id="91", s=30.0, name="StopLine", type="-1", width=0.0, length=3.5)])
     out = _convert(tmp_path=tmp_path, roads=[road])

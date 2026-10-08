@@ -216,6 +216,83 @@ def _facing_stops(
     return stops, any_drivable
 
 
+def _lane_across_sections(*, road, lane_id: int, start, end) -> Optional[int]:
+    """The id in lane section ``end`` of lane ``lane_id`` of section ``start``, following lane links (``None`` if one is missing)."""
+    sections = road.lanes.lane_sections
+    i, j = sections.index(start), sections.index(end)
+    step = 1 if j > i else -1
+    for k in range(i, j, step):
+        lane = sections[k].get_lane(lane_id)
+        link = None if lane is None else lane.link
+        following = None if link is None else (link.successorId if step == 1 else link.predecessorId)
+        if following is None:
+            return None
+        lane_id = int(following)
+    return lane_id
+
+
+def _road_entry(*, index: _Index, road, section, plane) -> LaneStop:
+    """Where the lane of ``plane`` (in ``section``) enters ``road`` in its travel direction."""
+    sections = road.lanes.lane_sections
+    entry = sections[0] if _travels_with_s(plane=plane) else sections[-1]
+    lane_id = _lane_across_sections(road=road, lane_id=int(plane.id_.split(".")[2]), start=section, end=entry)
+    entry_plane = None if lane_id is None else _plane(index=index, road=road, section=entry, lane_id=lane_id)
+    return _lane_entry(plane=entry_plane if entry_plane is not None else plane)
+
+
+def _sign_stops(
+    *, index: _Index, signal_id: str, drivable_types: frozenset[str], config: heuristics.HeuristicsConfig
+) -> list[LaneStop]:
+    """The stops of a stop/yield sign (H6): its validity lanes read in the lane section at each element's s.
+
+    Unlike light rows (which keep the first-section binding their existing rows were made with), a sign's
+    ``<validity>`` names lanes of the lane section its signal or reference stands in; on a junction road the
+    stop is where that lane enters the road, elsewhere at the element's s (H4). A sign no validity binds
+    falls back to H2/H3.
+    """
+    elements = ([index.signals[signal_id]] if signal_id in index.signals else []) + index.references.get(signal_id, [])
+    scoped = [
+        (road, element)
+        for road, element in elements
+        if _scoped(element=element)[0]
+        and not heuristics.names_only_the_centre_line(
+            validity_from=element.validity_from, validity_to=element.validity_to, config=config
+        )
+    ]
+    if not scoped:
+        targets = _targets(index=index, signal_id=signal_id, config=config) if config.facing_lanes else None
+        if targets is None:
+            return []
+        stops, _ = _facing_stops(index=index, targets=targets, drivable_types=drivable_types, config=config)
+        heuristics.record(
+            heuristic_id="H3", element_id=signal_id, action="bound" if stops else "no_facing_lane",
+            message=f"signal {signal_id}: no lane named - {len(stops)} lane(s) it faces",
+        )
+        return stops
+    stops, moved = [], False
+    for road, element in scoped:
+        if not road.lanes.lane_sections:
+            continue
+        s = float(element.s)
+        section = _section_at(road=road, s=s)
+        low, high = sorted((int(element.validity_from), int(element.validity_to)))
+        for lane_id in range(low, high + 1):
+            plane = None if lane_id == 0 else _plane(index=index, road=road, section=section, lane_id=lane_id)
+            if plane is None or plane.type not in drivable_types:
+                continue
+            if heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config):
+                stops.append(_lane_at_s(plane=plane, section=section, s=s))
+                moved = True
+            else:
+                stops.append(_road_entry(index=index, road=road, section=section, plane=plane))
+    if moved:
+        heuristics.record(
+            heuristic_id="H4", element_id=signal_id, action="placed_at_s",
+            message=f"signal {signal_id}: on an ordinary road - stopline at its s, not at the lane start",
+        )
+    return stops
+
+
 def _row(*, stop: LaneStop, frame, actor_id, agent_type: str, within: Callable[..., bool]) -> Optional[dict]:
     left = np.array([*frame.to_local(stop.inner[0], stop.inner[1]), *stop.inner[2:]])
     right = np.array([*frame.to_local(stop.outer[0], stop.outer[1]), *stop.outer[2:]])
@@ -256,7 +333,7 @@ def _control_stops(
 
 
 def _same_spot(*, a: dict, b: dict) -> bool:
-    """Two rows of one control across the same lane at the same place (references stacking on one lane)."""
+    """Two rows across the same lane at the same place (references stacking on one lane, or two signs of one stop)."""
     return math.hypot(a["x"] - b["x"], a["y"] - b["y"]) < 0.1 and abs(a["orientation"] - b["orientation"]) < 1e-3
 
 
@@ -366,6 +443,7 @@ def control_stoplines(
         for agent_type in SIGN_AGENT_TYPES.values()
     }
     signs, signs_missing = stencil_count, []
+    sign_rows_written: list[dict] = []
     for sign in road_network._traffic_signs:
         agent_type = _sign_kind(sign=sign)
         if agent_type is None or not in_area(sign.position):
@@ -380,12 +458,18 @@ def control_stoplines(
                 message=f"sign {signal_id}: a {agent_type} stencil {nearest:.1f} m away is its stopline",
             )
             continue
-        sign_rows, by_stencil = [], False
+        sign_rows, by_stencil, by_sign = [], False, None
         if heuristics.writes_sign_signal_stoplines(config=config):
-            stops, _ = _control_stops(index=index, signal_id=signal_id, drivable_types=drivable_types, config=config)
+            stops = _sign_stops(index=index, signal_id=signal_id, drivable_types=drivable_types, config=config)
             for stop in stops:
                 row = _row(stop=stop, frame=frame, actor_id=sign.opendrive_id, agent_type=agent_type, within=within)
                 if row is None or any(_same_spot(a=row, b=kept) for kept in sign_rows):
+                    continue
+                same = next(
+                    (kept for kept in sign_rows_written if kept["agent_type"] == agent_type and _same_spot(a=row, b=kept)), None
+                )
+                if same is not None:
+                    by_sign = same["actor_id"]
                     continue
                 gap = _stencil_gap_on_lane(row=row, stencils=stencil_xy[agent_type])
                 if heuristics.matches_stencil(distance_m=gap, config=config):
@@ -398,8 +482,15 @@ def control_stoplines(
                 message=f"sign {signal_id}: a {agent_type} stencil on the lane it binds is its stopline",
             )
             continue
+        if by_sign is not None and not sign_rows:
+            heuristics.record(
+                heuristic_id="H6", element_id=signal_id, action="same_stop_as_another_sign",
+                message=f"sign {signal_id}: stops the same lane(s) at the same place as sign {by_sign}",
+            )
+            continue
         if sign_rows:
             rows += sign_rows
+            sign_rows_written += sign_rows
             heuristics.record(
                 heuristic_id="H6", element_id=signal_id, action="stopline_written",
                 message=f"sign {signal_id}: {len(sign_rows)} {agent_type} stopline row(s)",

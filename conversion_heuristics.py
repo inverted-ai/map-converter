@@ -231,8 +231,11 @@ def writes_sign_signal_stoplines(*, config: HeuristicsConfig) -> bool:
     """Stop and yield sign signals write their own stoplines (off by default).
 
     Assumes: a STOP/YIELD sign signal with no matching stencil (H5) stops traffic on the lanes it
-    is bound to (validity, references, or H3), at its s outside a junction (H4); one row per lane
-    even when several references bind the same lane.
+    is bound to (validity, references, or H3), at its s outside a junction (H4). A sign's
+    ``<validity>`` names lanes of the lane section its signal or reference stands in; on a
+    junction road its stopline is where that lane enters the road (lane links followed across
+    sections). One row per lane, also when several references or signs stop the same lane at the
+    same place.
 
     Evidence: CARLA maps and others carry many signs without a stencil (one map 136 yield signs,
     another 39 signs and no stencil). Off until the rows it would add are reviewed.

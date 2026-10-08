@@ -5,7 +5,9 @@ Vendored code reports every input it cannot use as written through
 ``extra={"kind", "element", "id", "value", "action"}``:
 
 - ``kind``: what was wrong, e.g. ``unknown_value``, ``missing_attribute``, ``decimal_comma``,
-  ``unparseable_number``, ``degenerate_geometry``, ``unknown_reference``.
+  ``unparseable_number``, ``degenerate_geometry``, ``unknown_reference``; ``heuristic`` when a
+  :mod:`conversion_heuristics` rule decided (``element`` is its id, ``value`` its name);
+  ``not_converted`` for an element listed but deliberately not converted (painted stop lines).
 - ``element``: ``<tag>`` when the whole element was dropped (``action="dropped"``), else
   ``<tag>.<attribute>``.
 - ``id``: the enclosing road, signal, object or junction id, when known.
@@ -69,7 +71,7 @@ class ConversionReport(logging.Handler):
         )
 
     def summary(self, *, elements_seen: dict[str, int]) -> dict[str, Any]:
-        """Element counts, unrecognised tokens and record counts by kind."""
+        """Element counts, unrecognised tokens, the heuristics that fired and record counts by kind."""
         dropped: collections.Counter = collections.Counter()
         degraded: collections.Counter = collections.Counter()
         for r in self.records:
@@ -98,9 +100,18 @@ class ConversionReport(logging.Handler):
             entry["count"] += 1
             if r["id"] is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
                 entry["ids"].append(r["id"])
+        heuristics: dict[str, dict[str, Any]] = {}
+        for r in self.records:
+            if r["kind"] != "heuristic":
+                continue
+            entry = heuristics.setdefault(r["element"], {"name": r["value"], "count": 0, "ids": []})
+            entry["count"] += 1
+            if r["id"] is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
+                entry["ids"].append(r["id"])
         return {
             "elements": elements,
             "unrecognised_tokens": sorted(tokens.values(), key=lambda t: (-t["count"], str(t["element"]))),
+            "heuristics": dict(sorted(heuristics.items(), key=lambda item: int(item[0][1:]))),
             "records_by_kind": dict(sorted(collections.Counter(str(r["kind"]) for r in self.records).items())),
         }
 

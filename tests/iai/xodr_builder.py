@@ -65,6 +65,17 @@ class SignalSpec:
 
 
 @dataclasses.dataclass(slots=True)
+class SignalReferenceSpec:
+    """A ``<signalReference>`` to the signal ``id``; ``validity`` as for :class:`SignalSpec`."""
+
+    id: str
+    s: float
+    t: float = 0.0
+    orientation: str = "+"
+    validity: Optional[tuple[Optional[int], Optional[int]]] = None
+
+
+@dataclasses.dataclass(slots=True)
 class ObjectSpec:
     """An ``<object>``, by default a painted stop stencil."""
 
@@ -97,6 +108,7 @@ class RoadSpec:
     rule: Optional[str] = None  # "RHT" / "LHT"
     name: Optional[str] = None  # defaults to road<id>
     signals: list[SignalSpec] = dataclasses.field(default_factory=list)
+    signal_references: list[SignalReferenceSpec] = dataclasses.field(default_factory=list)
     objects: list[ObjectSpec] = dataclasses.field(default_factory=list)
 
 
@@ -232,6 +244,16 @@ def _signal(*, signal: SignalSpec) -> str:
     return f"<signal {attrs}>{validity}</signal>"
 
 
+def _signal_reference(*, reference: SignalReferenceSpec) -> str:
+    validity = ""
+    if reference.validity is not None:
+        validity = f"<validity {_attrs(fromLane=reference.validity[0], toLane=reference.validity[1])}/>"
+    attrs = _attrs(
+        s=_num(value=reference.s), t=_num(value=reference.t), id=reference.id, orientation=reference.orientation
+    )
+    return f"<signalReference {attrs}>{validity}</signalReference>"
+
+
 def _object(*, obj: ObjectSpec) -> str:
     attrs = _attrs(
         id=obj.id,
@@ -268,7 +290,9 @@ def _road(*, road: RoadSpec) -> str:
         f'c="{_num(value=c)}" d="{_num(value=d)}"/>'
         for s, a, b, c, d in road.elevation
     )
-    signals = "".join(_signal(signal=sig) for sig in road.signals)
+    signals = "".join(_signal(signal=sig) for sig in road.signals) + "".join(
+        _signal_reference(reference=ref) for ref in road.signal_references
+    )
     objects = "".join(_object(obj=obj) for obj in road.objects)
     objects = f"<objects>{objects}</objects>" if objects else "<objects/>"
     sections = "".join(_lane_section(section=sec) for sec in road.lane_sections)

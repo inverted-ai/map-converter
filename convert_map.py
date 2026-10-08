@@ -25,6 +25,7 @@ import torch.cuda
 from lxml import etree
 import pyproj
 from omegaconf import OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 from shapely.geometry import LineString
 
 import lanelet2
@@ -44,8 +45,10 @@ from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.network import Network
 from commonroad.scenario.lanelet import LaneletNetwork
 
+import conversion_heuristics
 import conversion_report
 import map_validation
+import traffic_controls
 from conversion_common import REFUSED_EXIT_CODE, git_identity, sha256_file
 from opendrive_signal_groups import write_signal_groups
 
@@ -55,9 +58,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_VISUALIZATION_FOV = 800.0
 FOV_MARGIN = 1.05
-SIGN_AGENT_TYPES = {'STOP': 'stop_sign', 'YIELD': 'yield_sign'}  # sign-table element names -> stopline agent_type
-# CARLA paints a stop/yield stencil a few metres from its sign, rarely on the sign's own road.
-SIGN_STENCIL_MATCH_M = 10.0
+CONVERTED_LANE_TYPES = ('driving', 'onRamp', 'offRamp', 'exit', 'entry', 'bidirectional')  # OpenDRIVE lane types made lanelets
 PROVENANCE_PACKAGES = (
     'torchdrivesim', 'torch', 'lanelet2', 'commonroad-io', 'numpy', 'lxml', 'pyproj', 'shapely', 'omegaconf',
 )
@@ -95,6 +96,8 @@ class MapConversionConfig:
             (the default) skips it. A run that hits the cap records ``timeout`` and continues.
         validation_profile: The ``map_validation.PROFILES`` entry the verdict uses: ``perfect``
             (no fault of any kind) or ``strict`` (bounded faults). Both are always evaluated.
+        heuristics: Switches and parameters of the guesses about the author's intent
+            (:mod:`conversion_heuristics`), e.g. ``heuristics.sign_signal_stoplines=true``.
     """
 
     dir_path: Optional[str] = None
@@ -113,6 +116,9 @@ class MapConversionConfig:
     allow_zero_origin: bool = False
     verifier_timeout_s: float = 0.0
     validation_profile: str = map_validation.DEFAULT_PROFILE
+    heuristics: conversion_heuristics.HeuristicsConfig = dataclasses.field(
+        default_factory=conversion_heuristics.HeuristicsConfig
+    )
 
 
 @dataclasses.dataclass
@@ -493,9 +499,9 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
 
     Raises:
         ConfigError: neither or both of ``dir_path`` and ``xodr_path``, ``trim_radius`` without
-            ``center``, a negative ``verifier_timeout_s``, an unknown ``validation_profile``,
-            ``xodr_path`` not an existing ``.xodr`` file, or ``dir_path`` not holding exactly one
-            ``.xodr``.
+            ``center``, a negative ``verifier_timeout_s``, an unknown ``validation_profile``, an
+            unusable ``heuristics`` parameter, ``xodr_path`` not an existing ``.xodr`` file, or
+            ``dir_path`` not holding exactly one ``.xodr``.
     """
     if (cfg.dir_path is None) == (cfg.xodr_path is None):
         raise ConfigError('give exactly one of dir_path and xodr_path')
@@ -507,6 +513,10 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError(
             f'validation_profile must be one of {", ".join(map_validation.PROFILES)}, not {cfg.validation_profile!r}'
         )
+    try:
+        conversion_heuristics.check_config(config=cfg.heuristics)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     if cfg.xodr_path is not None:
         if not (cfg.xodr_path.endswith('.xodr') and os.path.isfile(cfg.xodr_path)):
             raise ConfigError(f'xodr_path {os.path.abspath(cfg.xodr_path)} is not an existing .xodr file')
@@ -535,11 +545,48 @@ def projected_centre(*, opendrive, geo_offset: Optional[GeoOffset]) -> Optional[
     return geo_offset.apply_offset(*centre) if geo_offset else centre
 
 
-def parse_xodr(*, opendrive_path: str, allow_zero_origin: bool = False) -> ParsedXodr:
-    """Parse the OpenDRIVE file and build the Lanelet2 projector from its geo-reference."""
+def signal_corrections(*, opendrive, heuristics: conversion_heuristics.HeuristicsConfig) -> list[tuple[object, dict]]:
+    """The signal attributes H1 (light type code) and H8 (US sign codes) change: ``(signal, {attribute: value})``."""
+    corrections = []
+    for road in opendrive.roads:
+        for signal in road.signals:
+            changes = {}
+            if signal.dynamic == 'yes' and not conversion_heuristics.is_traffic_light(signal_type=signal.type, config=heuristics):
+                changes['dynamic'] = 'no'
+                conversion_heuristics.record(
+                    heuristic_id='H1', element_id=signal.id, action='read_as_static_sign',
+                    message=f'signal {signal.id}: dynamic but type {signal.type!r} is no light code - a static sign',
+                )
+            if changes.get('dynamic', signal.dynamic) != 'yes':
+                code = conversion_heuristics.us_sign_code(
+                    country=signal.country, signal_type=signal.type, subtype=signal.subtype, config=heuristics
+                )
+                if code is not None:
+                    changes.update(country='USA', type=code[0], subtype=code[1])
+                    conversion_heuristics.record(
+                        heuristic_id='H8', element_id=signal.id, action='read_with_us_table',
+                        message=f'signal {signal.id}: no country, type {signal.type!r} - read as US sign {code[0]}-{code[1]}',
+                    )
+            if changes:
+                corrections.append((signal, changes))
+    return corrections
+
+
+def parse_xodr(
+    *,
+    opendrive_path: str,
+    allow_zero_origin: bool = False,
+    heuristics: Optional[conversion_heuristics.HeuristicsConfig] = None,
+) -> ParsedXodr:
+    """Parse the OpenDRIVE file, apply the signal heuristics, and build the Lanelet2 projector from its geo-reference."""
     logger.info(f'Using {opendrive_path} as input')
     location = map_name(xodr_path=opendrive_path)
     opendrive = parse_opendrive(Path(opendrive_path))
+    for signal, changes in signal_corrections(
+        opendrive=opendrive, heuristics=heuristics or conversion_heuristics.HeuristicsConfig()
+    ):
+        for attribute, value in changes.items():
+            setattr(signal, attribute, value)
 
     # Construct Lanelet2 projector
     if opendrive.header.offset is not None:
@@ -595,18 +642,7 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
     # Convert OpenDRIVE to CommonRoad
     open_drive_config = OpenDriveConfig()
     open_drive_config.min_delta_s = 1.5
-    open_drive_config.filter_types = [
-        "driving",
-        # "restricted",
-        "onRamp",
-        "offRamp",
-        "exit",
-        "entry",
-        # "sidewalk",
-        # "shoulder",
-        # "crosswalk",
-        "bidirectional",
-    ]
+    open_drive_config.filter_types = list(CONVERTED_LANE_TYPES)
     road_network = Network()
     road_network.load_opendrive(parsed.opendrive)
     # for index in range(len(road_network._traffic_lights)):
@@ -701,114 +737,43 @@ def _within_trim(*, cfg: MapConversionConfig, x: float, y: float, z: Optional[fl
     )
 
 
+@dataclasses.dataclass(slots=True)
+class ExtractedStoplines:
+    """The written stoplines file and the coverage of lights and stop/yield signs it gives."""
+
+    path: str
+    controls: map_validation.ControlCoverage
+
+
 def extract_stoplines(
     *,
     cfg: MapConversionConfig,
     location: str,
+    opendrive,
     lanelet_network: LaneletNetwork,
     road_network: Network,
     frame: CustomTransfomer,
-) -> str:
+) -> ExtractedStoplines:
     """Write traffic-light, stop-sign and yield-sign stoplines to ``<map>_stoplines.json``.
 
-    Returns:
-        Path of the written stoplines file.
+    Rows and coverage come from :func:`traffic_controls.control_stoplines`; painted stop lines are
+    listed in the conversion report (:func:`traffic_controls.report_painted_stop_lines`).
     """
-    # Export stoplines
-    stoplines = []
-    for traffic_light in lanelet_network.traffic_lights:
-        if not hasattr(traffic_light, 'iai_stoplines'):
-            continue
-        agent_type = 'traffic_light'
-        opendrive_id = traffic_light.opendrive_id
-        for left, right in traffic_light.iai_stoplines:
-            left = np.array([*frame.to_local(left[0], left[1]), *left[2:]])
-            right = np.array([*frame.to_local(right[0], right[1]), *right[2:]])
-            center = (left + right) / 2
-            right_to_left = left - right
-            x, y, z = float(center[0]), float(center[1]), float(center[2])
-            if _within_trim(cfg=cfg, x=x, y=y, z=z):
-                stopline = Stopline(
-                    actor_id=opendrive_id, agent_type=agent_type, x=float(center[0]), y=float(center[1]),
-                    length=1.0, width=float(np.linalg.norm(left - right)),
-                    orientation=float(np.arctan2(right_to_left[1], right_to_left[0]) - (np.pi / 2)),
-                )
-                stoplines.append(dataclasses.asdict(stopline))
-    traffic_signs = [('stop_sign', x) for x in road_network._iai_stop_signs] +\
-                    [('yield_sign', x) for x in road_network._iai_yield_signs]
-    for agent_type, (xy, orientation, length, width, opendrive_id) in traffic_signs:
-        length = 1.0  # We could also adjust width and placement based on lanelet information
-        if len(xy) > 2:
-            z = float(xy[2])
-        else:
-            z = 0.0
-        x, y = (float(v) for v in frame.to_local(xy[0], xy[1]))
-        if _within_trim(cfg=cfg, x=x, y=y, z=z):
-            stopline = Stopline(
-                actor_id=opendrive_id, agent_type=agent_type, x=x, y=y,
-                length=float(length), width=float(width), orientation=float(orientation),
-            )
-            stoplines.append(dataclasses.asdict(stopline))
+    built = traffic_controls.control_stoplines(
+        opendrive=opendrive,
+        road_network=road_network,
+        lanelet_network=lanelet_network,
+        frame=frame,
+        within=lambda *, x, y, z=None: _within_trim(cfg=cfg, x=x, y=y, z=z),
+        drivable_types=frozenset(CONVERTED_LANE_TYPES),
+        config=cfg.heuristics,
+    )
+    traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame, config=cfg.heuristics)
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
-        json.dump(stoplines, f, indent=4)
-    return stoplines_path
-
-
-def control_coverage(
-    *,
-    cfg: MapConversionConfig,
-    road_network: Network,
-    frame: CustomTransfomer,
-    stoplines_path: str,
-) -> map_validation.ControlCoverage:
-    """Which traffic lights and stop/yield signs inside ``trim_radius`` got at least one stopline row.
-
-    A light is covered by a row naming its OpenDRIVE id, and a stop/yield stencil by its own row. A
-    sign signal never writes a row (sign stoplines come only from stencils), so it counts as covered
-    by a row of its kind within :data:`SIGN_STENCIL_MATCH_M` of it.
-    """
-    with open(stoplines_path) as f:
-        rows = json.load(f)
-    written = {(row['agent_type'], str(row['actor_id'])) for row in rows}
-
-    def local(position) -> np.ndarray:
-        return np.array(frame.to_local(position[0], position[1]))
-
-    def in_area(position, z: Optional[float] = None) -> bool:
-        x, y = local(position)
-        return _within_trim(cfg=cfg, x=x, y=y, z=z)
-
-    lights = sorted(
-        {str(light.opendrive_id) for light in road_network._traffic_lights if in_area(light.position)}
-    )
-    signs, missing = 0, []
-    for agent_type, stencils in (('stop_sign', road_network._iai_stop_signs), ('yield_sign', road_network._iai_yield_signs)):
-        for xy, _, _, _, object_id in stencils:
-            if in_area(xy, z=float(xy[2]) if len(xy) > 2 else 0.0):  # the same test extract_stoplines applies
-                signs += 1
-                if (agent_type, str(object_id)) not in written:
-                    missing.append(f'object {object_id}')
-    stencil_rows = {
-        agent_type: np.array([[row['x'], row['y']] for row in rows if row['agent_type'] == agent_type]).reshape(-1, 2)
-        for agent_type in SIGN_AGENT_TYPES.values()
-    }
-    for sign in road_network._traffic_signs:
-        names = {element.traffic_sign_element_id.name for element in sign.traffic_sign_elements}
-        agent_type = next((SIGN_AGENT_TYPES[name] for name in sorted(names) if name in SIGN_AGENT_TYPES), None)
-        if agent_type is None or not in_area(sign.position):
-            continue
-        signs += 1
-        distances = np.linalg.norm(stencil_rows[agent_type] - local(sign.position), axis=1)
-        if not (distances <= SIGN_STENCIL_MATCH_M).any():
-            missing.append(f'signal {sign.opendrive_id}')
-    return map_validation.ControlCoverage(
-        lights=len(lights),
-        lights_without_stopline=[i for i in lights if ('traffic_light', i) not in written],
-        stop_yield_signs=signs,
-        signs_without_stopline=sorted(missing),
-    )
+        json.dump(built.rows, f, indent=4)
+    return ExtractedStoplines(path=stoplines_path, controls=built.coverage)
 
 
 def build_mesh(*, cfg: MapConversionConfig, location: str, osm_path: str, projector) -> BuiltMesh:
@@ -993,21 +958,18 @@ def convert_map(cfg: MapConversionConfig) -> str:
 
 def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map_validation.Verdict]:
     """The pipeline stages of :func:`convert_map`, on a validated config: the ``.osm`` path and the verdict."""
-    parsed = parse_xodr(opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin)
+    parsed = parse_xodr(
+        opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin, heuristics=cfg.heuristics
+    )
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
-    stoplines_path = extract_stoplines(
+    stoplines = extract_stoplines(
         cfg=cfg,
         location=parsed.location,
+        opendrive=parsed.opendrive,
         lanelet_network=exported.lanelet_network,
         road_network=exported.road_network,
         frame=parsed.frame,
-    )
-    controls = control_coverage(
-        cfg=cfg,
-        road_network=exported.road_network,
-        frame=parsed.frame,
-        stoplines_path=stoplines_path,
     )
     write_signal_groups(
         xodr_path=opendrive_path, out_path=os.path.join(cfg.dir_path, f"{parsed.location}_signal_groups.json")
@@ -1018,7 +980,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map
         location=parsed.location,
         geo_reference=parsed.geo_reference,
         osm_path=exported.osm_path,
-        stoplines_path=stoplines_path,
+        stoplines_path=stoplines.path,
         mesh=mesh,
         opendrive_path=opendrive_path,
         traffic_side=parsed.traffic_side,
@@ -1027,7 +989,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map
     verdict = map_validation.validate(
         map_dir=cfg.dir_path,
         lanelet_network=exported.unsimplified_network,
-        controls=controls,
+        controls=stoplines.controls,
         verifier_timeout_s=cfg.verifier_timeout_s,
         profile=cfg.validation_profile,
     )
@@ -1036,9 +998,6 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map
 
 
 if __name__ == '__main__':
-    cfg: MapConversionConfig = OmegaConf.structured(
-        MapConversionConfig(**OmegaConf.from_dotlist(sys.argv[1:]))
-    )
     logger.setLevel(logging.DEBUG)
     logger.addHandler(logging.StreamHandler())
     console = logging.StreamHandler()
@@ -1047,6 +1006,10 @@ if __name__ == '__main__':
     logging.getLogger(map_validation.__name__).addHandler(logging.StreamHandler())
     logging.getLogger(map_validation.__name__).setLevel(logging.INFO)
     try:
+        try:
+            cfg = OmegaConf.merge(OmegaConf.structured(MapConversionConfig), OmegaConf.from_dotlist(sys.argv[1:]))
+        except OmegaConfBaseException as exc:
+            raise ConfigError(str(exc).splitlines()[0]) from exc
         convert_map(cfg)
     except ConfigError as exc:
         logger.error(f'Invalid configuration: {exc}')

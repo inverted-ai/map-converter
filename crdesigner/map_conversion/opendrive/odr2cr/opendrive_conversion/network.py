@@ -1,5 +1,5 @@
 import copy
-from collections import deque, defaultdict
+from collections import deque
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import iso3166
@@ -230,8 +230,6 @@ class Network:
         self._geo_ref = opendrive.header.geo_reference
         self._offset = opendrive.header.offset
 
-        light_stoplines = defaultdict(list)
-
         # Get country ID form signal data in openDrive and set it as attribute of the network object
         self.assign_country_id(Network.get_country_id_from_opendrive(opendrive.roads))
 
@@ -280,11 +278,6 @@ class Network:
 
                 self._planes.extend(parametric_lane_groups)
 
-                for plane_group in parametric_lane_groups:
-                    if hasattr(plane_group, 'stoplines'):
-                        for stopline in plane_group.stoplines:
-                            light_stoplines[stopline[0]].append(stopline[1:])
-
                 for intersection in self._link_index.intersection_maps():
                     incomings_to_remove = []
                     for incoming_lane_id, successors in intersection.items():
@@ -295,10 +288,6 @@ class Network:
                                 incomings_to_remove.append(incoming_lane_id)
                     for incoming in incomings_to_remove:
                         del intersection[incoming]
-
-        for traffic_light in self._traffic_lights:
-            if hasattr(traffic_light, 'opendrive_id'):
-                traffic_light.iai_stoplines = light_stoplines[traffic_light.opendrive_id]
 
     def _extract_road_speed_limit(self, road: Road):
         """
@@ -488,11 +477,6 @@ class Network:
             ]:
                 for x in xs:
                     x.position = np.array(transformer.transform(*x.position))
-                    if hasattr(x, 'iai_stoplines'):
-                        x.iai_stoplines = [
-                            (np.array(transformer.transform(*left)), np.array(transformer.transform(*right)))
-                            for left, right in x.iai_stoplines
-                        ]
 
             for x in self._stop_lines:
                 x.start = np.array(transformer.transform(*x.start))

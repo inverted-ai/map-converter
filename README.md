@@ -67,6 +67,7 @@ several `.xodr` files, or `trim_radius` without `center`, stop the run with exit
 | `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing. (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
 | `verifier_timeout_s` | `0` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it (on large maps it takes minutes). A run that reaches the cap records `timeout` and carries on. |
 | `validation_profile` | `perfect` | Which validation profile the verdict uses: `perfect` (no fault of any kind) or `strict` (bounded faults); see "Validation" below. |
+| `heuristics.<name>` | see "Heuristics" | Switch a guess about the author's intent on or off, or retune it, e.g. `heuristics.sign_signal_stoplines=true`; see "Heuristics" below. |
 
 ## Output files
 
@@ -96,7 +97,9 @@ element affected, and records it. `<map>_conversion_report.json` holds:
    dropped road are not subtracted) and `degraded` (kept with a changed attribute).
 3. `unrecognised_tokens`: each unknown value (`element`, `value`), how often it occurred and the ids where
    (up to 20).
-4. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
+4. `heuristics`: per heuristic that changed the conversion (see "Heuristics" below), its `name`, how often
+   it fired (`count`) and the element ids where (up to 20).
+5. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
    dropped, else `<tag>.<attribute>`), `id` (road, signal, object or junction), `value`, `action` and the
    message. Each record is also printed as a warning, once per `kind`, `element` and `value`.
 
@@ -109,6 +112,8 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 | `coerced` | object `type="stopline"` | Read as `roadMark` |
 | `degenerate_geometry` | `<spiral>` with equal start and end curvature | Read as an arc (a line at zero curvature) |
 | `unknown_reference` | signal `<validity>` naming a lane that does not exist | That lane is skipped |
+| `heuristic` | a light with no lane validity | What the heuristic (`element` = its id) decided; see "Heuristics" |
+| `not_converted` | a painted stop line | Listed with its position; nothing is written for it |
 
 ### Validation
 
@@ -141,11 +146,37 @@ fails its check; one with nothing to measure (no seams, say) passes.
 L5 and L6 count, inside `trim_radius` when it is set, every control the converter read. `controls` in the verdict
 lists those with no stopline by OpenDRIVE id:
 
-1. A traffic light needs a stopline row naming its id.
+1. A traffic light needs a stopline row naming its id. A light's rows cross the lanes its `<validity>` (on the
+   signal or on a `<signalReference>` with its id) names, where each lane enters; H2-H4 and H7 below decide
+   the rest. A light H7 finds on a road without drivable lanes is not counted.
 2. A stop or yield sign needs a stopline. A sign can be a signal that the country's sign table reads as stop or
-   yield (`206`/`205` in Germany, `R1-1` in the USA, for example), or a `Stencil_STOP`, `Stencil_GiveWay` or
-   `Stencil_Yield_Triangles` object. Stoplines come only from stencils. A signal counts as covered when a
-   stencil stopline of the same kind lies within 10 m of it.
+   yield (`206`/`205` in Germany, `R1-1` in the USA, for example; CommonRoad's US table has no yield sign), or a `Stencil_STOP`,
+   `Stencil_GiveWay` or `Stencil_Yield_Triangles` object, which writes its own row. A sign signal is covered
+   by a stencil of the same kind near it (H5) or, with H6 on, by its own rows.
+
+Painted stop lines (H9) never become, move or invent a stopline: a stop line with no light or sign is an
+unsigned stop. Each one is listed in the conversion report (`kind="not_converted"`, with its position).
+
+### Heuristics
+
+Some conversions need a guess about what the OpenDRIVE author meant. Every such guess is a heuristic in
+`conversion_heuristics.py`, with a stable id, a name and a docstring stating its assumption, the evidence
+behind it and the kind of map that breaks it. Each can be switched off or retuned with
+`heuristics.<name>=<value>`, and the conversion report lists every element each one changed.
+
+| Id | Name (switch) | Default | Decides |
+|---|---|---|---|
+| H1 | `light_type_code` | on | A `dynamic="yes"` signal is a traffic light only if its `type` matches `light_type_pattern` (`100\d{4}`); others are read as static signs |
+| H2 | `centre_line_validity` | on | A `<validity>` naming only lane 0 names no lane |
+| H3 | `facing_lanes` | on | A light (or, with H6, a sign) no validity binds covers the drivable lanes its `orientation` faces, on its references' roads or else its own |
+| H4 | `stop_at_signal_s` | on | Outside a junction a stopline sits at the signal's (or reference's) s; on a junction's connecting road it sits where the lane enters |
+| H5 | `sign_stencil_match` | on, `sign_stencil_match_m=10` | A stop/yield stencil of the same kind within the distance of a sign (or, with H6, inside a lane the sign binds, within the distance of its row) is that sign's stopline |
+| H6 | `sign_signal_stoplines` | off | Stop/yield sign signals write their own rows, one per lane they bind (where H5 finds no stencil) |
+| H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
+| H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |
+| H9 | `painted_stop_line` | on | Objects of type `stopLine` or named `StopLine`, and signals of type `294` or named `StopLine`, are painted stop lines (listed, never converted) |
+
+Guesses that live in vendored code or in other tools are listed at the top of `conversion_heuristics.py`.
 
 `verifier` holds the result of CommonRoad's map verifier, which is off unless `verifier_timeout_s` is set. It
 runs all formulas, report-only and never repairing. The result has:
@@ -420,8 +451,9 @@ options:
   types are dropped. A `bidirectional` lane is tagged `one_way=no` (plus the per-user `one_way:vehicle...`
   tags) and is never concatenated with its neighbours; links to it are kept only where the lanes meet, and a
   connector retracing it in reverse is dropped.
-- Traffic lights come from dynamic `<signal>` elements; stop and yield signs from `<object>` elements with
-  CARLA's stencil names. Other vendors' encodings may produce no stoplines.
+- Traffic lights come from dynamic `<signal>` elements with a light type code (H1); stop and yield stoplines
+  from `<object>` elements with CARLA's stencil names, and from sign signals only with H6 on. Other vendors'
+  encodings may produce no sign stoplines.
 - Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; with an `x_0`/`y_0` false easting/northing, origin
   at the map centre) and `+proj=utm +zone=…` (origin at the map centre); malformed tokens in the string are ignored with a warning.
   A map with no `<geoReference>` has only local coordinates: it converts at latitude/longitude (0, 0) with a

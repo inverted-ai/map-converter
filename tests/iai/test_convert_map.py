@@ -243,14 +243,19 @@ def test_header_offset_applies_to_stoplines(tmp_path):
         assert min(c.distance(Point(row["x"], row["y"])) for c in centrelines) < 0.5
 
 
-def _joined_roads_centrelines(*, map_dir, offset) -> tuple[np.ndarray, str]:
-    """Convert road 1 (0..50 m) joined to road 2 (50..100 m); sorted lanelet centreline end points and stderr."""
-    import map_quality as mq
-
+def _write_joined_roads(*, map_dir, offset, geo_reference=xb.DEFAULT_GEO_REFERENCE) -> None:
+    """Road 1 (0..50 m) joined to road 2 (50..100 m) as ``<map_dir>/joined.xodr``."""
     road1 = xb.straight_road(id="1", length=50.0, successor=xb.LinkSpec(element_type="road", element_id="2", contact_point="start"))
     road2 = xb.straight_road(id="2", length=50.0, x=50.0, predecessor=xb.LinkSpec(element_type="road", element_id="1", contact_point="end"))
-    xb.write_xodr(map_dir=map_dir, name="joined", text=xb.build_xodr(roads=[road1, road2], offset=offset))
-    result = xb.run_convert_map(map_dir=str(map_dir))
+    xb.write_xodr(map_dir=map_dir, name="joined", text=xb.build_xodr(roads=[road1, road2], geo_reference=geo_reference, offset=offset))
+
+
+def _joined_roads_centrelines(*, map_dir, offset, geo_reference=xb.DEFAULT_GEO_REFERENCE, **convert_args) -> tuple[np.ndarray, str]:
+    """Convert the joined roads; sorted lanelet centreline end points and stderr."""
+    import map_quality as mq
+
+    _write_joined_roads(map_dir=map_dir, offset=offset, geo_reference=geo_reference)
+    result = xb.run_convert_map(map_dir=str(map_dir), **convert_args)
     assert result.returncode == 0, result.stderr
     outputs = mq.ConversionOutputs.load(map_dir=str(map_dir))
     ends = [((ll.centerline[0].x, ll.centerline[0].y), (ll.centerline[-1].x, ll.centerline[-1].y)) for ll in outputs.lanelet_map.laneletLayer]
@@ -269,6 +274,30 @@ def test_header_offset_rotation_is_ignored_with_a_warning(tmp_path):
     rotated, stderr = _joined_roads_centrelines(map_dir=tmp_path / "rotated", offset=(0.0, 0.0, 0.0, 0.5))
     assert rotated == pytest.approx(plain, abs=1e-3)  # roads stay joined, not torn apart
     assert "hdg=0.5 rad" in stderr and "ignored" in stderr
+
+
+@pytest.mark.parametrize(
+    "geo_reference, offset",
+    [
+        ("+proj=tmerc +lat_0=51.7 +lon_0=8.7 +k=1 +x_0=0 +y_0=0 +datum=WGS84", (479701.4, 5730797.1, 0.0, 0.0)),
+        ("+proj=tmerc", (3926727.07, -12809834.93, 0.0, 0.0)),
+    ],
+)
+def test_offset_outside_the_projection_is_refused_unless_allowed(tmp_path, geo_reference, offset):
+    plain, _ = _joined_roads_centrelines(map_dir=tmp_path / "plain", offset=None)
+    map_dir = tmp_path / "far"
+    _write_joined_roads(map_dir=map_dir, offset=offset, geo_reference=geo_reference)
+    refused = xb.run_convert_map(map_dir=str(map_dir))
+    assert refused.returncode == conversion_common.REFUSED_EXIT_CODE, refused.stderr
+    assert "<offset>" in refused.stderr and "allow_zero_origin" in refused.stderr
+    assert sorted(os.listdir(map_dir)) == ["joined.xodr", "joined_conversion_report.json"]
+    allowed, stderr = _joined_roads_centrelines(map_dir=map_dir, offset=offset, geo_reference=geo_reference, allow_zero_origin="true")
+    assert "converting at (0, 0) in file coordinates" in stderr
+    assert allowed == pytest.approx(plain, abs=1e-3)
+    with open(map_dir / "metadata.json") as f:
+        assert json.load(f)["lanelet_map_origin"] == [0.0, 0.0]
+    with open(map_dir / "joined_provenance.json") as f:
+        assert json.load(f)["geo_reference"] == "unusable_zero_origin_allowed"
 
 
 def test_parse_false_origin_tmerc_centres_origin_on_the_map():

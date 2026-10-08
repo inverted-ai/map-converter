@@ -90,8 +90,9 @@ class MapConversionConfig:
         simplify_max_iterations: Attempts at fitting the size budget.
         simplify_tolerance_factor: Factor the tolerance grows by per attempt.
         allow_zero_origin: Convert a map whose ``<geoReference>`` is present but unusable at
-            latitude/longitude (0, 0) instead of failing. A map with no ``<geoReference>`` always
-            converts at (0, 0), with a warning.
+            latitude/longitude (0, 0) instead of failing; when the ``<geoReference>`` and header
+            ``<offset>`` put road geometry outside the projection, also drop the offset (file
+            coordinates). A map with no ``<geoReference>`` always converts at (0, 0), with a warning.
         verifier_timeout_s: Cap (s) on the CommonRoad map verifier the validation stage runs; 0
             (the default) skips it. A run that hits the cap records ``timeout`` and continues.
         validation_profile: The ``map_validation.PROFILES`` entry the verdict uses: ``perfect``
@@ -620,15 +621,42 @@ def parse_xodr(
         logger.warning(f'{opendrive_path} declares its origin at latitude/longitude (0, 0)')
     check_geo_reference(geo_reference=geo_reference, source=os.path.abspath(opendrive_path))
     projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
+    frame = CustomTransfomer(projector, geo_offset, geo_reference.translation)
+    outside = unprojectable_road_start(opendrive=opendrive, frame=frame)
+    if outside is not None:
+        problem = (
+            f'a <geoReference> ({(opendrive.header.geo_reference or "").strip()!r}) and header <offset> '
+            f'({opendrive.header.offset}) that put road geometry outside the projection ({outside})'
+        )
+        if not allow_zero_origin:
+            raise InputError(
+                f'{os.path.abspath(opendrive_path)} has {problem}, so the map cannot be placed. '
+                f'Set allow_zero_origin=true to convert it at latitude/longitude (0, 0) in file coordinates.'
+            )
+        logger.warning(f'{opendrive_path} has {problem} - converting at (0, 0) in file coordinates because allow_zero_origin is set')
+        geo_reference, geo_reference_status = GeoReference(0.0, 0.0), 'unusable_zero_origin_allowed'
+        projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
+        frame = CustomTransfomer(projector)
     return ParsedXodr(
         location=location,
         opendrive=opendrive,
         geo_reference=geo_reference,
         projector=projector,
-        frame=CustomTransfomer(projector, geo_offset, geo_reference.translation),
+        frame=frame,
         traffic_side=traffic_side_of(opendrive=opendrive),
         geo_reference_status=geo_reference_status,
     )
+
+
+def unprojectable_road_start(*, opendrive, frame: CustomTransfomer) -> Optional[str]:
+    """Why the first road start point ``frame`` cannot turn into latitude/longitude fails, or None."""
+    for road in opendrive.roads:
+        for geometry in road.plan_view._geometries:
+            try:
+                frame.transform(*geometry.start_position)
+            except RuntimeError as exc:
+                return f'road {road.id}: {exc}'
+    return None
 
 
 def traffic_side_of(*, opendrive) -> Optional[str]:

@@ -64,7 +64,7 @@ several `.xodr` files, or `trim_radius` without `center`, stop the run with exit
 | `osm_target_bytes` | `1048576000` | Size budget for the `.osm`: the tolerance widens until the file fits, and the run fails if it never does. Unset disables the budget. |
 | `simplify_max_iterations` | `1` | Attempts at fitting the size budget. |
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
-| `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing. (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
+| `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing; when the `<geoReference>` and header `<offset>` put road geometry outside the projection, the offset is dropped too (file coordinates). (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
 | `verifier_timeout_s` | `0` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it (on large maps it takes minutes). A run that reaches the cap records `timeout` and carries on. |
 | `validation_profile` | `perfect` | Which validation profile the verdict uses: `perfect` (no fault of any kind) or `strict` (bounded faults); see "Validation" below. |
 | `heuristics.<name>` | see "Heuristics" | Switch a guess about the author's intent on or off, or retune it, e.g. `heuristics.sign_signal_stoplines=true`; see "Heuristics" below. |
@@ -376,7 +376,11 @@ well. Use it to triage a batch of new maps, or to compare two converter versions
 `run` copies each `.xodr` into `<out>/maps/<relative path>/` and converts it there, so input folders are never
 written to. `--convert-arg FIELD=VALUE` passes a `MapConversionConfig` field to every conversion (e.g.
 `--convert-arg allow_zero_origin=true`). `--exclude GLOB` skips matching paths (relative to `--maps`), e.g.
-`--exclude 'Carla_UE4_old/*'`; `--map` limits the run to named files. It writes `report.json` (rewritten after every map, so an interrupted run keeps its progress) and a
+`--exclude 'Carla_UE4_old/*'`; `--map` limits the run to named files. `--workers N` converts N maps at once,
+each in a fresh process; add `--memory-budget-mb MB` and `--cost-hints <earlier report.json>` to start a map only
+while the peak memory the earlier run measured for the running maps stays within the budget (a map over the whole
+budget runs alone; maps the earlier run lacks count as 2000 MB). Longest maps start first. The report lists maps in
+the same order and with the same results as a serial run; only times differ. It writes `report.json` (rewritten after every map, so an interrupted run keeps its progress) and a
 self-contained `report.html`. Per map it records:
 
 - **outcome**: `ok`; `refused` (the converter declined on purpose, e.g. an unusable geo-reference, with its
@@ -416,7 +420,9 @@ never count as a move.
 ```text
 usage: map_report.py run [-h] --maps MAPS --out OUT [--converter CONVERTER] [--map ONLY]
                          [--timeout-s TIMEOUT_S] [--fsm] [--exclude GLOB]
-                         [--convert-arg FIELD=VALUE]
+                         [--convert-arg FIELD=VALUE] [--workers WORKERS]
+                         [--memory-budget-mb MEMORY_BUDGET_MB]
+                         [--cost-hints REPORT_JSON]
 
 options:
   -h, --help            show this help message and exit
@@ -433,6 +439,13 @@ options:
   --convert-arg FIELD=VALUE
                         Pass a MapConversionConfig field to convert_map.py, e.g.
                         allow_zero_origin=true; repeatable
+  --workers WORKERS     Maps converted at once, each in a fresh process (default 1)
+  --memory-budget-mb MEMORY_BUDGET_MB
+                        With --workers > 1: start a map only while the running maps'
+                        peak memory stays within this
+  --cost-hints REPORT_JSON
+                        An earlier report.json whose per-map times and peak memory
+                        order and budget the maps
 
 usage: map_report.py compare [-h] --out OUT before after
 
@@ -460,7 +473,10 @@ options:
   warning, recorded as `"geo_reference": "absent"` in provenance. A `<geoReference>` that is present but
   unparseable or another projection stops the run (exit code 3) unless `allow_zero_origin=true`. A header
   `<offset>` shifts the file's x/y to projected coordinates for the `.osm`, the mesh and the stoplines
-  alike; its `hdg` rotation and `z` are ignored with a warning (untested: no sample map uses them).
+  alike; its `hdg` rotation and `z` are ignored with a warning (untested: no sample map uses them). A
+  `<geoReference>` and `<offset>` that put a road outside the projection's valid range (e.g. UTM numbers in
+  the offset of a `tmerc` centred on the map) stop the run (exit code 3) unless `allow_zero_origin=true`,
+  which converts the map in file coordinates at (0, 0).
 - Heights come from each road's `<elevationProfile>` at the point's position along the road, for every
   lane (reversed and merging lanes included). `<superelevation>` (cross-slope) and `<shape>` are ignored, so
   lanes on a banked road are level across. Where two roads' profiles disagree at a joint, the step is kept
@@ -487,8 +503,9 @@ options:
   dropped or defaulted and why. Then run `map_report.py run --maps <folder> --out <dir>` on it. The report
   gives the outcome and, for an exception, the class and the `file:line` where it was raised, together with
   the input's vendor and element counts.
-- **`Cannot convert: ... cannot be placed`**: the `.xodr` declares a `<geoReference>` the converter cannot use.
-  Fix it, or set `allow_zero_origin=true` to convert at (0, 0). The warnings `has no <geoReference>` and
+- **`Cannot convert: ... cannot be placed`**: the `.xodr` declares a `<geoReference>` the converter cannot use,
+  or one whose header `<offset>` puts the roads outside the projection. Fix it, or set `allow_zero_origin=true`
+  to convert at (0, 0). The warnings `has no <geoReference>` and
   `declares its origin at latitude/longitude (0, 0)` mean the map converted at (0, 0).
 - **No stoplines**: compare `<signal>`/`<object>` counts in the report with `stoplines_by_agent_type`.
 - **`Invalid configuration: ...` and exit code 3**: the message names the problem (wrong number of `.xodr` files,

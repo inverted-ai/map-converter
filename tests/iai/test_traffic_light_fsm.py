@@ -7,6 +7,8 @@ import os
 import numpy as np
 import pytest
 
+import conversion_heuristics as ch
+import conversion_report
 import traffic_light_fsm as t
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -114,7 +116,8 @@ def test_eps_merges_when_close_and_splits_when_far():
         _actor(actor_id=1, x=0, y=0, axis=0.0),
         _actor(actor_id=2, x=0, y=300, axis=math.pi / 2),
     ]
-    config = t.FsmConfig(cluster_eps=50)
+    config = t.FsmConfig()
+    assert config.cluster_eps == 50
     assert len(t.cluster_intersections(actors=near, config=config)) == 1
     assert len(t.cluster_intersections(actors=far, config=config)) == 2
 
@@ -475,3 +478,120 @@ def test_review_file_lists_certainty_and_flagged(tmp_path):
     assert [i["certainty"] for i in review["intersections"]] == [0.62, 0.62, 1.0]
     assert [f["lights"] for f in review["flagged"]] == [[1, 2, 3, 4], [11, 12, 13, 14]]
     assert review["flagged"][0]["reason"] == "spatial"
+
+
+# --------------------------------------------------------------------------------------
+# BasicConversion FSM (H11-H13 off) and the FSM heuristics' detections
+# --------------------------------------------------------------------------------------
+
+
+def _basic(*, use_xodr_junctions: bool = True) -> t.FsmConfig:
+    return t.FsmConfig(
+        heuristics=ch.applied_heuristics(autofix=ch.AutoFixConfig(enabled=False)), use_xodr_junctions=use_xodr_junctions
+    )
+
+
+def _junction_and_strays() -> tuple[list[t.Actor], dict]:
+    """Junction J (lights 1-3, controllers {1} then {2, 3}), light 4 near it, lights 5 and 6 near each other far away."""
+    actors = [
+        _actor(actor_id=1, x=-5, y=0, axis=0.0),
+        _actor(actor_id=2, x=0, y=-5, axis=math.pi / 2),
+        _actor(actor_id=3, x=0, y=5, axis=math.pi / 2),
+        _actor(actor_id=4, x=20, y=0, axis=0.0),
+        _actor(actor_id=5, x=500, y=0, axis=0.0),
+        _actor(actor_id=6, x=510, y=0, axis=math.pi / 2),
+    ]
+    groups = _signal_groups(
+        membership={"1": "J", "2": "J", "3": "J"},
+        controllers=[
+            {"id": "b", "signal_ids": ["2", "3"], "sequence": 1},
+            {"id": "a", "signal_ids": ["1"], "sequence": 0},
+        ],
+    )
+    return actors, groups
+
+
+def _ids(*, resolved: list[t.IntersectionResult], actors: list[t.Actor]) -> list[list[list[int]]]:
+    """Per intersection, its phase groups as actor ids, in phase order."""
+    return [[[actors[i].actor_id for i in g] for g in r.groups] for r in resolved]
+
+
+def test_basic_fsm_uses_declared_junctions_controllers_and_sequence():
+    actors, groups = _junction_and_strays()
+    resolved = t.resolve_intersection_groups(actors=actors, config=_basic(), signal_groups=groups)
+    assert _ids(resolved=resolved, actors=actors) == [[[1], [2, 3]], [[4]], [[5]], [[6]]]
+    assert resolved[0].level == "sequence"
+
+
+def test_default_fsm_clusters_by_distance_and_splits_by_axis():
+    actors, groups = _junction_and_strays()
+    resolved = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(), signal_groups=groups)
+    assert _resolved_ids(resolved=resolved, actors=actors) == [[[1, 4], [2, 3]], [[5], [6]]]
+
+
+def test_basic_fsm_gives_each_light_no_controller_names_its_own_phase():
+    actors = _four_way(first_id=1, x=0)
+    groups = _signal_groups(membership={str(a.actor_id): "J" for a in actors}, controllers=[{"id": "a", "signal_ids": ["1", "2"]}])
+    resolved = t.resolve_intersection_groups(actors=actors, config=_basic(), signal_groups=groups)
+    assert _ids(resolved=resolved, actors=actors) == [[[1, 2], [3], [4]]]
+    no_controller = t.resolve_intersection_groups(actors=actors, config=_basic(), signal_groups=_signal_groups(membership={"1": "J", "2": "J", "3": "J", "4": "J"}))
+    assert _ids(resolved=no_controller, actors=actors) == [[[1], [2], [3], [4]]]
+    assert no_controller[0].level == "junctions"
+
+
+def test_basic_fsm_without_a_sidecar_makes_every_light_its_own_intersection():
+    actors = _four_way(first_id=1, x=0)
+    resolved = t.resolve_intersection_groups(actors=actors, config=_basic())
+    assert _ids(resolved=resolved, actors=actors) == [[[1]], [[2]], [[3]], [[4]]]
+
+
+def _fsm_findings(*, actors, config, signal_groups=None, topology=None) -> list[dict]:
+    report = conversion_report.attach()
+    try:
+        t.resolve_intersection_groups(actors=actors, config=config, signal_groups=signal_groups, topology=topology)
+    finally:
+        conversion_report.detach(handler=report)
+    return [r for r in report.records if r["kind"] == "heuristic"]
+
+
+@pytest.mark.parametrize("basic", [False, True])
+def test_fsm_heuristics_record_where_they_change_the_grouping(basic):
+    actors, groups = _junction_and_strays()
+    config = _basic() if basic else t.FsmConfig()
+    findings = _fsm_findings(actors=actors, config=config, signal_groups=groups)
+    by_id = {(r["element"], r["id"]): r for r in findings}
+    # In Basic, junction J's axis split and its declared phases hold the same lights (only their order differs).
+    expected = {("H11", "lights 1,2,3,4"), ("H11", "lights 5,6")} | (set() if basic else {("H12", "lights 1,2,3,4")})
+    assert set(by_id) == expected
+    assert all(r["applied"] is not basic for r in findings)
+    assert by_id[("H11", "lights 5,6")]["location"] == pytest.approx([505.0, 0.0])
+
+
+def test_topology_refinement_off_keeps_the_intersection_and_records_the_split():
+    actors = [
+        _actor(actor_id=10, x=0, y=0, axis=0.0),
+        _actor(actor_id=11, x=5, y=0, axis=0.3),
+        _actor(actor_id=12, x=10, y=0, axis=0.6),
+    ]
+    sentinels = [object() for _ in actors]
+
+    class Topo:
+        def lanelet_for(self, *, center):
+            return next(s for a, s in zip(actors, sentinels) if np.allclose(a.center, center))
+
+        def shares_junction(self, *, a, b, max_hops):
+            return {sentinels.index(a), sentinels.index(b)} == {0, 1}
+
+    heuristics = ch.HeuristicsConfig()
+    heuristics.fsm_topology_refinement.enabled = False
+    config = t.FsmConfig(use_xodr_junctions=False, certainty_threshold=1.01, heuristics=heuristics)
+    resolved = t.resolve_intersection_groups(actors=actors, config=config, topology=Topo())
+    assert len(resolved) == 1 and not resolved[0].topology_refined
+    findings = _fsm_findings(actors=actors, config=config, topology=Topo())
+    assert [(r["element"], r["applied"]) for r in findings if r["element"] == "H13"] == [("H13", False)]
+
+
+def test_fsm_follows_the_autofix_settings_the_map_was_converted_with(tmp_path):
+    (tmp_path / "m_provenance.json").write_text(json.dumps({"config": {"autofix": {"enabled": False}}}))
+    assert t.autofix_from_provenance(map_dir=str(tmp_path)) == ch.AutoFixConfig(enabled=False)
+    assert t.autofix_from_provenance(map_dir=str(tmp_path / "missing")) == ch.AutoFixConfig()

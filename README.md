@@ -196,6 +196,9 @@ switched-off one would have acted (`applied` false), with its position.
 | H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |
 | H9 | `painted_stop_line` | on | Objects of type `stopLine` or named `StopLine`, and signals of type `294` or named `StopLine`, are painted stop lines (listed, never converted) |
 | H10 | `seam_tolerance` | on, `max_gap_m=1.0` | Linked lanelets whose ends lie up to `max_gap_m` apart share their end nodes, so routing crosses the seam; without it only ends within 1 cm do |
+| H11 | `fsm_distance_clusters` | on, `max_distance_m=50` | `traffic_light_fsm.py`: lights this close are one intersection (two declared junctions never merge); without it each junction, and each light no junction claims, is its own |
+| H12 | `fsm_axis_split` | on, `min_angle_rad=0.5` | `traffic_light_fsm.py`: an intersection's phases are split by stopline direction; without it they are the declared controllers, in sequence order, and one phase per light no controller names |
+| H13 | `fsm_topology_refinement` | on, `max_hops=3` | `traffic_light_fsm.py`: a distance cluster of low certainty is split where its lights' lanelets do not meet within the hops |
 | H14 | `signal_past_road_end` | on, `max_overshoot_m=1.0` | A signal whose `s` lies past its road's end (beyond the reader's rounding tolerance, 1 cm + 1 % of the road length) is placed at the end within `max_overshoot_m`, else dropped; without it the map is refused (exit code 3) naming those signals |
 
 Guesses that live in vendored code or in other tools are listed at the top of `conversion_heuristics.py`.
@@ -237,8 +240,17 @@ elsewhere). Without it, or with level A off, lights are clustered by distance on
 clustered by distance and may join a nearby junction's intersection; they are listed in the log. An intersection
 lacking data for the requested level uses the next lower one.
 
+The distance clustering, the direction split and the topology refinement are AutoFix heuristics H11-H13 (see
+"Heuristics"), on by default. The tool uses the AutoFix settings the map was converted with (from
+`<map>_provenance.json`); `--autofix` / `--no-autofix` and `--cluster-eps`, `--axis-split-threshold` and
+`--topology-max-hops` override them. Without them (BasicConversion) the FSM is what the OpenDRIVE file declares:
+one intersection per junction, one phase per `<controller>` in `sequence` order, and its own phase for a
+junction light no controller names, its own intersection for a light no junction claims.
+
 It also writes `<map>_fsm_review.json`: per intersection, its junction, the level actually used, its lights and
-phase groups, and how certain the grouping is, plus the lights no junction claims and `stopline_join`: whether
+phase groups, and how certain the grouping is, plus the lights no junction claims, `heuristics` (every place
+H11-H13 changed the grouping, or would have with `applied` false, with the lights and their centre) and
+`stopline_join`: whether
 every traffic-light `actor_id` in the stoplines appears in exactly one FSM and the FSMs name no other actor
 (`missing_from_fsm`, `not_in_stoplines`, `in_several_intersections`, `ok`). `certainty` is the lower of two
 parts in [0, 1]:
@@ -264,7 +276,7 @@ To add `<map>_signal_groups.json` to a map converted before this file existed:
 ```
 
 ```text
-usage: traffic_light_fsm.py [-h] [--cluster-eps CLUSTER_EPS]
+usage: traffic_light_fsm.py [-h] [--autofix | --no-autofix] [--cluster-eps CLUSTER_EPS]
                             [--axis-split-threshold AXIS_SPLIT_THRESHOLD]
                             [--green-base GREEN_BASE]
                             [--green-per-extra-lane GREEN_PER_EXTRA_LANE] [--green-min GREEN_MIN]
@@ -286,18 +298,29 @@ per-intersection FSM in the format consumed by the IAI stack (see
 ``maps/Carla_UE4_old/Town15/carla_Town15_light_group_states.json``). The tool never relies on
 OpenDRIVE, CommonRoad, or traffic-light positions: ``actor_id`` is treated as an opaque grouping
 key already present in ``stoplines.json``, and the only geometry it trusts is the stoplines
-themselves. Two strategies are combined: * Geometry (always): cluster by position, sub-group by
-stopline axis (orientation mod pi). * Topology (only where geometry is uncertain): associate
-stoplines to lanelets in the ``.osm`` and use lane connectivity/adjacency to correct the geometric
-guess. Run with ``python traffic_light_fsm.py <map-dir>``.
+themselves. BasicConversion (``autofix.enabled=false``) uses only what the OpenDRIVE declares: one
+intersection per junction (``<map>_signal_groups.json``), one phase per ``<controller>`` in
+``sequence`` order, and its own phase, or its own intersection, for a light nothing claims.
+AutoFix adds three :mod:`conversion_heuristics` guesses, all on by default: * H11
+``fsm_distance_clusters``: lights closer than a distance are one intersection. * H12
+``fsm_axis_split``: an intersection's phases are split by stopline axis (orientation mod pi). *
+H13 ``fsm_topology_refinement``: where that geometry is uncertain, lanelet connectivity in the
+``.osm`` splits the cluster. Each detection is recorded with ``applied`` and its location in
+``<map>_fsm_review.json``. The AutoFix settings default to those ``<map>_provenance.json`` records
+for the conversion. Run with ``python traffic_light_fsm.py <map-dir>``.
 
 positional arguments:
   map_dir               Map directory with metadata.json, .osm and *_stoplines.json
 
 options:
   -h, --help            show this help message and exit
+  --autofix, --no-autofix
+                        Apply the FSM heuristics H11-H13 (default: as <map>_provenance.json
+                        records for the conversion)
   --cluster-eps CLUSTER_EPS
+                        H11 distance in metres (default 50)
   --axis-split-threshold AXIS_SPLIT_THRESHOLD
+                        H12 angle in radians (default 0.5)
   --green-base GREEN_BASE
   --green-per-extra-lane GREEN_PER_EXTRA_LANE
   --green-min GREEN_MIN
@@ -308,6 +331,7 @@ options:
   --review-threshold REVIEW_THRESHOLD
                         Flag intersections below this certainty in <map>_fsm_review.json
   --topology-max-hops TOPOLOGY_MAX_HOPS
+                        H13 hops (default 3)
   --no-topology         Disable lanelet topology refinement
   --xodr-junctions, --no-xodr-junctions
                         Keep each XODR junction's lights in one intersection (default on)
@@ -362,6 +386,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --cluster-eps CLUSTER_EPS
+                        H11 distance in metres (default 50)
   --no-topology         Disable lanelet topology refinement
   --signal-groups SIGNAL_GROUPS
                         Signal groups JSON (default: <map>_signal_groups.json beside the

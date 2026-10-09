@@ -388,7 +388,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     vd = VizConfig()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("map_dir", help="Map directory with metadata.json, mesh and *_stoplines.json")
-    parser.add_argument("--cluster-eps", type=float, default=fd.cluster_eps)
+    parser.add_argument("--cluster-eps", type=float, default=None, help=f"H11 distance in metres (default {fd.cluster_eps:g})")
     parser.add_argument("--no-topology", action="store_true", help="Disable lanelet topology refinement")
     parser.add_argument(
         "--signal-groups",
@@ -406,7 +406,7 @@ def main() -> None:
     """CLI entry point: render the FSM mosaic for one map directory."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = _build_arg_parser().parse_args()
-    fsm_config = tlf.FsmConfig(cluster_eps=args.cluster_eps)
+    fsm_config = tlf.FsmConfig(heuristics=tlf.heuristics_for(map_dir=args.map_dir, cluster_eps=args.cluster_eps))
     viz_config = VizConfig(
         target_px_per_m=args.px_per_m,
         max_mosaic_px=args.max_mosaic_px,

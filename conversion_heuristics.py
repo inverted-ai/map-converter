@@ -107,6 +107,47 @@ class SignalPastRoadEndConfig:
 
 
 @dataclasses.dataclass(slots=True)
+class FsmDistanceClustersConfig:
+    """H11.
+
+    Attributes:
+        enabled: Whether it is applied.
+        max_distance_m: Largest distance (m) linking two traffic lights into one intersection.
+    """
+
+    enabled: bool = True
+    max_distance_m: float = 50.0
+
+
+@dataclasses.dataclass(slots=True)
+class FsmAxisSplitConfig:
+    """H12.
+
+    Attributes:
+        enabled: Whether it is applied.
+        min_angle_rad: Smallest angular gap (radians, on ``[0, pi)``) between stopline axes that
+            splits an intersection into two phases.
+    """
+
+    enabled: bool = True
+    min_angle_rad: float = 0.5
+
+
+@dataclasses.dataclass(slots=True)
+class FsmTopologyRefinementConfig:
+    """H13.
+
+    Attributes:
+        enabled: Whether it is applied.
+        max_hops: Hops over the routing graph within which two lights' lanelets must meet to stay
+            in one intersection.
+    """
+
+    enabled: bool = True
+    max_hops: int = 3
+
+
+@dataclasses.dataclass(slots=True)
 class HeuristicsConfig:
     """Settings of the :data:`HEURISTICS`, one entry per heuristic, named after it."""
 
@@ -120,6 +161,11 @@ class HeuristicsConfig:
     us_sign_codes: Switch = dataclasses.field(default_factory=Switch)
     painted_stop_line: Switch = dataclasses.field(default_factory=Switch)
     seam_tolerance: SeamToleranceConfig = dataclasses.field(default_factory=SeamToleranceConfig)
+    fsm_distance_clusters: FsmDistanceClustersConfig = dataclasses.field(default_factory=FsmDistanceClustersConfig)
+    fsm_axis_split: FsmAxisSplitConfig = dataclasses.field(default_factory=FsmAxisSplitConfig)
+    fsm_topology_refinement: FsmTopologyRefinementConfig = dataclasses.field(
+        default_factory=FsmTopologyRefinementConfig
+    )
     signal_past_road_end: SignalPastRoadEndConfig = dataclasses.field(default_factory=SignalPastRoadEndConfig)
 
 
@@ -187,6 +233,9 @@ def check_config(*, config: HeuristicsConfig) -> None:
         )
     for name, value in (
         ("seam_tolerance.max_gap_m", config.seam_tolerance.max_gap_m),
+        ("fsm_distance_clusters.max_distance_m", config.fsm_distance_clusters.max_distance_m),
+        ("fsm_axis_split.min_angle_rad", config.fsm_axis_split.min_angle_rad),
+        ("fsm_topology_refinement.max_hops", config.fsm_topology_refinement.max_hops),
         ("signal_past_road_end.max_overshoot_m", config.signal_past_road_end.max_overshoot_m),
     ):
         if not value >= 0:
@@ -457,6 +506,67 @@ def joins_seam(*, gap_m: float, config: HeuristicsConfig) -> bool:
 def shared_node_tolerance(*, config: HeuristicsConfig) -> float:
     """How far apart (m) linked lanelet ends may be and still share nodes: H10's ``max_gap_m`` when applied."""
     return config.seam_tolerance.max_gap_m if config.seam_tolerance.enabled else BASIC_SEAM_TOLERANCE_M
+
+
+@_heuristic(id="H11", name="fsm_distance_clusters")
+def merges_intersections(*, declared_count: int) -> bool:
+    """Traffic lights closer than ``max_distance_m`` are one intersection (``traffic_light_fsm.py``).
+
+    Detects a distance cluster that joins ``declared_count`` > 1 declared intersections (an
+    OpenDRIVE junction's lights, or a light no junction claims). Two declared junctions are never
+    joined; BasicConversion keeps each junction, and each light no junction claims, alone.
+
+    Assumes: lights a few tens of metres apart that the OpenDRIVE does not group belong to one
+    intersection (exporters often leave junction membership out); single linkage, shortest link
+    first.
+
+    Evidence: with H12 it reproduces the 8 hand-authored intersections of CARLA Town15
+    (``test_town15_matches_manual_groupings``).
+
+    Breaks when: two separate intersections stand closer than the distance (they share one cycle),
+    or one intersection is spread wider (it is split).
+    """
+    return declared_count > 1
+
+
+@_heuristic(id="H12", name="fsm_axis_split")
+def changes_phases(*, axis_groups: list[list[int]], declared_groups: list[list[int]]) -> bool:
+    """An intersection's lights are split into at most two phases by stopline axis (``traffic_light_fsm.py``).
+
+    Detects an intersection whose axis-split phases hold other lights together than the phases
+    the OpenDRIVE declares (one per ``<controller>``, in ``sequence`` order, and one per light no
+    controller names), which BasicConversion uses. Phase order alone is not a difference.
+
+    Assumes: lights whose stoplines run along the same axis (within ``min_angle_rad``) serve
+    opposing approaches of one road and go green together; the crossing road gets the other phase.
+
+    Evidence: reproduces the phases of the 8 hand-authored intersections of CARLA Town15, where
+    the controllers hold one light each (``test_town15_matches_manual_groupings``).
+
+    Breaks when: an intersection needs protected turns or more than two phases, or its roads
+    cross at a shallow angle (below the split angle they share one phase).
+    """
+    return sorted(map(sorted, axis_groups)) != sorted(map(sorted, declared_groups))
+
+
+@_heuristic(id="H13", name="fsm_topology_refinement")
+def splits_intersection(*, parts: int) -> bool:
+    """A low-certainty distance cluster is split where its lights' lanelets do not meet within ``max_hops``.
+
+    Detects a cluster (certainty below ``FsmConfig.certainty_threshold``) whose lights fall into
+    ``parts`` > 1 groups that the routing graph does not connect within the hops. Only distance
+    clusters (H11) are refined; declared junctions never are.
+
+    Assumes: lights of one intersection control lanes that lead into a common junction within a
+    few lanelets; lights whose lanes never meet belong to different intersections.
+
+    Evidence: the FSM tool's answer to over-merging that one distance cannot detect (closely
+    spaced intersections); its corpus applications are counted in the FSM review files.
+
+    Breaks when: the ``.osm`` lacks the routing links of the junction (a light's lanelet is
+    isolated), so lights of one intersection are split apart.
+    """
+    return parts > 1
 
 
 @_heuristic(id="H14", name="signal_past_road_end")

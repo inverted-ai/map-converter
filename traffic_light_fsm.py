@@ -10,10 +10,16 @@ The tool never relies on OpenDRIVE, CommonRoad, or traffic-light positions: ``ac
 treated as an opaque grouping key already present in ``stoplines.json``, and the only
 geometry it trusts is the stoplines themselves.
 
-Two strategies are combined:
-  * Geometry (always): cluster by position, sub-group by stopline axis (orientation mod pi).
-  * Topology (only where geometry is uncertain): associate stoplines to lanelets in the
-    ``.osm`` and use lane connectivity/adjacency to correct the geometric guess.
+BasicConversion (``autofix.enabled=false``) uses only what the OpenDRIVE declares: one
+intersection per junction (``<map>_signal_groups.json``), one phase per ``<controller>`` in
+``sequence`` order, and its own phase, or its own intersection, for a light nothing claims.
+AutoFix adds three :mod:`conversion_heuristics` guesses, all on by default:
+  * H11 ``fsm_distance_clusters``: lights closer than a distance are one intersection.
+  * H12 ``fsm_axis_split``: an intersection's phases are split by stopline axis (orientation mod pi).
+  * H13 ``fsm_topology_refinement``: where that geometry is uncertain, lanelet connectivity in the
+    ``.osm`` splits the cluster.
+Each detection is recorded with ``applied`` and its location in ``<map>_fsm_review.json``. The
+AutoFix settings default to those ``<map>_provenance.json`` records for the conversion.
 
 Run with ``python traffic_light_fsm.py <map-dir>``.
 """
@@ -31,6 +37,10 @@ import os
 from typing import Any, Optional
 
 import numpy as np
+from omegaconf import OmegaConf
+
+import conversion_heuristics
+import conversion_report
 
 logger = logging.getLogger(__name__)
 
@@ -44,28 +54,23 @@ class FsmConfig:
     """Tunable parameters for FSM generation.
 
     Attributes:
-        cluster_eps: Max distance (metres) linking two lights into the same intersection.
-        axis_split_threshold: Min angular gap (radians, on ``[0, pi)``) required to split an
-            intersection into two phase groups rather than one.
         green_base: Green duration (seconds) for a single-approach group.
         green_per_extra_lane: Extra green seconds added per additional stopline in a group.
         green_min: Lower clamp on green duration (seconds).
         green_max: Upper clamp on green duration (seconds).
         yellow: Yellow duration (seconds).
         all_red: All-red clearance duration (seconds) between phases.
-        certainty_threshold: Below this, an intersection is refined with lanelet topology.
+        certainty_threshold: Below this, an intersection is refined with lanelet topology (H13).
         review_threshold: Below this, an intersection is flagged for review in
             ``<map>_fsm_review.json``.
-        topology_max_hops: Hops over the routing graph when testing shared-junction links.
         use_xodr_junctions: Keep each OpenDRIVE junction's lights in one intersection (needs the
             ``<map>_signal_groups.json`` sidecar). Off: distance clustering only.
         use_xodr_groups: Also take phase groups from the junction's controllers (one controller,
             one phase). Forces ``use_xodr_junctions``.
         use_xodr_sequence: Also order phases by controller ``sequence``. Forces ``use_xodr_groups``.
+        heuristics: The heuristic settings in use (after ``autofix.enabled``); H11-H13 decide here.
     """
 
-    cluster_eps: float = 50.0
-    axis_split_threshold: float = 0.5
     green_base: float = 20.0
     green_per_extra_lane: float = 2.5
     green_min: float = 15.0
@@ -74,10 +79,27 @@ class FsmConfig:
     all_red: float = 3.0
     certainty_threshold: float = 0.5
     review_threshold: float = 0.7
-    topology_max_hops: int = 3
     use_xodr_junctions: bool = True
     use_xodr_groups: bool = False
     use_xodr_sequence: bool = False
+    heuristics: conversion_heuristics.HeuristicsConfig = dataclasses.field(
+        default_factory=conversion_heuristics.HeuristicsConfig
+    )
+
+    @property
+    def cluster_eps(self) -> float:
+        """H11: largest distance (m) linking two lights into one intersection."""
+        return self.heuristics.fsm_distance_clusters.max_distance_m
+
+    @property
+    def axis_split_threshold(self) -> float:
+        """H12: smallest angular gap (radians, on ``[0, pi)``) that splits an intersection into two phases."""
+        return self.heuristics.fsm_axis_split.min_angle_rad
+
+    @property
+    def topology_max_hops(self) -> int:
+        """H13: routing-graph hops within which two lights' lanelets must meet."""
+        return self.heuristics.fsm_topology_refinement.max_hops
 
 
 @dataclasses.dataclass(slots=True)
@@ -599,6 +621,79 @@ def _controller_groups(
     return [g for _, g in ordered], LEVEL_GROUPS
 
 
+def declared_phases(
+    *, intersection: list[int], actors: list[Actor], signal_groups: Optional[dict]
+) -> tuple[list[list[int]], Optional[str]]:
+    """The phases the OpenDRIVE declares for an intersection (BasicConversion).
+
+    One phase per ``<controller>`` naming its lights, in ``sequence`` order when every one has a
+    sequence, else larger first; then one phase per light no controller names.
+
+    Returns:
+        The phases (indices into ``actors``) and ``sequence`` or ``groups`` when controllers were
+        used, else ``None``.
+    """
+    by_id = {str(actors[i].actor_id): i for i in intersection}
+    groups: list[tuple[Optional[int], list[int]]] = []
+    placed: set[int] = set()
+    for controller in (signal_groups or {}).get("controllers", []):
+        members = [by_id[sid] for sid in controller["signal_ids"] if sid in by_id and by_id[sid] not in placed]
+        if members:
+            groups.append((controller.get("sequence"), members))
+            placed.update(members)
+    level = None
+    if groups and all(seq is not None for seq, _ in groups):
+        groups.sort(key=lambda sg: (sg[0], min(actors[i].actor_id for i in sg[1])))
+        level = LEVEL_SEQUENCE
+    elif groups:
+        groups.sort(key=lambda sg: (-len(sg[1]), min(actors[i].actor_id for i in sg[1])))
+        level = LEVEL_GROUPS
+    singles = [[i] for i in sorted(intersection, key=lambda i: actors[i].actor_id) if i not in placed]
+    return [g for _, g in groups] + singles, level
+
+
+def declared_intersections(*, actors: list[Actor], membership: dict[str, str]) -> list[list[int]]:
+    """One intersection per declared junction, and one per light no junction claims (BasicConversion)."""
+    by_junction: dict[str, list[int]] = {}
+    intersections = []
+    for i, actor in enumerate(actors):
+        junction = membership.get(str(actor.actor_id))
+        if junction is None:
+            intersections.append([i])
+        elif junction in by_junction:
+            by_junction[junction].append(i)
+        else:
+            by_junction[junction] = [i]
+            intersections.append(by_junction[junction])
+    return sorted(intersections, key=min)
+
+
+def _lights_label(*, intersection: list[int], actors: list[Actor]) -> str:
+    return "lights " + ",".join(str(a) for a in sorted(actors[i].actor_id for i in intersection))
+
+
+def _record(
+    *,
+    heuristic_id: str,
+    intersection: list[int],
+    actors: list[Actor],
+    config: FsmConfig,
+    action: str,
+    message: str,
+) -> bool:
+    """Record one FSM heuristic detection at the intersection's centre; return whether it is applied."""
+    centre = np.mean([actors[i].center for i in intersection], axis=0)
+    label = _lights_label(intersection=intersection, actors=actors)
+    return conversion_heuristics.record(
+        heuristic_id=heuristic_id,
+        element_id=label,
+        action=action,
+        message=f"{label}: {message}",
+        config=config.heuristics,
+        location=(float(centre[0]), float(centre[1])),
+    )
+
+
 def _centroids(*, intersections: list[list[int]], actors: list[Actor]) -> np.ndarray:
     """Mean stopline centre of each intersection, shape ``(n, 2)``."""
     if not intersections:
@@ -631,7 +726,22 @@ def resolve_intersection_groups(
     if signal_groups is None and levels.use_xodr_junctions:
         logger.warning("No signal groups sidecar - XODR junctions, groups and sequence are not used")
     membership = xodr_membership(signal_groups=signal_groups, levels=levels)
-    intersections = cluster_intersections(actors=actors, config=config, membership=membership)
+    declared = declared_intersections(actors=actors, membership=membership)
+    clustered = cluster_intersections(actors=actors, config=config, membership=membership)
+    declared_of = {i: k for k, inter in enumerate(declared) for i in inter}
+    merging = [
+        inter
+        for inter in clustered
+        if conversion_heuristics.merges_intersections(declared_count=len({declared_of[i] for i in inter}))
+    ]
+    clusters_applied = conversion_heuristics.applies(heuristic_id="H11", config=config.heuristics)
+    for inter in merging:
+        _record(
+            heuristic_id="H11", intersection=inter, actors=actors, config=config, action="one_intersection",
+            message=f"{len({declared_of[i] for i in inter})} declared intersections within "
+            f"{config.cluster_eps:g} m of each other - one intersection",
+        )
+    intersections = clustered if clusters_applied else declared
     centroids = _centroids(intersections=intersections, actors=actors)
 
     resolved: list[tuple[list[int], bool]] = []  # (intersection, topology_refined)
@@ -649,18 +759,23 @@ def resolve_intersection_groups(
             config=config,
         )
         if topology is not None and certainty < config.certainty_threshold:
-            logger.info(
-                "Intersection %d certainty %.2f below %.2f - refining with topology",
-                idx,
-                certainty,
-                config.certainty_threshold,
-            )
-            resolved.extend(
-                (part, True)
-                for part in refine_intersection_with_topology(
-                    intersection=inter, actors=actors, topology=topology, config=config
+            parts = refine_intersection_with_topology(intersection=inter, actors=actors, topology=topology, config=config)
+            if conversion_heuristics.splits_intersection(parts=len(parts)):
+                _record(
+                    heuristic_id="H13", intersection=inter, actors=actors, config=config, action="split",
+                    message=f"certainty {certainty:.2f}: lanelets do not meet within {config.topology_max_hops} hops - "
+                    f"{len(parts)} intersections",
                 )
-            )
+            if conversion_heuristics.applies(heuristic_id="H13", config=config.heuristics):
+                logger.info(
+                    "Intersection %d certainty %.2f below %.2f - refining with topology",
+                    idx,
+                    certainty,
+                    config.certainty_threshold,
+                )
+                resolved.extend((part, True) for part in parts)
+            else:
+                resolved.append((inter, False))
         else:
             if topology is None and certainty < config.certainty_threshold:
                 logger.warning(
@@ -685,6 +800,14 @@ def resolve_intersection_groups(
                 )
         if groups is None:
             groups = group_actors(intersection=inter, actors=actors, config=config)
+        basic_groups, basic_level = declared_phases(intersection=inter, actors=actors, signal_groups=signal_groups)
+        if conversion_heuristics.changes_phases(axis_groups=groups, declared_groups=basic_groups):
+            _record(
+                heuristic_id="H12", intersection=inter, actors=actors, config=config, action="phases_by_axis",
+                message=f"{len(groups)} phase(s) by stopline axis instead of the {len(basic_groups)} declared",
+            )
+        if not conversion_heuristics.applies(heuristic_id="H12", config=config.heuristics):
+            groups, level = basic_groups, basic_level or (LEVEL_JUNCTIONS if junction is not None else LEVEL_OFF)
         results.append(
             IntersectionResult(
                 actors=inter,
@@ -704,7 +827,7 @@ def resolve_intersection_groups(
     if unassigned:
         placed = {actors[i].actor_id: r.junction for r in results for i in r.actors}
         logger.warning(
-            "%d light(s) belong to no XODR junction; placed by distance: %s",
+            "%d light(s) belong to no XODR junction; placed: %s",
             len(unassigned),
             ", ".join(f"{aid}->{placed[aid] or 'own intersection'}" for aid in unassigned),
         )
@@ -777,6 +900,17 @@ def load_signal_groups(*, stoplines_path: str, override: Optional[str] = None) -
     return path, groups
 
 
+def autofix_from_provenance(*, map_dir: str) -> conversion_heuristics.AutoFixConfig:
+    """The AutoFix settings ``<map>_provenance.json`` in ``map_dir`` records, else the defaults."""
+    paths = sorted(glob.glob(os.path.join(map_dir, "*_provenance.json")))
+    if not paths:
+        return conversion_heuristics.AutoFixConfig()
+    with open(paths[0]) as f:
+        recorded = (json.load(f).get("config") or {}).get("autofix") or {}
+    merged = OmegaConf.merge(OmegaConf.structured(conversion_heuristics.AutoFixConfig), recorded)
+    return OmegaConf.to_object(merged)
+
+
 def _load_topology(*, map_dir: str, metadata: dict) -> Optional[LaneletTopology]:
     """Build a :class:`LaneletTopology`, or return ``None`` if unavailable."""
     osm_name = metadata.get("lanelet_path")
@@ -820,7 +954,11 @@ def run(
     signal_groups_path, signal_groups = load_signal_groups(stoplines_path=stoplines_path, override=signal_groups_path)
 
     topology = _load_topology(map_dir=map_dir, metadata=metadata) if use_topology else None
-    resolved = resolve_intersection_groups(actors=actors, config=config, topology=topology, signal_groups=signal_groups)
+    findings = conversion_report.attach()
+    try:
+        resolved = resolve_intersection_groups(actors=actors, config=config, topology=topology, signal_groups=signal_groups)
+    finally:
+        conversion_report.detach(handler=findings)
     fsms = [build_fsm(groups=r.groups, actors=actors, config=config) for r in resolved]
     logger.info("Generated FSMs for %d intersections", len(fsms))
 
@@ -838,6 +976,7 @@ def run(
         signal_groups_path=signal_groups_path,
         signal_groups=signal_groups,
         stopline_join=stopline_fsm_join(actors=actors, controller_path=out_path),
+        heuristics=[r for r in findings.records if r["kind"] == "heuristic"],
     )
     logger.info("Wrote FSM review to %s", review_path)
 
@@ -870,12 +1009,13 @@ def write_review(
     signal_groups_path: Optional[str],
     signal_groups: Optional[dict],
     stopline_join: Optional[dict] = None,
+    heuristics: Optional[list[dict]] = None,
 ) -> str:
     """Write ``<map>_fsm_review.json``: per intersection, its lights, phase groups, XODR level and certainty.
 
     ``flagged`` repeats the intersections below ``config.review_threshold``. Also lists the lights no
-    XODR junction claims (placed by distance), when junctions are in use, and ``stopline_join``
-    (:func:`stopline_fsm_join`) when given.
+    XODR junction claims, when junctions are in use, ``stopline_join`` (:func:`stopline_fsm_join`)
+    when given, and ``heuristics``: the H11-H13 detection records, applied or not.
     """
     levels = effective_xodr_levels(config=config)
     intersections = [
@@ -908,6 +1048,7 @@ def write_review(
             {"index": i, **intersections[i]} for i in flagged_intersections(resolved=resolved, config=config)
         ],
         "stopline_join": stopline_join,
+        "heuristics": heuristics or [],
     }
     path = os.path.join(map_dir, f"{location}_fsm_review.json")
     with open(path, "w") as f:
@@ -915,12 +1056,45 @@ def write_review(
     return path
 
 
+def heuristics_for(
+    *,
+    map_dir: str,
+    autofix: Optional[bool] = None,
+    cluster_eps: Optional[float] = None,
+    axis_split_threshold: Optional[float] = None,
+    topology_max_hops: Optional[int] = None,
+) -> conversion_heuristics.HeuristicsConfig:
+    """The heuristic settings for the FSM of ``map_dir``: its provenance's AutoFix, then the given overrides."""
+    recorded = autofix_from_provenance(map_dir=map_dir)
+    heuristics = conversion_heuristics.applied_heuristics(
+        autofix=recorded if autofix is None else dataclasses.replace(recorded, enabled=autofix)
+    )
+    for value, entry, field in (
+        (cluster_eps, "fsm_distance_clusters", "max_distance_m"),
+        (axis_split_threshold, "fsm_axis_split", "min_angle_rad"),
+        (topology_max_hops, "fsm_topology_refinement", "max_hops"),
+    ):
+        if value is not None:
+            heuristics = dataclasses.replace(
+                heuristics, **{entry: dataclasses.replace(getattr(heuristics, entry), **{field: value})}
+            )
+    return heuristics
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     d = FsmConfig()  # slots=True means class attributes are descriptors; read defaults off an instance
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("map_dir", help="Map directory with metadata.json, .osm and *_stoplines.json")
-    parser.add_argument("--cluster-eps", type=float, default=d.cluster_eps)
-    parser.add_argument("--axis-split-threshold", type=float, default=d.axis_split_threshold)
+    parser.add_argument(
+        "--autofix",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Apply the FSM heuristics H11-H13 (default: as <map>_provenance.json records for the conversion)",
+    )
+    parser.add_argument("--cluster-eps", type=float, default=None, help=f"H11 distance in metres (default {d.cluster_eps:g})")
+    parser.add_argument(
+        "--axis-split-threshold", type=float, default=None, help=f"H12 angle in radians (default {d.axis_split_threshold:g})"
+    )
     parser.add_argument("--green-base", type=float, default=d.green_base)
     parser.add_argument("--green-per-extra-lane", type=float, default=d.green_per_extra_lane)
     parser.add_argument("--green-min", type=float, default=d.green_min)
@@ -934,7 +1108,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=d.review_threshold,
         help="Flag intersections below this certainty in <map>_fsm_review.json",
     )
-    parser.add_argument("--topology-max-hops", type=int, default=d.topology_max_hops)
+    parser.add_argument("--topology-max-hops", type=int, default=None, help=f"H13 hops (default {d.topology_max_hops})")
     parser.add_argument("--no-topology", action="store_true", help="Disable lanelet topology refinement")
     parser.add_argument(
         "--xodr-junctions",
@@ -984,8 +1158,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = _build_arg_parser().parse_args()
     config = FsmConfig(
-        cluster_eps=args.cluster_eps,
-        axis_split_threshold=args.axis_split_threshold,
+        heuristics=heuristics_for(
+            map_dir=args.map_dir,
+            autofix=args.autofix,
+            cluster_eps=args.cluster_eps,
+            axis_split_threshold=args.axis_split_threshold,
+            topology_max_hops=args.topology_max_hops,
+        ),
         green_base=args.green_base,
         green_per_extra_lane=args.green_per_extra_lane,
         green_min=args.green_min,
@@ -994,7 +1173,6 @@ def main() -> None:
         all_red=args.all_red,
         certainty_threshold=args.certainty_threshold,
         review_threshold=args.review_threshold,
-        topology_max_hops=args.topology_max_hops,
         use_xodr_junctions=args.xodr_junctions,
         use_xodr_groups=args.xodr_groups,
         use_xodr_sequence=args.xodr_sequence,

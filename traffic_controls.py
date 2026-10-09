@@ -260,7 +260,7 @@ def _sign_stops(
         )
     ]
     if not scoped:
-        targets = _targets(index=index, signal_id=signal_id, config=config) if config.facing_lanes else None
+        targets = _targets(index=index, signal_id=signal_id, config=config) if config.facing_lanes.enabled else None
         if targets is None:
             return []
         stops, _ = _facing_stops(index=index, targets=targets, drivable_types=drivable_types, config=config)
@@ -319,7 +319,7 @@ def _control_stops(
             heuristic_id="H4", element_id=signal_id, action="placed_at_s",
             message=f"signal {signal_id}: on an ordinary road - stopline at its s, not at the lane start",
         )
-    if index.bound.get(signal_id) or not config.facing_lanes:
+    if index.bound.get(signal_id) or not config.facing_lanes.enabled:
         return stops, True
     targets = _targets(index=index, signal_id=signal_id, config=config)
     if targets is None:

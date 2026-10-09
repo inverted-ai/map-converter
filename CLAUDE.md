@@ -25,7 +25,7 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 - `conversion_common.py` — dependency-free helpers both `convert_map.py` and `map_report.py` use (file sha256, git identity, the refusal exit code 3).
 - `map_validation.py` — the validation stage: `PROFILES` (`perfect`, the default, and `strict`) of `ValidationConfig` thresholds, `evaluate` over `map_quality` metrics plus `ControlCoverage` (per-light and per-sign stoplines, counted by `traffic_controls.control_stoplines` because the `.osm` has no OpenDRIVE ids), and `run_map_verifier` (CommonRoad `MapVerifier`, report-only, off by default, in a spawned child process group killed at `verifier_timeout_s`).
 - `traffic_controls.py` — stopline rows for traffic lights and stop/yield signs (bound by `<validity>` on the signal or its `<signalReference>`s; lane-entry placement computed with the vendored parametric-lane calls) and their `ControlCoverage`; lists painted stop lines in the conversion report.
-- `conversion_heuristics.py` — **every guess about the XODR author's intent** (H1-H9: id, name = `HeuristicsConfig` switch, docstring with assumption / evidence / what breaks it), switchable as `heuristics.<name>=` on the command line; each application is a `kind="heuristic"` record. New guesses go here, not as special cases elsewhere.
+- `conversion_heuristics.py` — **every guess about the XODR author's intent** (H1-H9: id, name = `HeuristicsConfig` switch, docstring with assumption / evidence / what breaks it), configured as `autofix.heuristics.<name>.<setting>=` (`HeuristicsConfig`; `autofix.enabled=false` switches all off); each application is a `kind="heuristic"` record. New guesses go here, not as special cases elsewhere.
 - `conversion_report.py` — the `logging.Handler` `convert_map` attaches to `crdesigner.degradation`; writes `<map>_conversion_report.json` (element counts, unrecognised tokens, every record), also for failed runs.
 - `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers.
 - `convert_lanelet_to_opendrive.py` — reverse direction via CARLA's tools.
@@ -38,7 +38,7 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 All commands: `PYTHONPATH` unset (a sourced ROS environment breaks pytest), the repo's venv python, absolute paths.
 
 - Setup: `python3 -m venv <repo>/.venv && <repo>/.venv/bin/pip install -r <repo>/requirements-tests.txt`. `requirements.txt` is the runtime manifest; `pyproject.toml` is upstream's poetry packaging and is left untouched (`tests/iai/test_requirements.py` keeps the two in step).
-- **Run a conversion:** `<repo>/.venv/bin/python <repo>/convert_map.py dir_path=<folder-with-single-.xodr>` (or `xodr_path=<file.xodr>`, outputs in `<file folder>/<stem>/`; `convert_map()` returns the `.osm` path). Other `MapConversionConfig` fields are OmegaConf dotlist args; see README.
+- **Run a conversion:** `<repo>/.venv/bin/python <repo>/convert_map.py dir_path=<folder-with-single-.xodr>` (or `xodr_path=<file.xodr>`, outputs in `<file folder>/<stem>/`; `convert_map()` returns the `.osm` path). Other `MapConversionConfig` fields are OmegaConf dotlist args, optionally on top of a YAML file `config=<file.yaml>` (`load_config`: defaults < file < command line); see README.
 - **Batch report:** `<repo>/.venv/bin/python <repo>/map_report.py run --maps <dir> --out <dir> [--fsm] [--workers N --memory-budget-mb MB --cost-hints <earlier report.json>]`; `compare <a/report.json> <b/report.json> --out <dir>`.
 - Tests: `QT_QPA_PLATFORM=offscreen <repo>/.venv/bin/python -m pytest <repo>/tests` (set `IAI_MAPS_DIR` to a maps folder for the Town15 FSM tests). The upstream suite writes files into the tree; they are git-ignored.
 - Lint: `ruff check .` and `ruff format --check .`. Config in `pyproject.toml` (line-length 100, double quotes, rules `E4,E7,E9,I`). The ANTLR-generated parser at `crdesigner/verification_repairing/verification/hol/parser/gen/` is excluded — do not lint or reformat it.
@@ -58,7 +58,7 @@ The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --in
 6. `build_mesh` — `torchdrivesim.lanelet2.road_mesh_from_lanelet_map` / `lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
 7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
 
-8. `map_validation.validate` — reloads the outputs (`map_quality.ConversionOutputs`), checks the metrics and control coverage under every profile (the verdict is `validation_profile`'s) and, when `verifier_timeout_s` > 0, runs the map verifier on the exported CommonRoad network; the `Verdict` goes into the conversion report.
+8. `map_validation.validate` — reloads the outputs (`map_quality.ConversionOutputs`), checks the metrics and control coverage under every profile (the verdict is `autocritic.preset`'s; `autocritic.enabled=false` skips the stage) and, when `verifier_timeout_s` > 0, runs the map verifier on the exported CommonRoad network; the `Verdict` goes into the conversion report.
 
 Around stages 2–8, `convert_map` collects the `crdesigner.degradation` records (`conversion_report.attach`) and writes `<map>_conversion_report.json` whether the stages succeed or raise.
 

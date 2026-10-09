@@ -322,3 +322,51 @@ def test_false_northing_places_map_at_true_latitude(tmp_path):
     gps = mq.utm_projector(origin_lat=lat0, origin_lon=lon0).reverse(lanelet2.core.BasicPoint3d(x, y, 0.0))
     assert 32.5 < gps.lat < 33.1  # y_0 = -3,630,930 m puts the road ~32.8 deg north, not on the equator
     assert abs(outputs.points[:, :2]).max() < 100.0  # local origin at the map centre, not 3,630 km away
+
+
+def _write_config(*, path, text: str) -> str:
+    path.write_text(text)
+    return str(path)
+
+
+def test_config_file_sets_options_and_the_command_line_overrides_them(tmp_path):
+    config = _write_config(
+        path=tmp_path / "c.yaml",
+        text="domain: from_file\nautocritic: {preset: strict}\nautofix:\n  heuristics:\n    facing_lanes: {enabled: false}\n",
+    )
+    cfg = cm.load_config(argv=[f"config={config}", "domain=from_cli"])
+    assert (cfg.domain, cfg.autocritic.preset) == ("from_cli", "strict")
+    assert not cfg.autofix.heuristics.facing_lanes.enabled
+    assert cfg.autofix.heuristics.stop_at_signal_s.enabled
+
+
+def test_defaults_without_a_config_file():
+    assert cm.load_config(argv=[]) == cm.MapConversionConfig()
+
+
+@pytest.mark.parametrize(
+    "argv, named",
+    [
+        (["heuristics.facing_lanes=false"], "heuristics"),
+        (["validation_profile=strict"], "validation_profile"),
+        (["config=/nonexistent/c.yaml"], "/nonexistent/c.yaml"),
+    ],
+)
+def test_unknown_keys_and_missing_config_files_are_refused(argv, named):
+    with pytest.raises(cm.ConfigError, match=named):
+        cm.load_config(argv=argv)
+
+
+def test_unknown_key_in_a_config_file_is_refused(tmp_path):
+    config = _write_config(path=tmp_path / "c.yaml", text="autofix: {heuristics: {no_such_rule: {enabled: true}}}\n")
+    with pytest.raises(cm.ConfigError, match="no_such_rule"):
+        cm.load_config(argv=[f"config={config}"])
+
+
+def test_config_file_is_read_by_the_command_line(tmp_path):
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    config = _write_config(path=tmp_path / "c.yaml", text="autocritic: {preset: strict}\n")
+    result = xb.run_convert_map(map_dir=str(tmp_path), config=config)
+    assert result.returncode == 0, result.stderr
+    with open(tmp_path / "case_conversion_report.json") as f:
+        assert json.load(f)["validation"]["profile"] == "strict"

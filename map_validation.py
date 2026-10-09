@@ -3,7 +3,7 @@
 ``convert_map.py`` runs :func:`validate` after writing the outputs and stores the :class:`Verdict` in
 ``<map>_conversion_report.json``. Two :data:`PROFILES` set the thresholds: ``perfect`` (the default,
 no fault of any kind) and ``strict`` (bounded faults). Every run is judged against both; the verdict
-is the chosen one's. The output metrics come from :mod:`map_quality`; whether each traffic light and
+is the one of the preset :class:`AutoCriticConfig` chooses. The output metrics come from :mod:`map_quality`; whether each traffic light and
 stop/yield sign got a stopline (:class:`ControlCoverage`) comes from the converter, because the
 ``.osm`` does not carry the OpenDRIVE ids of the controls.
 """
@@ -65,6 +65,20 @@ PROFILES = {
     ),
 }
 DEFAULT_PROFILE = "perfect"
+
+
+@dataclasses.dataclass(slots=True)
+class AutoCriticConfig:
+    """Whether and how the converter judges its own output.
+
+    Attributes:
+        enabled: Run :func:`validate` and record the verdict; off records none.
+        preset: The :data:`PROFILES` entry the verdict uses: ``perfect`` (no fault of any kind)
+            or ``strict`` (bounded faults). Both are always evaluated.
+    """
+
+    enabled: bool = True
+    preset: str = DEFAULT_PROFILE
 
 
 @dataclasses.dataclass(slots=True)
@@ -232,7 +246,7 @@ def outcome_message(*, profile: str, failed: dict[str, list[str]]) -> Optional[s
             message += f" The strict profile fails too ({', '.join(failed['strict'])}): review the map by hand."
         else:
             message += (
-                " The strict profile passes: convert with validation_profile=strict to accept these faults,"
+                " The strict profile passes: convert with autocritic.preset=strict to accept these faults,"
                 " and review them by hand."
             )
     else:

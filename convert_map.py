@@ -24,6 +24,7 @@ from pathlib import Path
 import torch.cuda
 from lxml import etree
 import pyproj
+import yaml
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 from shapely.geometry import LineString
@@ -95,10 +96,11 @@ class MapConversionConfig:
             coordinates). A map with no ``<geoReference>`` always converts at (0, 0), with a warning.
         verifier_timeout_s: Cap (s) on the CommonRoad map verifier the validation stage runs; 0
             (the default) skips it. A run that hits the cap records ``timeout`` and continues.
-        validation_profile: The ``map_validation.PROFILES`` entry the verdict uses: ``perfect``
-            (no fault of any kind) or ``strict`` (bounded faults). Both are always evaluated.
-        heuristics: Switches and parameters of the guesses about the author's intent
-            (:mod:`conversion_heuristics`), e.g. ``heuristics.sign_signal_stoplines=true``.
+        autofix: The guesses about the author's intent (:mod:`conversion_heuristics`): all of
+            them on or off, and each one's settings, e.g.
+            ``autofix.heuristics.sign_signal_stoplines.enabled=true``.
+        autocritic: Whether the converter judges its output, and under which preset
+            (:mod:`map_validation`), e.g. ``autocritic.preset=strict``.
     """
 
     dir_path: Optional[str] = None
@@ -116,10 +118,8 @@ class MapConversionConfig:
     simplify_tolerance_factor: float = 2.0
     allow_zero_origin: bool = False
     verifier_timeout_s: float = 0.0
-    validation_profile: str = map_validation.DEFAULT_PROFILE
-    heuristics: conversion_heuristics.HeuristicsConfig = dataclasses.field(
-        default_factory=conversion_heuristics.HeuristicsConfig
-    )
+    autofix: conversion_heuristics.AutoFixConfig = dataclasses.field(default_factory=conversion_heuristics.AutoFixConfig)
+    autocritic: map_validation.AutoCriticConfig = dataclasses.field(default_factory=map_validation.AutoCriticConfig)
 
 
 @dataclasses.dataclass
@@ -490,6 +490,31 @@ class ConfigError(ValueError):
     """An invalid :class:`MapConversionConfig`, found before anything is read or written."""
 
 
+def load_config(*, argv: list[str]) -> MapConversionConfig:
+    """The run's settings from ``key=value`` arguments: defaults, then the ``config=`` YAML file, then the other arguments.
+
+    Raises:
+        ConfigError: ``config=`` given twice, a missing or unreadable config file, an unknown key or
+            a value of the wrong type.
+    """
+    config_paths = [arg.split('=', 1)[1] for arg in argv if arg.startswith('config=')]
+    if len(config_paths) > 1:
+        raise ConfigError('give config= at most once')
+    layers = [OmegaConf.structured(MapConversionConfig)]
+    for path in map(os.path.abspath, config_paths):
+        if not os.path.isfile(path):
+            raise ConfigError(f'config file {path} does not exist')
+        try:
+            layers.append(OmegaConf.load(path))
+        except yaml.YAMLError as exc:
+            raise ConfigError(f'config file {path} is not YAML: {exc}') from exc
+    try:
+        layers.append(OmegaConf.from_dotlist([arg for arg in argv if not arg.startswith('config=')]))
+        return OmegaConf.to_object(OmegaConf.merge(*layers))
+    except OmegaConfBaseException as exc:
+        raise ConfigError(str(exc).splitlines()[0]) from exc
+
+
 def map_name(*, xodr_path: str) -> str:
     """The map name: the ``.xodr`` file name without its extension."""
     return Path(xodr_path).stem
@@ -500,8 +525,8 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
 
     Raises:
         ConfigError: neither or both of ``dir_path`` and ``xodr_path``, ``trim_radius`` without
-            ``center``, a negative ``verifier_timeout_s``, an unknown ``validation_profile``, an
-            unusable ``heuristics`` parameter, ``xodr_path`` not an existing ``.xodr`` file, or
+            ``center``, a negative ``verifier_timeout_s``, an unknown ``autocritic.preset``, an
+            unusable ``autofix.heuristics`` parameter, ``xodr_path`` not an existing ``.xodr`` file, or
             ``dir_path`` not holding exactly one ``.xodr``.
     """
     if (cfg.dir_path is None) == (cfg.xodr_path is None):
@@ -510,12 +535,12 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError('trim_radius requires center')
     if cfg.verifier_timeout_s < 0:
         raise ConfigError('verifier_timeout_s must be 0 (skip the verifier) or positive')
-    if cfg.validation_profile not in map_validation.PROFILES:
+    if cfg.autocritic.preset not in map_validation.PROFILES:
         raise ConfigError(
-            f'validation_profile must be one of {", ".join(map_validation.PROFILES)}, not {cfg.validation_profile!r}'
+            f'autocritic.preset must be one of {", ".join(map_validation.PROFILES)}, not {cfg.autocritic.preset!r}'
         )
     try:
-        conversion_heuristics.check_config(config=cfg.heuristics)
+        conversion_heuristics.check_config(config=cfg.autofix.heuristics)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
     if cfg.xodr_path is not None:
@@ -787,6 +812,7 @@ def extract_stoplines(
     Rows and coverage come from :func:`traffic_controls.control_stoplines`; painted stop lines are
     listed in the conversion report (:func:`traffic_controls.report_painted_stop_lines`).
     """
+    heuristics = conversion_heuristics.applied_heuristics(autofix=cfg.autofix)
     built = traffic_controls.control_stoplines(
         opendrive=opendrive,
         road_network=road_network,
@@ -794,9 +820,9 @@ def extract_stoplines(
         frame=frame,
         within=lambda *, x, y, z=None: _within_trim(cfg=cfg, x=x, y=y, z=z),
         drivable_types=frozenset(CONVERTED_LANE_TYPES),
-        config=cfg.heuristics,
+        config=heuristics,
     )
-    traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame, config=cfg.heuristics)
+    traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame, config=heuristics)
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
@@ -984,10 +1010,12 @@ def convert_map(cfg: MapConversionConfig) -> str:
         logger.info(f'Wrote conversion report ({len(report.records)} degradation records) to {path}')
 
 
-def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map_validation.Verdict]:
-    """The pipeline stages of :func:`convert_map`, on a validated config: the ``.osm`` path and the verdict."""
+def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Optional[map_validation.Verdict]]:
+    """The pipeline stages of :func:`convert_map`, on a validated config: the ``.osm`` path and the verdict (``None`` with AutoCritic off)."""
     parsed = parse_xodr(
-        opendrive_path=opendrive_path, allow_zero_origin=cfg.allow_zero_origin, heuristics=cfg.heuristics
+        opendrive_path=opendrive_path,
+        allow_zero_origin=cfg.allow_zero_origin,
+        heuristics=conversion_heuristics.applied_heuristics(autofix=cfg.autofix),
     )
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
@@ -1014,12 +1042,14 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, map
         traffic_side=parsed.traffic_side,
         geo_reference_status=parsed.geo_reference_status,
     )
+    if not cfg.autocritic.enabled:
+        return os.path.abspath(exported.osm_path), None
     verdict = map_validation.validate(
         map_dir=cfg.dir_path,
         lanelet_network=exported.unsimplified_network,
         controls=stoplines.controls,
         verifier_timeout_s=cfg.verifier_timeout_s,
-        profile=cfg.validation_profile,
+        profile=cfg.autocritic.preset,
     )
     logger.info(f'Validation: {verdict.status}')
     return os.path.abspath(exported.osm_path), verdict
@@ -1034,11 +1064,7 @@ if __name__ == '__main__':
     logging.getLogger(map_validation.__name__).addHandler(logging.StreamHandler())
     logging.getLogger(map_validation.__name__).setLevel(logging.INFO)
     try:
-        try:
-            cfg = OmegaConf.merge(OmegaConf.structured(MapConversionConfig), OmegaConf.from_dotlist(sys.argv[1:]))
-        except OmegaConfBaseException as exc:
-            raise ConfigError(str(exc).splitlines()[0]) from exc
-        convert_map(cfg)
+        convert_map(load_config(argv=sys.argv[1:]))
     except ConfigError as exc:
         logger.error(f'Invalid configuration: {exc}')
         sys.exit(REFUSED_EXIT_CODE)

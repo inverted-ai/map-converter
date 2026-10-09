@@ -2,10 +2,11 @@
 
 OpenDRIVE leaves room for interpretation and exporters fill it differently, so some conversions
 need a guess. Each guess lives here as one :class:`Heuristic`: a stable id (``H1``, ``H2``, ...), a
-concise name that is also its :class:`HeuristicsConfig` switch, and the docstring of its rule
+concise name that is also its :class:`HeuristicsConfig` entry, and the docstring of its rule
 function, which states the assumption, the evidence behind it and the kind of map that breaks it.
-When a map breaks one, switch it off or retune it here (``heuristics.<name>=...`` on the
-``convert_map.py`` command line) rather than adding a special case elsewhere.
+When a map breaks one, switch it off or retune it (``autofix.heuristics.<name>.enabled=false`` on
+the ``convert_map.py`` command line, or in its ``config=`` file) rather than adding a special case
+elsewhere. ``autofix.enabled=false`` switches every heuristic off at once (:class:`AutoFixConfig`).
 
 Every time a heuristic changes a conversion it logs a ``kind="heuristic"`` degradation record
 (:func:`record`) whose ``element`` is its id, so ``<map>_conversion_report.json`` lists per
@@ -42,39 +43,81 @@ STOP_LINE_NAME = re.compile(r"stop_?line", re.IGNORECASE)
 
 
 @dataclasses.dataclass(slots=True)
-class HeuristicsConfig:
-    """Switches and parameters of the :data:`HEURISTICS`; each switch is named after its heuristic.
+class Switch:
+    """A heuristic with no parameter: whether it is applied."""
+
+    enabled: bool = True
+
+
+@dataclasses.dataclass(slots=True)
+class LightTypeCodeConfig:
+    """H1.
 
     Attributes:
-        light_type_code: H1 on.
-        light_type_pattern: H1: regular expression a traffic light's ``type`` must match in full.
-        centre_line_validity: H2 on.
-        facing_lanes: H3 on.
-        stop_at_signal_s: H4 on.
-        sign_stencil_match: H5 on.
-        sign_stencil_match_m: H5: largest sign-to-stencil distance (m) that is the same control.
-        sign_signal_stoplines: H6 on (off by default).
-        non_vehicle_light: H7 on.
-        us_sign_codes: H8 on.
-        painted_stop_line: H9 on.
+        enabled: Whether it is applied.
+        pattern: Regular expression a traffic light's ``type`` must match in full.
     """
 
-    light_type_code: bool = True
-    light_type_pattern: str = r"100\d{4}"
-    centre_line_validity: bool = True
-    facing_lanes: bool = True
-    stop_at_signal_s: bool = True
-    sign_stencil_match: bool = True
-    sign_stencil_match_m: float = 10.0
-    sign_signal_stoplines: bool = False
-    non_vehicle_light: bool = True
-    us_sign_codes: bool = True
-    painted_stop_line: bool = True
+    enabled: bool = True
+    pattern: str = r"100\d{4}"
+
+
+@dataclasses.dataclass(slots=True)
+class SignStencilMatchConfig:
+    """H5.
+
+    Attributes:
+        enabled: Whether it is applied.
+        max_distance_m: Largest sign-to-stencil distance (m) that is the same control.
+    """
+
+    enabled: bool = True
+    max_distance_m: float = 10.0
+
+
+@dataclasses.dataclass(slots=True)
+class HeuristicsConfig:
+    """Settings of the :data:`HEURISTICS`, one entry per heuristic, named after it."""
+
+    light_type_code: LightTypeCodeConfig = dataclasses.field(default_factory=LightTypeCodeConfig)
+    centre_line_validity: Switch = dataclasses.field(default_factory=Switch)
+    facing_lanes: Switch = dataclasses.field(default_factory=Switch)
+    stop_at_signal_s: Switch = dataclasses.field(default_factory=Switch)
+    sign_stencil_match: SignStencilMatchConfig = dataclasses.field(default_factory=SignStencilMatchConfig)
+    sign_signal_stoplines: Switch = dataclasses.field(default_factory=lambda: Switch(enabled=False))
+    non_vehicle_light: Switch = dataclasses.field(default_factory=Switch)
+    us_sign_codes: Switch = dataclasses.field(default_factory=Switch)
+    painted_stop_line: Switch = dataclasses.field(default_factory=Switch)
+
+
+@dataclasses.dataclass(slots=True)
+class AutoFixConfig:
+    """Whether the converter guesses the author's intent, and how.
+
+    Attributes:
+        enabled: Apply the enabled heuristics; off applies none, whatever their settings.
+        heuristics: Each heuristic's settings.
+    """
+
+    enabled: bool = True
+    heuristics: HeuristicsConfig = dataclasses.field(default_factory=HeuristicsConfig)
+
+
+def applied_heuristics(*, autofix: AutoFixConfig) -> HeuristicsConfig:
+    """The heuristic settings the conversion uses: ``autofix.heuristics``, every one disabled when AutoFix is off."""
+    if autofix.enabled:
+        return autofix.heuristics
+    return HeuristicsConfig(
+        **{
+            f.name: dataclasses.replace(getattr(autofix.heuristics, f.name), enabled=False)
+            for f in dataclasses.fields(HeuristicsConfig)
+        }
+    )
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
 class Heuristic:
-    """One registered guess: its id, its name (= its :class:`HeuristicsConfig` switch) and its rule."""
+    """One registered guess: its id, its name (= its :class:`HeuristicsConfig` entry) and its rule."""
 
     id: str
     name: str
@@ -104,12 +147,15 @@ def by_id(*, heuristic_id: str) -> Heuristic:
 
 def check_config(*, config: HeuristicsConfig) -> None:
     """Raise ``ValueError`` naming the first unusable parameter."""
-    if not config.sign_stencil_match_m >= 0:
-        raise ValueError(f"heuristics.sign_stencil_match_m must be >= 0, got {config.sign_stencil_match_m}")
+    prefix = "autofix.heuristics"
+    if not config.sign_stencil_match.max_distance_m >= 0:
+        raise ValueError(
+            f"{prefix}.sign_stencil_match.max_distance_m must be >= 0, got {config.sign_stencil_match.max_distance_m}"
+        )
     try:
-        re.compile(config.light_type_pattern)
+        re.compile(config.light_type_code.pattern)
     except re.error as exc:
-        raise ValueError(f"heuristics.light_type_pattern is not a regular expression: {exc}") from exc
+        raise ValueError(f"{prefix}.light_type_code.pattern is not a regular expression: {exc}") from exc
 
 
 def record(*, heuristic_id: str, element_id: object, message: str, action: str) -> None:
@@ -135,11 +181,11 @@ def is_traffic_light(*, signal_type: Optional[str], config: HeuristicsConfig) ->
     ``Signal_*``) has a type 1000001-1002101. The only dynamic signals with other types are one
     exporter's 537 static signs (US sign codes such as ``r1`` STOP, ``r2`` YIELD, or ``-1``).
 
-    Breaks when: a source codes its traffic lights outside ``light_type_pattern``. Its lights would
+    Breaks when: a source codes its traffic lights outside ``light_type_code.pattern``. Its lights would
     disappear from the stoplines and be listed under H1 in the conversion report; widen the
     pattern or switch the heuristic off.
     """
-    return not config.light_type_code or re.fullmatch(config.light_type_pattern, signal_type or "") is not None
+    return not config.light_type_code.enabled or re.fullmatch(config.light_type_code.pattern, signal_type or "") is not None
 
 
 @_heuristic(id="H2", name="centre_line_validity")
@@ -157,7 +203,7 @@ def names_only_the_centre_line(*, validity_from: object, validity_to: object, co
     on both sides and the signal facing both ways; H3 would then bind the lanes its orientation
     faces, not both inner lanes.
     """
-    if not config.centre_line_validity:
+    if not config.centre_line_validity.enabled:
         return False
     try:
         return float(validity_from) == 0.0 and float(validity_to) == 0.0
@@ -181,7 +227,7 @@ def faces(*, orientation: Optional[str], travels_with_s: bool, config: Heuristic
     Breaks when: a control on a multi-lane road governs only some of its lanes (e.g. a turn-lane
     light); the other lanes get a stopline too.
     """
-    if not config.facing_lanes:
+    if not config.facing_lanes.enabled:
         return False
     if orientation == "+":
         return travels_with_s
@@ -205,12 +251,12 @@ def stops_at_signal_s(*, on_junction_road: bool, config: HeuristicsConfig) -> bo
     Breaks when: a source puts a light on the road after the junction (the far-side layout) and
     binds it with a validity there; its stopline lands after the junction.
     """
-    return config.stop_at_signal_s and not on_junction_road
+    return config.stop_at_signal_s.enabled and not on_junction_road
 
 
 @_heuristic(id="H5", name="sign_stencil_match")
 def matches_stencil(*, distance_m: float, config: HeuristicsConfig) -> bool:
-    """A stop/yield stencil of the same kind within ``sign_stencil_match_m`` of a sign is that sign's control.
+    """A stop/yield stencil of the same kind within ``max_distance_m`` of a sign is that sign's control.
 
     Assumes: a painted STOP/YIELD stencil and a nearby sign of the same kind are one control, and
     the stencil marks where traffic stops; the sign then needs no stopline of its own. With H6 on,
@@ -223,7 +269,7 @@ def matches_stencil(*, distance_m: float, config: HeuristicsConfig) -> bool:
     Breaks when: two separate controls of the same kind stand within the distance (e.g. a stop
     sign on a side road next to another approach's stencil); one of them is taken as covered.
     """
-    return config.sign_stencil_match and distance_m <= config.sign_stencil_match_m
+    return config.sign_stencil_match.enabled and distance_m <= config.sign_stencil_match.max_distance_m
 
 
 @_heuristic(id="H6", name="sign_signal_stoplines")
@@ -243,7 +289,7 @@ def writes_sign_signal_stoplines(*, config: HeuristicsConfig) -> bool:
     Breaks when: a source places signs that do not mean a stop at that spot (e.g. advance
     warnings coded as STOP/YIELD); they become stoplines.
     """
-    return config.sign_signal_stoplines
+    return config.sign_signal_stoplines.enabled
 
 
 @_heuristic(id="H7", name="non_vehicle_light")
@@ -259,7 +305,7 @@ def is_vehicle_light(*, has_drivable_lane: bool, config: HeuristicsConfig) -> bo
     Breaks when: a vehicle light sits on a non-driving road next to the lanes it controls and
     names them only through a reference that failed to parse; it is not counted as missing.
     """
-    return not config.non_vehicle_light or has_drivable_lane
+    return not config.non_vehicle_light.enabled or has_drivable_lane
 
 
 @_heuristic(id="H8", name="us_sign_codes")
@@ -281,7 +327,7 @@ def us_sign_code(
     Breaks when: a source with no country uses a non-US code that spells R1-1; it becomes a STOP
     sign. CommonRoad's US table has no YIELD (R1-2), so US yield signs are not recognised.
     """
-    if not config.us_sign_codes or (country or "").strip() or not signal_type:
+    if not config.us_sign_codes.enabled or (country or "").strip() or not signal_type:
         return None
     code_type, code_subtype = signal_type.upper(), (subtype or "").upper()
     for code in (f"{code_type}-{code_subtype}", code_type):
@@ -303,7 +349,7 @@ def is_painted_stop_line(*, tag: str, name: Optional[str], element_type: Optiona
 
     Breaks when: a source names other markings ``StopLine``; they are listed as stop lines.
     """
-    if not config.painted_stop_line:
+    if not config.painted_stop_line.enabled:
         return False
     if tag == "signal" and element_type == "294":
         return True

@@ -43,12 +43,25 @@ arguments, each a field of `MapConversionConfig`:
     dir_path=/path/to/maps/MyMap domain=carla center='[100.0,-20.0]' trim_radius=300
 ```
 
+Settings can also come from a YAML file, `config=/path/to/settings.yaml`, holding the same fields nested as in
+`MapConversionConfig`; command-line arguments override the file, and the file overrides the defaults:
+
+```yaml
+autofix:
+  heuristics:
+    sign_signal_stoplines: {enabled: true}
+    sign_stencil_match: {max_distance_m: 5.0}
+autocritic:
+  preset: strict
+```
+
 `dir_path` must contain exactly one `.xodr`; its file name (without `.xodr`) becomes the map name `<map>`.
 All outputs are written into `dir_path`. Alternatively give the file itself as `xodr_path=/path/to/MyMap.xodr`:
 the outputs then go to `/path/to/MyMap/`, so several `.xodr` files in one folder never overwrite each other.
 From Python, `convert_map.convert_map(MapConversionConfig(xodr_path=...))` returns the absolute `.osm` path.
-The configuration is checked before anything is read: neither or both of `dir_path` and `xodr_path`, no or
-several `.xodr` files, or `trim_radius` without `center`, stop the run with exit code 3 and write nothing.
+The configuration is checked before anything is read: an unknown field, a missing config file, neither or both
+of `dir_path` and `xodr_path`, no or several `.xodr` files, or `trim_radius` without `center`, stop the run with
+exit code 3 and write nothing.
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -66,8 +79,11 @@ several `.xodr` files, or `trim_radius` without `center`, stop the run with exit
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
 | `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing; when the `<geoReference>` and header `<offset>` put road geometry outside the projection, the offset is dropped too (file coordinates). (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
 | `verifier_timeout_s` | `0` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it (on large maps it takes minutes). A run that reaches the cap records `timeout` and carries on. |
-| `validation_profile` | `perfect` | Which validation profile the verdict uses: `perfect` (no fault of any kind) or `strict` (bounded faults); see "Validation" below. |
-| `heuristics.<name>` | see "Heuristics" | Switch a guess about the author's intent on or off, or retune it, e.g. `heuristics.sign_signal_stoplines=true`; see "Heuristics" below. |
+| `config` | unset | A YAML file of settings (see above); command-line arguments override it. |
+| `autofix.enabled` | `true` | Apply the guesses about the author's intent that are enabled; `false` applies none of them. See "Heuristics" below. |
+| `autofix.heuristics.<name>.<setting>` | see "Heuristics" | Switch one guess on or off, or retune it, e.g. `autofix.heuristics.sign_signal_stoplines.enabled=true`. |
+| `autocritic.enabled` | `true` | Judge the outputs and record the verdict in the conversion report; `false` records none. See "Validation" below. |
+| `autocritic.preset` | `perfect` | Which validation profile the verdict uses: `perfect` (no fault of any kind) or `strict` (bounded faults). |
 
 ## Output files
 
@@ -123,10 +139,10 @@ conversion report. The checks run under two profiles, defined in `map_validation
 1. `perfect` (the default): no fault of any kind.
 2. `strict`: small, bounded faults are accepted.
 
-Both profiles are evaluated on every run. `status` (`pass` or `fail`) is that of `profile`, the one
-`validation_profile` chose, and `profiles` gives each profile's status and failed checks. A failed check prints a
+Both profiles are evaluated on every run (unless `autocritic.enabled=false`, which skips validation and leaves
+`validation` null). `status` (`pass` or `fail`) is that of `profile`, the one `autocritic.preset` chose, and `profiles` gives each profile's status and failed checks. A failed check prints a
 `Validation:` warning. A failed `perfect` verdict also says whether `strict` passes: if it does, convert with
-`validation_profile=strict` and review the listed faults by hand. A failed verdict never stops the conversion.
+`autocritic.preset=strict` and review the listed faults by hand. A failed verdict never stops the conversion.
 
 | # | Check | `perfect` fails when | `strict` fails when |
 |---|---|---|---|
@@ -162,15 +178,16 @@ unsigned stop. Each one is listed in the conversion report (`kind="not_converted
 Some conversions need a guess about what the OpenDRIVE author meant. Every such guess is a heuristic in
 `conversion_heuristics.py`, with a stable id, a name and a docstring stating its assumption, the evidence
 behind it and the kind of map that breaks it. Each can be switched off or retuned with
-`heuristics.<name>=<value>`, and the conversion report lists every element each one changed.
+`autofix.heuristics.<name>.<setting>=<value>` (every one has `enabled`), `autofix.enabled=false` switches
+them all off, and the conversion report lists every element each one changed.
 
-| Id | Name (switch) | Default | Decides |
+| Id | Name | Default | Decides |
 |---|---|---|---|
-| H1 | `light_type_code` | on | A `dynamic="yes"` signal is a traffic light only if its `type` matches `light_type_pattern` (`100\d{4}`); others are read as static signs |
+| H1 | `light_type_code` | on, `pattern="100\d{4}"` | A `dynamic="yes"` signal is a traffic light only if its `type` matches `pattern` in full; others are read as static signs |
 | H2 | `centre_line_validity` | on | A `<validity>` naming only lane 0 names no lane |
 | H3 | `facing_lanes` | on | A light (or, with H6, a sign) no validity binds covers the drivable lanes its `orientation` faces, on its references' roads or else its own |
 | H4 | `stop_at_signal_s` | on | Outside a junction a stopline sits at the signal's (or reference's) s; on a junction's connecting road it sits where the lane enters |
-| H5 | `sign_stencil_match` | on, `sign_stencil_match_m=10` | A stop/yield stencil of the same kind within the distance of a sign (or, with H6, inside a lane the sign binds, within the distance of its row) is that sign's stopline |
+| H5 | `sign_stencil_match` | on, `max_distance_m=10` | A stop/yield stencil of the same kind within the distance of a sign (or, with H6, inside a lane the sign binds, within the distance of its row) is that sign's stopline |
 | H6 | `sign_signal_stoplines` | off | The converter creates stopline rows for stop/yield sign signals (where H5 finds no stencil): lanes read in the lane section at the sign's (or reference's) s, on a junction road where the lane enters it, one row per lane |
 | H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
 | H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |

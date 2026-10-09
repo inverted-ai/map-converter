@@ -62,7 +62,7 @@ def test_light_on_a_plain_road_stops_at_its_own_s(tmp_path):
 
 def test_plain_road_light_stops_at_the_lane_start_without_the_heuristic(tmp_path):
     light = xb.SignalSpec(id="21", s=40.0, validity=(-1, -1))
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"heuristics.stop_at_signal_s": "false"})
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"autofix.heuristics.stop_at_signal_s.enabled": "false"})
     assert _rows(out=out) == [("21", 0.0, LANE_RIGHT_Y, 0.0)]
     assert "H4" not in out["heuristics"]
 
@@ -84,7 +84,7 @@ def test_centre_line_validity_binds_the_lanes_the_light_faces(tmp_path):
 
 def test_centre_line_validity_binds_nothing_without_the_heuristic(tmp_path):
     light = xb.SignalSpec(id="31", s=40.0, orientation="-", validity=(0, 0))
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"heuristics.centre_line_validity": "false"})
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"autofix.heuristics.centre_line_validity.enabled": "false"})
     assert _rows(out=out) == []
     assert out["controls"]["lights_without_stopline"] == ["31"]
 
@@ -98,7 +98,7 @@ def test_light_without_validity_binds_every_lane_it_faces(tmp_path):
 
 def test_light_without_validity_binds_nothing_without_the_heuristic(tmp_path):
     light = xb.SignalSpec(id="41", s=40.0, orientation="+")
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"heuristics.facing_lanes": "false"})
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"autofix.heuristics.facing_lanes.enabled": "false"})
     assert _rows(out=out) == []
     assert out["controls"]["lights_without_stopline"] == ["41"]
 
@@ -154,7 +154,7 @@ def test_dynamic_signal_without_a_light_type_is_a_sign(tmp_path):
 
 def test_dynamic_signal_without_a_light_type_stays_a_light_without_the_heuristic(tmp_path):
     stop = xb.SignalSpec(id="71", s=40.0, type="r1", subtype="1", country="", validity=(-1, -1))
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])], **{"heuristics.light_type_code": "false"})
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])], **{"autofix.heuristics.light_type_code.enabled": "false"})
     assert out["controls"]["lights"] == 1
     assert "H1" not in out["heuristics"]
 
@@ -179,7 +179,7 @@ def test_sign_signal_stoplines_on_request(tmp_path):
     stop = xb.SignalSpec(id="81", s=40.0, dynamic="no", type="206", validity=(-1, -1))
     give_way = xb.SignalSpec(id="82", s=20.0, dynamic="no", type="205", orientation="-")
     out = _convert(
-        tmp_path=tmp_path, roads=[_plain_road(signals=[stop, give_way])], **{"heuristics.sign_signal_stoplines": "true"}
+        tmp_path=tmp_path, roads=[_plain_road(signals=[stop, give_way])], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"}
     )
     assert _rows(out=out, agent_type="stop_sign") == [("81", 40.0, LANE_RIGHT_Y, 0.0)]
     assert _rows(out=out, agent_type="yield_sign") == [("82", 20.0, LANE_LEFT_Y, round(-math.pi, 3))]
@@ -190,7 +190,7 @@ def test_sign_signal_stoplines_on_request(tmp_path):
 def test_sign_next_to_its_stencil_writes_only_the_stencil_row(tmp_path):
     stop = xb.SignalSpec(id="81", s=40.0, dynamic="no", type="206", validity=(-1, -1))
     road = _plain_road(signals=[stop], objects=[xb.ObjectSpec(id="9", s=38.0)])
-    out = _convert(tmp_path=tmp_path, roads=[road], **{"heuristics.sign_signal_stoplines": "true"})
+    out = _convert(tmp_path=tmp_path, roads=[road], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
     assert [row[0] for row in _rows(out=out, agent_type="stop_sign")] == ["9"]
     assert out["controls"]["signs_without_stopline"] == []
     assert _heuristic_ids(out=out, heuristic_id="H5") == ["81"]
@@ -207,7 +207,7 @@ def test_sign_row_next_to_a_stencil_row_on_its_lane_is_not_written(tmp_path):
     # The sign stands 12 m from the stencil (beyond H5), but its row would land 2 m from the stencil's row.
     stop = xb.SignalSpec(id="81", s=40.0, t=-12.0, dynamic="no", type="206", validity=(-1, -1))
     road = _plain_road(signals=[stop], objects=[xb.ObjectSpec(id="9", s=38.0)])
-    out = _convert(tmp_path=tmp_path, roads=[road], **{"heuristics.sign_signal_stoplines": "true"})
+    out = _convert(tmp_path=tmp_path, roads=[road], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
     assert [row[0] for row in _rows(out=out, agent_type="stop_sign")] == ["9"]
     assert out["controls"]["signs_without_stopline"] == []
     assert _heuristic_ids(out=out, heuristic_id="H5") == ["81"]
@@ -220,7 +220,7 @@ def test_sign_referenced_twice_on_one_lane_writes_one_row(tmp_path):
         xb.SignalReferenceSpec(id="83", s=0.0, validity=(-1, -1)),
         xb.SignalReferenceSpec(id="83", s=0.0, validity=(-1, -1)),
     ]
-    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **{"heuristics.sign_signal_stoplines": "true"})
+    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
     assert _rows(out=out, agent_type="stop_sign") == [("83", 50.0, LANE_RIGHT_Y, 0.0)]
 
 
@@ -236,7 +236,7 @@ def test_sign_reference_lanes_are_read_in_the_lane_section_at_its_s(tmp_path):
     ]
     roads[0].signals.append(xb.SignalSpec(id="84", s=45.0, t=-5.0, dynamic="no", type="206", validity=(0, 0)))
     road2.signal_references.append(xb.SignalReferenceSpec(id="84", s=15.0, validity=(-2, -2)))
-    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **{"heuristics.sign_signal_stoplines": "true"})
+    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
     # Where driving lane -1 enters the connecting road, not on the first section's shoulder.
     assert _rows(out=out, agent_type="stop_sign") == [("84", 50.0, LANE_RIGHT_Y, 0.0)]
 
@@ -246,7 +246,7 @@ def test_two_signs_stopping_the_same_lane_write_one_row(tmp_path):
         xb.SignalSpec(id="85", s=40.0, t=-5.0, dynamic="no", type="206", validity=(-1, -1)),
         xb.SignalSpec(id="86", s=40.0, t=5.0, dynamic="no", type="206", orientation="+"),
     ]
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=stops)], **{"heuristics.sign_signal_stoplines": "true"})
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=stops)], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
     assert _rows(out=out, agent_type="stop_sign") == [("85", 40.0, LANE_RIGHT_Y, 0.0)]
     assert out["controls"]["signs_without_stopline"] == []
 
@@ -258,13 +258,37 @@ def test_painted_stop_lines_are_reported_and_write_no_row(tmp_path):
     assert [r["id"] for r in out["report"]["records"] if r["kind"] == "not_converted"] == ["91"]
 
 
-@pytest.mark.parametrize("setting", ["heuristics.no_such_rule=true", "heuristics.sign_stencil_match_m=-1"])
-def test_bad_heuristics_settings_are_refused(tmp_path, setting):
+@pytest.mark.parametrize(
+    "setting, named",
+    [
+        ("autofix.heuristics.no_such_rule.enabled=true", "no_such_rule"),
+        ("autofix.heuristics.sign_stencil_match.max_distance_m=-1", "sign_stencil_match.max_distance_m"),
+    ],
+)
+def test_bad_heuristics_settings_are_refused(tmp_path, setting, named):
     xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[_plain_road()]))
     key, value = setting.split("=")
     result = xb.run_convert_map(map_dir=str(tmp_path), **{key: value})
     assert result.returncode == conversion_common.REFUSED_EXIT_CODE
-    assert key.split(".")[-1] in result.stderr
+    assert named in result.stderr
+
+
+def test_autofix_off_applies_no_heuristic(tmp_path):
+    light = xb.SignalSpec(id="21", s=40.0, validity=(-1, -1))
+    every_switch_off = {f"autofix.heuristics.{h.name}.enabled": "false" for h in ch.HEURISTICS}
+    switched_off = _convert(tmp_path=tmp_path / "switches", roads=[_plain_road(signals=[light])], **every_switch_off)
+    autofix_off = _convert(tmp_path=tmp_path / "off", roads=[_plain_road(signals=[light])], **{"autofix.enabled": "false"})
+    assert autofix_off["heuristics"] == {}
+    assert _rows(out=autofix_off) == _rows(out=switched_off)
+
+
+def test_autofix_off_leaves_the_heuristic_settings_but_disables_them():
+    autofix = ch.AutoFixConfig(enabled=False)
+    applied = ch.applied_heuristics(autofix=autofix)
+    assert not any(getattr(applied, f.name).enabled for f in ch.dataclasses.fields(applied))
+    assert applied.light_type_code.pattern == autofix.heuristics.light_type_code.pattern
+    assert autofix.heuristics.light_type_code.enabled
+    assert ch.applied_heuristics(autofix=ch.AutoFixConfig()) == ch.HeuristicsConfig()
 
 
 def test_every_heuristic_has_an_id_a_name_a_switch_and_a_full_docstring():

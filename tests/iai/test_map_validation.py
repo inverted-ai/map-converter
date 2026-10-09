@@ -95,7 +95,7 @@ def test_metric_with_nothing_to_measure_passes():
 def test_outcome_message_points_to_strict_when_only_perfect_fails():
     message = mv.outcome_message(profile="perfect", failed={"perfect": ["routing_edge_pct"], "strict": []})
     assert "routing_edge_pct" in message
-    assert "validation_profile=strict" in message
+    assert "autocritic.preset=strict" in message
     assert "review" in message
 
 
@@ -103,7 +103,7 @@ def test_outcome_message_names_strict_failures_too():
     failed = {"perfect": ["routing_edge_pct", "crossed_lanelets"], "strict": ["routing_edge_pct"]}
     message = mv.outcome_message(profile="perfect", failed=failed)
     assert "strict profile fails too (routing_edge_pct)" in message
-    assert "validation_profile=strict" not in message
+    assert "autocritic.preset=strict" not in message
 
 
 def test_outcome_message_is_none_on_a_pass():
@@ -158,7 +158,7 @@ def test_verifier_runs_on_request(tmp_path):
 
 
 def test_strict_profile_is_chosen_on_request(tmp_path):
-    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)], validation_profile="strict")
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)], **{"autocritic.preset": "strict"})
     assert verdict["profile"] == "strict"
     assert verdict["status"] == verdict["profiles"]["strict"]["status"]
 
@@ -207,7 +207,12 @@ def test_every_light_with_a_stopline_passes_its_check(tmp_path):
     assert "traffic_light_stoplines" not in _failed_names(verdict=verdict)
 
 
-@pytest.mark.parametrize("field, value", [("verifier_timeout_s", "-1"), ("validation_profile", "lenient")])
+def test_autocritic_off_records_no_verdict(tmp_path):
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)], **{"autocritic.enabled": "false"})
+    assert verdict is None
+
+
+@pytest.mark.parametrize("field, value", [("verifier_timeout_s", "-1"), ("autocritic.preset", "lenient")])
 def test_bad_validation_settings_are_refused(tmp_path, field, value):
     xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
     result = xb.run_convert_map(map_dir=str(tmp_path), **{field: value})

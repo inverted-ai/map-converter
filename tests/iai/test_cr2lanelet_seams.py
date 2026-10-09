@@ -96,3 +96,17 @@ def test_right_boundary_with_more_vertices_than_the_left_is_written_in_full():
     assert len(right) == 4
     assert right[0] == ways[converter.right_ways[1]].nodes[-1]
     assert abs(float(nodes[right[-1]].lon) * 111_000.0 - 20.0) < 0.01
+
+
+def test_shared_node_tolerance_decides_whether_ends_a_little_apart_share_nodes():
+    def converted(*, tolerance):
+        network = LaneletNetwork()
+        network.add_lanelet(_lanelet(lanelet_id=1, left=[[0, 3], [10, 3]], right=[[0, 0], [10, 0]], successor=[2]))
+        network.add_lanelet(_lanelet(lanelet_id=2, left=[[10.5, 3], [20, 3]], right=[[10.5, 0], [20, 0]], predecessor=[1]))
+        converter = CR2LaneletConverter(shared_node_tolerance=tolerance)
+        converter.convert_lanelet_network(network, transformer=_DegreesTransformer())
+        ways = converter.osm.ways
+        return ways[converter.left_ways[1]].nodes[-1] == ways[converter.left_ways[2]].nodes[0]
+
+    assert converted(tolerance=1.0)
+    assert not converted(tolerance=0.01)

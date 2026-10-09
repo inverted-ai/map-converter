@@ -114,10 +114,12 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 3. `unrecognised_tokens`: each unknown value (`element`, `value`), how often it occurred and the ids where
    (up to 20).
 4. `heuristics`: per heuristic that changed the conversion (see "Heuristics" below), its `name`, how often
-   it fired (`count`) and the element ids where (up to 20).
+   it acted (`count`) and the element ids where (up to 20). `heuristics_not_applied` lists the same for the
+   places where a switched-off heuristic would have acted.
 5. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
    dropped, else `<tag>.<attribute>`), `id` (road, signal, object or junction), `value`, `action` and the
-   message. Each record is also printed as a warning, once per `kind`, `element` and `value`.
+   message; `heuristic` records also have `applied` and `location` (`[x, y]` in the local frame of the
+   outputs). Each record is also printed as a warning, once per `kind`, `element` and `value`.
 
 | `kind` | Example | What the converter does |
 |---|---|---|
@@ -128,7 +130,7 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 | `coerced` | object `type="stopline"` | Read as `roadMark` |
 | `degenerate_geometry` | `<spiral>` with equal start and end curvature | Read as an arc (a line at zero curvature) |
 | `unknown_reference` | signal `<validity>` naming a lane that does not exist | That lane is skipped |
-| `heuristic` | a light with no lane validity | What the heuristic (`element` = its id) decided; see "Heuristics" |
+| `heuristic` | a light with no lane validity | Where a heuristic (`element` = its id) applies and what it does there, or, with `applied` false, would do; see "Heuristics" |
 | `not_converted` | a painted stop line | Listed with its position; nothing is written for it |
 
 ### Validation
@@ -178,8 +180,9 @@ unsigned stop. Each one is listed in the conversion report (`kind="not_converted
 Some conversions need a guess about what the OpenDRIVE author meant. Every such guess is a heuristic in
 `conversion_heuristics.py`, with a stable id, a name and a docstring stating its assumption, the evidence
 behind it and the kind of map that breaks it. Each can be switched off or retuned with
-`autofix.heuristics.<name>.<setting>=<value>` (every one has `enabled`), `autofix.enabled=false` switches
-them all off, and the conversion report lists every element each one changed.
+`autofix.heuristics.<name>.<setting>=<value>` (every one has `enabled`); `autofix.enabled=false` switches
+them all off (BasicConversion). The conversion report lists every place each one acted, and every place a
+switched-off one would have acted (`applied` false), with its position.
 
 | Id | Name | Default | Decides |
 |---|---|---|---|
@@ -192,6 +195,8 @@ them all off, and the conversion report lists every element each one changed.
 | H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
 | H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |
 | H9 | `painted_stop_line` | on | Objects of type `stopLine` or named `StopLine`, and signals of type `294` or named `StopLine`, are painted stop lines (listed, never converted) |
+| H10 | `seam_tolerance` | on, `max_gap_m=1.0` | Linked lanelets whose ends lie up to `max_gap_m` apart share their end nodes, so routing crosses the seam; without it only ends within 1 cm do |
+| H14 | `signal_past_road_end` | on, `max_overshoot_m=1.0` | A signal whose `s` lies past its road's end (beyond the reader's rounding tolerance, 1 cm + 1 % of the road length) is placed at the end within `max_overshoot_m`, else dropped; without it the map is refused (exit code 3) naming those signals |
 
 Guesses that live in vendored code or in other tools are listed at the top of `conversion_heuristics.py`.
 

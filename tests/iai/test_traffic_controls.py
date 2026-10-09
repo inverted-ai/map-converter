@@ -25,7 +25,13 @@ def _convert(*, tmp_path, roads, junctions=(), controllers=(), **config: str) ->
         rows = json.load(f)
     with open(tmp_path / "case_conversion_report.json") as f:
         report = json.load(f)
-    return {"rows": rows, "controls": report["validation"]["controls"], "heuristics": report["heuristics"], "report": report}
+    return {
+        "rows": rows,
+        "controls": report["validation"]["controls"],
+        "heuristics": report["heuristics"],
+        "not_applied": report["heuristics_not_applied"],
+        "report": report,
+    }
 
 
 def _rows(*, out: dict, agent_type: str = "traffic_light") -> list[tuple[str, float, float, float]]:
@@ -291,9 +297,46 @@ def test_autofix_off_leaves_the_heuristic_settings_but_disables_them():
     assert ch.applied_heuristics(autofix=ch.AutoFixConfig()) == ch.HeuristicsConfig()
 
 
+def _findings(*, out: dict, heuristic_id: str) -> list[dict]:
+    return [r for r in out["report"]["records"] if r["kind"] == "heuristic" and r["element"] == heuristic_id]
+
+
+def test_an_applied_heuristic_records_where_it_acted(tmp_path):
+    light = xb.SignalSpec(id="21", s=40.0, validity=(-1, -1))
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])])
+    (finding,) = _findings(out=out, heuristic_id="H4")
+    assert finding["applied"] is True
+    assert finding["location"] == pytest.approx([40.0, -5.0], abs=0.01)  # the signal, at s=40, t=-5
+    assert "H4" not in out["not_applied"]
+
+
+def test_a_disabled_heuristic_records_what_it_would_have_changed(tmp_path):
+    light = xb.SignalSpec(id="21", s=40.0, validity=(-1, -1))
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"autofix.heuristics.stop_at_signal_s.enabled": "false"})
+    (finding,) = _findings(out=out, heuristic_id="H4")
+    assert finding["applied"] is False
+    assert finding["location"] == pytest.approx([40.0, -5.0], abs=0.01)
+    assert "H4" not in out["heuristics"]
+    assert [str(i) for i in out["not_applied"]["H4"]["ids"]] == ["21"]
+
+
+def test_sign_signal_stoplines_off_by_default_are_reported_as_not_applied(tmp_path):
+    stop = xb.SignalSpec(id="31", s=40.0, dynamic="no", type="206", validity=(-1, -1))
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])])
+    assert [row for row in out["rows"] if row["agent_type"] == "stop_sign"] == []
+    assert [str(i) for i in out["not_applied"]["H6"]["ids"]] == ["31"]
+
+
+def test_facing_lanes_off_reports_the_unscoped_light(tmp_path):
+    light = xb.SignalSpec(id="41", s=40.0, orientation="+")
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"autofix.heuristics.facing_lanes.enabled": "false"})
+    assert _rows(out=out) == []
+    assert [str(i) for i in out["not_applied"]["H3"]["ids"]] == ["41"]
+
+
 def test_every_heuristic_has_an_id_a_name_a_switch_and_a_full_docstring():
-    ids = [h.id for h in ch.HEURISTICS]
-    assert ids == [f"H{i}" for i in range(1, len(ids) + 1)]
+    numbers = [int(h.id.removeprefix("H")) for h in ch.HEURISTICS]
+    assert numbers == sorted(set(numbers)) and all(h.id == f"H{n}" for h, n in zip(ch.HEURISTICS, numbers))
     switches = {f.name for f in ch.dataclasses.fields(ch.HeuristicsConfig)}
     for h in ch.HEURISTICS:
         assert h.name in switches, h.name

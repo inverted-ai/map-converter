@@ -8,9 +8,15 @@ When a map breaks one, switch it off or retune it (``autofix.heuristics.<name>.e
 the ``convert_map.py`` command line, or in its ``config=`` file) rather than adding a special case
 elsewhere. ``autofix.enabled=false`` switches every heuristic off at once (:class:`AutoFixConfig`).
 
-Every time a heuristic changes a conversion it logs a ``kind="heuristic"`` degradation record
-(:func:`record`) whose ``element`` is its id, so ``<map>_conversion_report.json`` lists per
-heuristic how often it fired and on which elements.
+Each heuristic is split into detection and application. Its rule function only detects: it says
+whether the situation it fixes is present (using the heuristic's parameters, never its switch).
+Every detection is logged as a ``kind="heuristic"`` degradation record (:func:`record`) whose
+``element`` is the heuristic's id, with ``applied`` (its switch, after ``autofix.enabled``) and the
+``location`` in the converter's local frame; the converter acts on it only when ``applied`` is
+true. ``<map>_conversion_report.json`` therefore lists both what AutoFix changed against
+BasicConversion (the conversion with every heuristic off) and what a disabled heuristic would have
+changed. A detection is made where the conversion reaches the heuristic's decision: with one
+heuristic off, those that would have acted on its result are not reached.
 
 Guesses that are not configurable here yet:
 
@@ -20,8 +26,6 @@ Guesses that are not configurable here yet:
 - ``crdesigner/.../plane_elements/traffic_signals.py`` ``assign_traffic_signals_to_road``: a sign
   whose country has no sign table is read with the ``ZAM`` table; dynamic types ``1000002`` and
   static ``1000003``/``1000004`` are skipped; German type ``252`` is read as ``260``.
-- ``crdesigner/map_conversion/lanelet2/cr2lanelet.py`` ``SHARED_NODE_TOLERANCE``: linked lanelet
-  ends closer than this are one seam.
 - ``traffic_light_fsm.py`` ``FsmConfig`` (its own command-line flags): how lights are grouped into
   intersections and phases.
 """
@@ -32,7 +36,7 @@ import dataclasses
 import inspect
 import logging
 import re
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from commonroad.scenario.traffic_sign import TrafficSignIDUsa
 
@@ -76,6 +80,33 @@ class SignStencilMatchConfig:
 
 
 @dataclasses.dataclass(slots=True)
+class SeamToleranceConfig:
+    """H10.
+
+    Attributes:
+        enabled: Whether it is applied.
+        max_gap_m: Largest distance (m) between the ends of linked lanelets that are made one seam.
+    """
+
+    enabled: bool = True
+    max_gap_m: float = 1.0
+
+
+@dataclasses.dataclass(slots=True)
+class SignalPastRoadEndConfig:
+    """H14.
+
+    Attributes:
+        enabled: Whether it is applied.
+        max_overshoot_m: Largest distance (m) past the road end at which a signal is placed at the
+            end instead of dropped.
+    """
+
+    enabled: bool = True
+    max_overshoot_m: float = 1.0
+
+
+@dataclasses.dataclass(slots=True)
 class HeuristicsConfig:
     """Settings of the :data:`HEURISTICS`, one entry per heuristic, named after it."""
 
@@ -88,6 +119,8 @@ class HeuristicsConfig:
     non_vehicle_light: Switch = dataclasses.field(default_factory=Switch)
     us_sign_codes: Switch = dataclasses.field(default_factory=Switch)
     painted_stop_line: Switch = dataclasses.field(default_factory=Switch)
+    seam_tolerance: SeamToleranceConfig = dataclasses.field(default_factory=SeamToleranceConfig)
+    signal_past_road_end: SignalPastRoadEndConfig = dataclasses.field(default_factory=SignalPastRoadEndConfig)
 
 
 @dataclasses.dataclass(slots=True)
@@ -152,22 +185,64 @@ def check_config(*, config: HeuristicsConfig) -> None:
         raise ValueError(
             f"{prefix}.sign_stencil_match.max_distance_m must be >= 0, got {config.sign_stencil_match.max_distance_m}"
         )
+    for name, value in (
+        ("seam_tolerance.max_gap_m", config.seam_tolerance.max_gap_m),
+        ("signal_past_road_end.max_overshoot_m", config.signal_past_road_end.max_overshoot_m),
+    ):
+        if not value >= 0:
+            raise ValueError(f"{prefix}.{name} must be >= 0, got {value}")
     try:
         re.compile(config.light_type_code.pattern)
     except re.error as exc:
         raise ValueError(f"{prefix}.light_type_code.pattern is not a regular expression: {exc}") from exc
 
 
-def record(*, heuristic_id: str, element_id: object, message: str, action: str) -> None:
-    """Log one application of a heuristic as a ``kind="heuristic"`` degradation record."""
+def applies(*, heuristic_id: str, config: HeuristicsConfig) -> bool:
+    """Whether the heuristic acts: its entry in ``config`` is enabled."""
+    return getattr(config, by_id(heuristic_id=heuristic_id).name).enabled
+
+
+def record(
+    *,
+    heuristic_id: str,
+    element_id: object,
+    message: str,
+    action: str,
+    config: HeuristicsConfig,
+    location: Optional[Sequence[float]] = None,
+) -> bool:
+    """Log one detection of a heuristic as a ``kind="heuristic"`` degradation record.
+
+    Args:
+        heuristic_id: The heuristic's id.
+        element_id: The OpenDRIVE (or lanelet) id it concerns.
+        message: What the heuristic does there.
+        action: Short name of what it does.
+        config: The settings in use; they decide whether it is applied.
+        location: ``(x, y)`` in the converter's local frame, if known.
+
+    Returns:
+        Whether the heuristic is applied (:func:`applies`).
+    """
     name = by_id(heuristic_id=heuristic_id).name
+    applied = applies(heuristic_id=heuristic_id, config=config)
     logging.getLogger(DEGRADATION_LOGGER).warning(
-        "%s %s: %s",
+        "%s %s%s: %s",
         heuristic_id,
         name,
+        "" if applied else " (not applied)",
         message,
-        extra={"kind": "heuristic", "element": heuristic_id, "id": element_id, "value": name, "action": action},
+        extra={
+            "kind": "heuristic",
+            "element": heuristic_id,
+            "id": element_id,
+            "value": name,
+            "action": action,
+            "applied": applied,
+            "location": None if location is None else [round(float(v), 2) for v in location[:2]],
+        },
     )
+    return applied
 
 
 @_heuristic(id="H1", name="light_type_code")
@@ -185,7 +260,7 @@ def is_traffic_light(*, signal_type: Optional[str], config: HeuristicsConfig) ->
     disappear from the stoplines and be listed under H1 in the conversion report; widen the
     pattern or switch the heuristic off.
     """
-    return not config.light_type_code.enabled or re.fullmatch(config.light_type_code.pattern, signal_type or "") is not None
+    return re.fullmatch(config.light_type_code.pattern, signal_type or "") is not None
 
 
 @_heuristic(id="H2", name="centre_line_validity")
@@ -203,8 +278,6 @@ def names_only_the_centre_line(*, validity_from: object, validity_to: object, co
     on both sides and the signal facing both ways; H3 would then bind the lanes its orientation
     faces, not both inner lanes.
     """
-    if not config.centre_line_validity.enabled:
-        return False
     try:
         return float(validity_from) == 0.0 and float(validity_to) == 0.0
     except (TypeError, ValueError):
@@ -227,8 +300,6 @@ def faces(*, orientation: Optional[str], travels_with_s: bool, config: Heuristic
     Breaks when: a control on a multi-lane road governs only some of its lanes (e.g. a turn-lane
     light); the other lanes get a stopline too.
     """
-    if not config.facing_lanes.enabled:
-        return False
     if orientation == "+":
         return travels_with_s
     if orientation == "-":
@@ -251,7 +322,7 @@ def stops_at_signal_s(*, on_junction_road: bool, config: HeuristicsConfig) -> bo
     Breaks when: a source puts a light on the road after the junction (the far-side layout) and
     binds it with a validity there; its stopline lands after the junction.
     """
-    return config.stop_at_signal_s.enabled and not on_junction_road
+    return not on_junction_road
 
 
 @_heuristic(id="H5", name="sign_stencil_match")
@@ -269,12 +340,12 @@ def matches_stencil(*, distance_m: float, config: HeuristicsConfig) -> bool:
     Breaks when: two separate controls of the same kind stand within the distance (e.g. a stop
     sign on a side road next to another approach's stencil); one of them is taken as covered.
     """
-    return config.sign_stencil_match.enabled and distance_m <= config.sign_stencil_match.max_distance_m
+    return distance_m <= config.sign_stencil_match.max_distance_m
 
 
 @_heuristic(id="H6", name="sign_signal_stoplines")
-def writes_sign_signal_stoplines(*, config: HeuristicsConfig) -> bool:
-    """Stop and yield sign signals write their own stoplines (off by default).
+def writes_sign_signal_stoplines(*, covered_by_stencil: bool) -> bool:
+    """Stop and yield sign signals no stencil covers (H5) write their own stoplines (off by default).
 
     Assumes: a STOP/YIELD sign signal with no matching stencil (H5) stops traffic on the lanes it
     is bound to (validity, references, or H3), at its s outside a junction (H4). A sign's
@@ -289,7 +360,7 @@ def writes_sign_signal_stoplines(*, config: HeuristicsConfig) -> bool:
     Breaks when: a source places signs that do not mean a stop at that spot (e.g. advance
     warnings coded as STOP/YIELD); they become stoplines.
     """
-    return config.sign_signal_stoplines.enabled
+    return not covered_by_stencil
 
 
 @_heuristic(id="H7", name="non_vehicle_light")
@@ -305,7 +376,7 @@ def is_vehicle_light(*, has_drivable_lane: bool, config: HeuristicsConfig) -> bo
     Breaks when: a vehicle light sits on a non-driving road next to the lanes it controls and
     names them only through a reference that failed to parse; it is not counted as missing.
     """
-    return not config.non_vehicle_light.enabled or has_drivable_lane
+    return has_drivable_lane
 
 
 @_heuristic(id="H8", name="us_sign_codes")
@@ -327,7 +398,7 @@ def us_sign_code(
     Breaks when: a source with no country uses a non-US code that spells R1-1; it becomes a STOP
     sign. CommonRoad's US table has no YIELD (R1-2), so US yield signs are not recognised.
     """
-    if not config.us_sign_codes.enabled or (country or "").strip() or not signal_type:
+    if (country or "").strip() or not signal_type:
         return None
     code_type, code_subtype = signal_type.upper(), (subtype or "").upper()
     for code in (f"{code_type}-{code_subtype}", code_type):
@@ -356,3 +427,58 @@ def is_painted_stop_line(*, tag: str, name: Optional[str], element_type: Optiona
     if tag == "object" and (element_type or "").lower() == "stopline":
         return True
     return STOP_LINE_NAME.fullmatch(name or "") is not None
+
+
+READER_S_TOLERANCE_M = 0.01
+READER_S_TOLERANCE_FRACTION = 0.01
+BASIC_SEAM_TOLERANCE_M = 0.01
+
+
+@_heuristic(id="H10", name="seam_tolerance")
+def joins_seam(*, gap_m: float, config: HeuristicsConfig) -> bool:
+    """Linked lanelets whose ends lie up to ``max_gap_m`` apart share their end nodes: one seam.
+
+    Assumes: a predecessor/successor link in the OpenDRIVE means the lanes meet; ends a little apart
+    are exporter rounding or geometry error, and Lanelet2 routes only across shared end nodes.
+    BasicConversion shares the nodes of ends within ``BASIC_SEAM_TOLERANCE_M`` (1 cm) only. The gap
+    is the larger of the left and right boundary gaps of a predecessor/successor pair of CommonRoad
+    lanelets.
+
+    Evidence: the converter shared linked ends up to 1 m apart before AutoFix existed (decision 85
+    keeps that as the default); on the CARLA maps BasicConversion (1 cm) gives the same light rows
+    and equal or better routing (probe 2026-10-09).
+
+    Breaks when: lanes the OpenDRIVE links really are apart (a lane that starts later, a loop); the
+    seam drags one lanelet's boundary ends onto the other's, folding its shape by up to the gap.
+    """
+    return BASIC_SEAM_TOLERANCE_M < gap_m <= config.seam_tolerance.max_gap_m
+
+
+def shared_node_tolerance(*, config: HeuristicsConfig) -> float:
+    """How far apart (m) linked lanelet ends may be and still share nodes: H10's ``max_gap_m`` when applied."""
+    return config.seam_tolerance.max_gap_m if config.seam_tolerance.enabled else BASIC_SEAM_TOLERANCE_M
+
+
+@_heuristic(id="H14", name="signal_past_road_end")
+def road_end_placement(*, s: float, road_length: float, config: HeuristicsConfig) -> Optional[str]:
+    """A signal whose ``s`` lies past its road's end is moved to the end if it is close, else dropped.
+
+    Returns ``None`` for a signal the OpenDRIVE reader can place (``s`` at most
+    ``READER_S_TOLERANCE_M`` + ``READER_S_TOLERANCE_FRACTION`` of the planView length past the
+    end: the reader's own rounding tolerance), ``"placed_at_road_end"`` within ``max_overshoot_m``,
+    else ``"dropped"``. The reader cannot place any other signal, so BasicConversion refuses the map.
+
+    Assumes: a signal a little past the end of its road belongs at the end (the author measured
+    ``s`` along a slightly longer road); one far past the end has a wrong ``s`` or road, so where
+    it belongs is unknown.
+
+    Evidence: 6 corpus maps crashed on such signals (0.36-518 m past the end); in 2 of them every
+    such signal is within 1 m.
+
+    Breaks when: a signal far past the end was meant for the road's end (it is dropped), or one
+    within ``max_overshoot_m`` belongs on the next road (it controls the wrong road's lanes).
+    """
+    overshoot = s - road_length
+    if overshoot <= READER_S_TOLERANCE_M + READER_S_TOLERANCE_FRACTION * road_length:
+        return None
+    return "placed_at_road_end" if overshoot <= config.signal_past_road_end.max_overshoot_m else "dropped"

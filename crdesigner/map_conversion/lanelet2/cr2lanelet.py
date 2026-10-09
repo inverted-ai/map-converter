@@ -164,15 +164,21 @@ class CR2LaneletConverter:
     """
 
     def __init__(
-        self, config: Lanelet2Config = lanelet2_config, cr_config: GeneralConfig = general_config
+        self,
+        config: Lanelet2Config = lanelet2_config,
+        cr_config: GeneralConfig = general_config,
+        shared_node_tolerance: float = SHARED_NODE_TOLERANCE,
     ):
         """
         Initialization of CR2LaneletConverter
 
         :param config: Lanelet2 config parameters.
+        :param shared_node_tolerance: Metres two linked lanelets' boundary end points may be apart and still share
+            a node.
         """
         generate_unique_id(0)  # reset ID counter for next test case
         self._config = config
+        self._shared_node_tolerance = shared_node_tolerance
         self._cr_config = cr_config
         self.transformer = None
         self.osm = None
@@ -1081,14 +1087,14 @@ class CR2LaneletConverter:
 
         :param node_ids: Left and right node ids.
         :param vertices: The lanelet's own left and right end vertices.
-        :return: True if every node is within SHARED_NODE_TOLERANCE metres (in x/y) of its vertex.
+        :return: True if every node is within the shared node tolerance (metres, in x/y) of its vertex.
         """
         for node_id, vertex in zip(node_ids, vertices):
             node = self.osm.nodes[node_id]
             lat, lon = self.transformer.transform(self.origin_utm[0] + vertex[0], self.origin_utm[1] + vertex[1])
             north = (float(node.lat) - lat) * METRES_PER_DEGREE
             east = (float(node.lon) - lon) * METRES_PER_DEGREE * np.cos(np.radians(lat))
-            if np.hypot(north, east) > SHARED_NODE_TOLERANCE:
+            if np.hypot(north, east) > self._shared_node_tolerance:
                 return False
         return True
 

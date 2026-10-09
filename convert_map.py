@@ -571,31 +571,66 @@ def projected_centre(*, opendrive, geo_offset: Optional[GeoOffset]) -> Optional[
     return geo_offset.apply_offset(*centre) if geo_offset else centre
 
 
-def signal_corrections(*, opendrive, heuristics: conversion_heuristics.HeuristicsConfig) -> list[tuple[object, dict]]:
+def _signal_position(*, road, signal, frame: CustomTransfomer) -> tuple[float, float]:
+    return traffic_controls.element_position(road=road, s=float(signal.s), t=float(signal.t), frame=frame)
+
+
+def signal_corrections(
+    *, opendrive, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
+) -> list[tuple[object, dict]]:
     """The signal attributes H1 (light type code) and H8 (US sign codes) change: ``(signal, {attribute: value})``."""
     corrections = []
     for road in opendrive.roads:
         for signal in road.signals:
             changes = {}
-            if signal.dynamic == 'yes' and not conversion_heuristics.is_traffic_light(signal_type=signal.type, config=heuristics):
-                changes['dynamic'] = 'no'
-                conversion_heuristics.record(
+            if (
+                signal.dynamic == 'yes'
+                and not conversion_heuristics.is_traffic_light(signal_type=signal.type, config=heuristics)
+                and conversion_heuristics.record(
                     heuristic_id='H1', element_id=signal.id, action='read_as_static_sign',
                     message=f'signal {signal.id}: dynamic but type {signal.type!r} is no light code - a static sign',
+                    config=heuristics, location=_signal_position(road=road, signal=signal, frame=frame),
                 )
+            ):
+                changes['dynamic'] = 'no'
             if changes.get('dynamic', signal.dynamic) != 'yes':
                 code = conversion_heuristics.us_sign_code(
                     country=signal.country, signal_type=signal.type, subtype=signal.subtype, config=heuristics
                 )
-                if code is not None:
+                if code is not None and conversion_heuristics.record(
+                    heuristic_id='H8', element_id=signal.id, action='read_with_us_table',
+                    message=f'signal {signal.id}: no country, type {signal.type!r} - read as US sign {code[0]}-{code[1]}',
+                    config=heuristics, location=_signal_position(road=road, signal=signal, frame=frame),
+                ):
                     changes.update(country='USA', type=code[0], subtype=code[1])
-                    conversion_heuristics.record(
-                        heuristic_id='H8', element_id=signal.id, action='read_with_us_table',
-                        message=f'signal {signal.id}: no country, type {signal.type!r} - read as US sign {code[0]}-{code[1]}',
-                    )
             if changes:
                 corrections.append((signal, changes))
     return corrections
+
+
+def signals_past_road_end(
+    *, opendrive, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
+) -> list[tuple[object, object, Optional[float]]]:
+    """Signals past their road's end that the reader cannot place (H14): ``(road, signal, new s, or None to drop it)``."""
+    found = []
+    for road in opendrive.roads:
+        length = float(road.plan_view.length)
+        for signal in road.signals:
+            placement = conversion_heuristics.road_end_placement(s=float(signal.s), road_length=length, config=heuristics)
+            if placement is None:
+                continue
+            outcome = 'placed at the road end' if placement == 'placed_at_road_end' else 'dropped'
+            conversion_heuristics.record(
+                heuristic_id='H14', element_id=signal.id, action=placement,
+                message=(
+                    f'signal {signal.id}: s={float(signal.s):.2f} lies {float(signal.s) - length:.2f} m past the end '
+                    f'of road {road.id} ({length:.2f} m) - {outcome}'
+                ),
+                config=heuristics,
+                location=traffic_controls.element_position(road=road, s=length, t=float(signal.t), frame=frame),
+            )
+            found.append((road, signal, length if placement == 'placed_at_road_end' else None))
+    return found
 
 
 def parse_xodr(
@@ -604,15 +639,16 @@ def parse_xodr(
     allow_zero_origin: bool = False,
     heuristics: Optional[conversion_heuristics.HeuristicsConfig] = None,
 ) -> ParsedXodr:
-    """Parse the OpenDRIVE file, apply the signal heuristics, and build the Lanelet2 projector from its geo-reference."""
+    """Parse the OpenDRIVE file, build the Lanelet2 projector from its geo-reference, and apply the signal heuristics.
+
+    Raises:
+        InputError: the map cannot be placed (see ``allow_zero_origin``), or a signal lies past its
+            road's end and H14 is not applied.
+    """
+    heuristics = heuristics or conversion_heuristics.HeuristicsConfig()
     logger.info(f'Using {opendrive_path} as input')
     location = map_name(xodr_path=opendrive_path)
     opendrive = parse_opendrive(Path(opendrive_path))
-    for signal, changes in signal_corrections(
-        opendrive=opendrive, heuristics=heuristics or conversion_heuristics.HeuristicsConfig()
-    ):
-        for attribute, value in changes.items():
-            setattr(signal, attribute, value)
 
     # Construct Lanelet2 projector
     if opendrive.header.offset is not None:
@@ -662,6 +698,23 @@ def parse_xodr(
         geo_reference, geo_reference_status = GeoReference(0.0, 0.0), 'unusable_zero_origin_allowed'
         projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
         frame = CustomTransfomer(projector)
+
+    for signal, changes in signal_corrections(opendrive=opendrive, heuristics=heuristics, frame=frame):
+        for attribute, value in changes.items():
+            setattr(signal, attribute, value)
+    past_end = signals_past_road_end(opendrive=opendrive, heuristics=heuristics, frame=frame)
+    if past_end and not conversion_heuristics.applies(heuristic_id='H14', config=heuristics):
+        listed = ', '.join(f'signal {signal.id} on road {road.id}' for road, signal, _ in past_end)
+        raise InputError(
+            f'{os.path.abspath(opendrive_path)}: {listed} lie past the end of their road, where they cannot be '
+            f'placed. Correct their s, or convert with autofix.enabled=true and '
+            f'autofix.heuristics.signal_past_road_end.enabled=true.'
+        )
+    for road, signal, s in past_end:
+        if s is None:
+            road.signals.remove(signal)
+        else:
+            signal.s = s
     return ParsedXodr(
         location=location,
         opendrive=opendrive,
@@ -692,6 +745,7 @@ def traffic_side_of(*, opendrive) -> Optional[str]:
 
 def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
     """Convert OpenDRIVE to CommonRoad, then write the Lanelet2 ``.osm`` within the size budget."""
+    heuristics = conversion_heuristics.applied_heuristics(autofix=cfg.autofix)
     # Convert OpenDRIVE to CommonRoad
     open_drive_config = OpenDriveConfig()
     open_drive_config.min_delta_s = 1.5
@@ -736,7 +790,11 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
                 f'Simplify attempt {attempt + 1}/{max_attempts}: tol={tol:.3f} m '
                 f'(removed {removed} vertices across {len(lanelet_network.lanelets)} lanelets)'
             )
-        l2osm = CR2LaneletConverter(config=lanelet2_config, cr_config=commonroad_config)
+        l2osm = CR2LaneletConverter(
+            config=lanelet2_config,
+            cr_config=commonroad_config,
+            shared_node_tolerance=conversion_heuristics.shared_node_tolerance(config=heuristics),
+        )
         osm = l2osm.convert_lanelet_network(lanelet_network, transformer=parsed.frame)
         if next(osm.iter('node'), None) is None:
             raise InputError(f'No lanelets of the converted lane types ({", ".join(open_drive_config.filter_types)}) - the map is empty')
@@ -758,6 +816,7 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
             f'Raise simplify_max_iterations, raise simplify_tolerance, or relax osm_target_bytes.'
         )
 
+    record_seam_gaps(lanelet_network=lanelet_network, heuristics=heuristics, frame=parsed.frame)
     osm_path = os.path.join(cfg.dir_path, f"{parsed.location}.osm")
     logger.info(f'Writing converted Lanelet2 map to {osm_path}')
     with open(osm_path, "wb") as file_out:
@@ -768,6 +827,32 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
         osm_path=osm_path,
         unsimplified_network=unsimplified_network,
     )
+
+
+def record_seam_gaps(
+    *, lanelet_network: LaneletNetwork, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
+) -> int:
+    """Record H10 for every predecessor/successor pair of lanelets whose ends lie a little apart; return how many."""
+    count = 0
+    for lanelet in lanelet_network.lanelets:
+        for successor_id in lanelet.successor:
+            successor = lanelet_network.find_lanelet_by_id(successor_id)
+            if successor is None:
+                continue
+            gap = max(
+                float(np.linalg.norm(lanelet.left_vertices[-1][:2] - successor.left_vertices[0][:2])),
+                float(np.linalg.norm(lanelet.right_vertices[-1][:2] - successor.right_vertices[0][:2])),
+            )
+            if not conversion_heuristics.joins_seam(gap_m=gap, config=heuristics):
+                continue
+            middle = (lanelet.center_vertices[-1][:2] + successor.center_vertices[0][:2]) / 2
+            conversion_heuristics.record(
+                heuristic_id='H10', element_id=f'{lanelet.lanelet_id}->{successor_id}', action='seam_shared',
+                message=f'lanelets {lanelet.lanelet_id} -> {successor_id}: linked ends {gap:.2f} m apart - one seam',
+                config=heuristics, location=frame.to_local(middle[0], middle[1]),
+            )
+            count += 1
+    return count
 
 
 def trim(*, cfg: MapConversionConfig, osm_path: str, projector) -> None:

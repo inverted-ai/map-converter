@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -370,3 +371,79 @@ def test_config_file_is_read_by_the_command_line(tmp_path):
     assert result.returncode == 0, result.stderr
     with open(tmp_path / "case_conversion_report.json") as f:
         assert json.load(f)["validation"]["profile"] == "strict"
+
+
+def _report(*, map_dir, name: str) -> dict:
+    with open(map_dir / f"{name}_conversion_report.json") as f:
+        return json.load(f)
+
+
+def _past_end_findings(*, report: dict) -> list[tuple[str, str, bool]]:
+    return [(str(r["id"]), r["action"], r["applied"]) for r in report["records"] if r["kind"] == "heuristic" and r["element"] == "H14"]
+
+
+def _write_road_with_signal_at(*, map_dir, s: float) -> None:
+    sign = xb.SignalSpec(id="7", s=s, dynamic="no", type="206", validity=(-1, -1))
+    xb.write_xodr(map_dir=map_dir, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=50.0, signals=[sign])]))
+
+
+@pytest.mark.parametrize("s, action", [(50.6, "placed_at_road_end"), (55.0, "dropped")])
+def test_signal_past_the_road_end_is_placed_or_dropped(tmp_path, s, action):
+    _write_road_with_signal_at(map_dir=tmp_path, s=s)
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    report = _report(map_dir=tmp_path, name="case")
+    assert _past_end_findings(report=report) == [("7", action, True)]
+    assert report["validation"]["controls"]["stop_yield_signs"] == (1 if action == "placed_at_road_end" else 0)
+
+
+def test_signal_past_the_road_end_is_refused_without_autofix(tmp_path):
+    _write_road_with_signal_at(map_dir=tmp_path, s=50.6)
+    result = xb.run_convert_map(map_dir=str(tmp_path), **{"autofix.enabled": "false"})
+    assert result.returncode == conversion_common.REFUSED_EXIT_CODE
+    assert "signal 7" in result.stderr
+    assert _past_end_findings(report=_report(map_dir=tmp_path, name="case")) == [("7", "placed_at_road_end", False)]
+    assert not (tmp_path / "case.osm").exists()
+
+
+def test_signal_past_the_road_end_by_a_rounding_error_is_left_to_the_reader(tmp_path):
+    _write_road_with_signal_at(map_dir=tmp_path, s=50.0001)
+    result = xb.run_convert_map(map_dir=str(tmp_path), **{"autofix.enabled": "false"})
+    assert result.returncode == 0, result.stderr
+    assert _past_end_findings(report=_report(map_dir=tmp_path, name="case")) == []
+
+
+def _write_roads_with_gap(*, map_dir, gap: float) -> None:
+    """Road 1 (0..50 m) and road 2, drawn the other way, meeting end to end ``gap`` metres apart at x=50.
+
+    Lanes of opposite id signs are never concatenated, so the seam stays (a straight chain of
+    lanelets less than 1 m apart is concatenated into one lanelet).
+    """
+    road1 = xb.straight_road(id="1", length=50.0, successor=xb.LinkSpec(element_type="road", element_id="2", contact_point="end"))
+    road2 = xb.straight_road(
+        id="2", length=50.0, x=100.0 + gap, hdg=math.pi, successor=xb.LinkSpec(element_type="road", element_id="1", contact_point="end")
+    )
+    for lane in road1.lane_sections[0].lanes + road2.lane_sections[0].lanes:
+        lane.successor = -lane.id
+    xb.write_xodr(map_dir=map_dir, name="gap", text=xb.build_xodr(roads=[road1, road2]))
+
+
+@pytest.mark.parametrize("autofix, applied, shared", [("true", True, True), ("false", False, False)])
+def test_linked_lanes_a_little_apart_share_their_seam_only_with_autofix(tmp_path, autofix, applied, shared):
+    import map_quality as mq
+
+    _write_roads_with_gap(map_dir=tmp_path, gap=0.5)
+    result = xb.run_convert_map(map_dir=str(tmp_path), **{"autofix.enabled": autofix})
+    assert result.returncode == 0, result.stderr
+    findings = [r for r in _report(map_dir=tmp_path, name="gap")["records"] if r["kind"] == "heuristic" and r["element"] == "H10"]
+    assert findings and all(r["applied"] is applied for r in findings)
+    assert all(r["location"][0] == pytest.approx(50.25, abs=0.01) for r in findings)
+    outputs = mq.ConversionOutputs.load(map_dir=str(tmp_path))
+    assert (mq.routing_edge_pct(outputs=outputs) == 100.0) is shared
+
+
+def test_linked_lanes_that_meet_need_no_seam_heuristic(tmp_path):
+    _write_roads_with_gap(map_dir=tmp_path, gap=0.0)
+    result = xb.run_convert_map(map_dir=str(tmp_path), **{"autofix.enabled": "false"})
+    assert result.returncode == 0, result.stderr
+    assert not [r for r in _report(map_dir=tmp_path, name="gap")["records"] if r["element"] == "H10"]

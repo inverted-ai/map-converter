@@ -6,7 +6,8 @@ Vendored code reports every input it cannot use as written through
 
 - ``kind``: what was wrong, e.g. ``unknown_value``, ``missing_attribute``, ``decimal_comma``,
   ``unparseable_number``, ``degenerate_geometry``, ``unknown_reference``; ``heuristic`` when a
-  :mod:`conversion_heuristics` rule decided (``element`` is its id, ``value`` its name);
+  :mod:`conversion_heuristics` rule detected the situation it fixes (``element`` is its id,
+  ``value`` its name; these records also carry ``applied`` and ``location``, local ``[x, y]``);
   ``not_converted`` for an element listed but deliberately not converted (painted stop lines).
 - ``element``: ``<tag>`` when the whole element was dropped (``action="dropped"``), else
   ``<tag>.<attribute>``.
@@ -59,19 +60,21 @@ class ConversionReport(logging.Handler):
         self.records: list[dict[str, Any]] = []
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(
-            {
-                "kind": getattr(record, "kind", None),
-                "element": getattr(record, "element", None),
-                "id": _jsonable(value=getattr(record, "id", None)),
-                "value": _jsonable(value=getattr(record, "value", None)),
-                "action": getattr(record, "action", None),
-                "message": record.getMessage(),
-            }
-        )
+        entry = {
+            "kind": getattr(record, "kind", None),
+            "element": getattr(record, "element", None),
+            "id": _jsonable(value=getattr(record, "id", None)),
+            "value": _jsonable(value=getattr(record, "value", None)),
+            "action": getattr(record, "action", None),
+            "message": record.getMessage(),
+        }
+        if entry["kind"] == "heuristic":
+            entry["applied"] = getattr(record, "applied", True)
+            entry["location"] = getattr(record, "location", None)
+        self.records.append(entry)
 
     def summary(self, *, elements_seen: dict[str, int]) -> dict[str, Any]:
-        """Element counts, unrecognised tokens, the heuristics that fired and record counts by kind."""
+        """Element counts, unrecognised tokens, the heuristics applied and not applied, and record counts by kind."""
         dropped: collections.Counter = collections.Counter()
         degraded: collections.Counter = collections.Counter()
         for r in self.records:
@@ -100,18 +103,19 @@ class ConversionReport(logging.Handler):
             entry["count"] += 1
             if r["id"] is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
                 entry["ids"].append(r["id"])
-        heuristics: dict[str, dict[str, Any]] = {}
+        heuristics: dict[bool, dict[str, dict[str, Any]]] = {True: {}, False: {}}
         for r in self.records:
             if r["kind"] != "heuristic":
                 continue
-            entry = heuristics.setdefault(r["element"], {"name": r["value"], "count": 0, "ids": []})
+            entry = heuristics[r["applied"]].setdefault(r["element"], {"name": r["value"], "count": 0, "ids": []})
             entry["count"] += 1
             if r["id"] is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
                 entry["ids"].append(r["id"])
         return {
             "elements": elements,
             "unrecognised_tokens": sorted(tokens.values(), key=lambda t: (-t["count"], str(t["element"]))),
-            "heuristics": dict(sorted(heuristics.items(), key=lambda item: int(item[0][1:]))),
+            "heuristics": dict(sorted(heuristics[True].items(), key=lambda item: int(item[0][1:]))),
+            "heuristics_not_applied": dict(sorted(heuristics[False].items(), key=lambda item: int(item[0][1:]))),
             "records_by_kind": dict(sorted(collections.Counter(str(r["kind"]) for r in self.records).items())),
         }
 

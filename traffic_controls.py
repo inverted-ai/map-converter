@@ -125,6 +125,24 @@ def _lane_at_s(*, plane, section, s: float) -> LaneStop:
     return LaneStop(inner=np.array([*inner, elevation]), outer=np.array([*outer, elevation]))
 
 
+def element_position(*, road, s: float, t: float, frame) -> tuple[float, float]:
+    """Local ``(x, y)`` of a road element at ``s`` (clamped to the road) and lateral offset ``t``."""
+    s = min(max(s, 0.0), road.plan_view.length)
+    position, tangent, _, _ = road.plan_view.calc(s, compute_curvature=False)
+    xy = np.array(position[:2]) + t * np.array([-np.sin(tangent), np.cos(tangent)])
+    x, y = frame.to_local(xy[0], xy[1])
+    return float(x), float(y)
+
+
+def _location(*, index: _Index, signal_id: str, frame) -> Optional[tuple[float, float]]:
+    """Local ``(x, y)`` of the signal ``signal_id``, if it is on a road."""
+    road_signal = index.signals.get(signal_id)
+    if road_signal is None:
+        return None
+    road, signal = road_signal
+    return element_position(road=road, s=float(signal.s), t=float(signal.t), frame=frame)
+
+
 def _element_s(*, index: _Index, road, signal_id: str) -> float:
     """s of the signal ``signal_id`` on ``road``, else of the road's reference to it."""
     road_signal = index.signals.get(signal_id)
@@ -136,11 +154,13 @@ def _element_s(*, index: _Index, road, signal_id: str) -> float:
 def _bound_stops(
     *, index: _Index, signal_id: str, config: heuristics.HeuristicsConfig
 ) -> tuple[list[LaneStop], bool]:
-    """The stops of the lanes a validity binds ``signal_id`` to, and whether H4 placed any of them."""
-    stops, moved = [], False
+    """The stops of the lanes a validity binds ``signal_id`` to, and whether H4 detected any of them."""
+    stops, found = [], False
     for road, lane_id in index.bound.get(signal_id, []):
         first = road.lanes.lane_sections[0]
-        if not heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config):
+        at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config)
+        found = found or at_s
+        if not (at_s and heuristics.applies(heuristic_id="H4", config=config)):
             stops.append(_lane_entry(plane=_plane(index=index, road=road, section=first, lane_id=lane_id)))
             continue
         s = _element_s(index=index, road=road, signal_id=signal_id)
@@ -149,8 +169,7 @@ def _bound_stops(
         if plane is None:
             plane, section = _plane(index=index, road=road, section=first, lane_id=lane_id), first
         stops.append(_lane_at_s(plane=plane, section=section, s=s))
-        moved = True
-    return stops, moved
+    return stops, found
 
 
 def _scoped(*, element) -> tuple[bool, bool]:
@@ -162,7 +181,7 @@ def _scoped(*, element) -> tuple[bool, bool]:
     )
 
 
-def _targets(*, index: _Index, signal_id: str, config: heuristics.HeuristicsConfig) -> Optional[list[Target]]:
+def _targets(*, index: _Index, signal_id: str, config: heuristics.HeuristicsConfig, frame) -> Optional[list[Target]]:
     """Where a control no validity binds applies (H2/H3), or ``None`` when it named lanes it did not get."""
     elements = [index.signals[signal_id]] if signal_id in index.signals else []
     references = index.references.get(signal_id, [])
@@ -175,11 +194,12 @@ def _targets(*, index: _Index, signal_id: str, config: heuristics.HeuristicsConf
             centre_only = True
         elif scoped:
             return None
-    if centre_only:
-        heuristics.record(
-            heuristic_id="H2", element_id=signal_id, action="no_lane_scope",
-            message=f"signal {signal_id}: validity names only lane 0 - treated as no validity",
-        )
+    if centre_only and not heuristics.record(
+        heuristic_id="H2", element_id=signal_id, action="no_lane_scope",
+        message=f"signal {signal_id}: validity names only lane 0 - treated as no validity",
+        config=config, location=_location(index=index, signal_id=signal_id, frame=frame),
+    ):
+        return None
     chosen = references or elements
     return [Target(road=road, s=float(element.s), orientation=element.orientation) for road, element in chosen]
 
@@ -194,7 +214,9 @@ def _facing_stops(
         sections = road.lanes.lane_sections
         if not sections:
             continue
-        at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config)
+        at_s = heuristics.stops_at_signal_s(
+            on_junction_road=road.junction is not None, config=config
+        ) and heuristics.applies(heuristic_id="H4", config=config)
         candidates = []
         for section in sections:
             for lane in section.right_lanes + section.left_lanes:
@@ -241,7 +263,7 @@ def _road_entry(*, index: _Index, road, section, plane) -> LaneStop:
 
 
 def _sign_stops(
-    *, index: _Index, signal_id: str, drivable_types: frozenset[str], config: heuristics.HeuristicsConfig
+    *, index: _Index, signal_id: str, drivable_types: frozenset[str], config: heuristics.HeuristicsConfig, frame
 ) -> list[LaneStop]:
     """The stops of a stop/yield sign (H6): its validity lanes read in the lane section at each element's s.
 
@@ -255,21 +277,20 @@ def _sign_stops(
         (road, element)
         for road, element in elements
         if _scoped(element=element)[0]
-        and not heuristics.names_only_the_centre_line(
-            validity_from=element.validity_from, validity_to=element.validity_to, config=config
+        and not (
+            heuristics.names_only_the_centre_line(
+                validity_from=element.validity_from, validity_to=element.validity_to, config=config
+            )
+            and heuristics.applies(heuristic_id="H2", config=config)
         )
     ]
+    location = _location(index=index, signal_id=signal_id, frame=frame)
     if not scoped:
-        targets = _targets(index=index, signal_id=signal_id, config=config) if config.facing_lanes.enabled else None
-        if targets is None:
-            return []
-        stops, _ = _facing_stops(index=index, targets=targets, drivable_types=drivable_types, config=config)
-        heuristics.record(
-            heuristic_id="H3", element_id=signal_id, action="bound" if stops else "no_facing_lane",
-            message=f"signal {signal_id}: no lane named - {len(stops)} lane(s) it faces",
+        stops, _ = _unscoped_stops(
+            index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
         )
         return stops
-    stops, moved = [], False
+    stops, found = [], False
     for road, element in scoped:
         if not road.lanes.lane_sections:
             continue
@@ -280,16 +301,14 @@ def _sign_stops(
             plane = None if lane_id == 0 else _plane(index=index, road=road, section=section, lane_id=lane_id)
             if plane is None or plane.type not in drivable_types:
                 continue
-            if heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config):
+            at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config)
+            found = found or at_s
+            if at_s and heuristics.applies(heuristic_id="H4", config=config):
                 stops.append(_lane_at_s(plane=plane, section=section, s=s))
-                moved = True
             else:
                 stops.append(_road_entry(index=index, road=road, section=section, plane=plane))
-    if moved:
-        heuristics.record(
-            heuristic_id="H4", element_id=signal_id, action="placed_at_s",
-            message=f"signal {signal_id}: on an ordinary road - stopline at its s, not at the lane start",
-        )
+    if found:
+        _record_placed_at_s(signal_id=signal_id, config=config, location=location)
     return stops
 
 
@@ -309,27 +328,47 @@ def _row(*, stop: LaneStop, frame, actor_id, agent_type: str, within: Callable[.
     return dataclasses.asdict(stopline)
 
 
-def _control_stops(
-    *, index: _Index, signal_id: str, drivable_types: frozenset[str], config: heuristics.HeuristicsConfig
-) -> tuple[list[LaneStop], bool]:
-    """The stops of one control and whether it is a vehicle control (H7 decides for unbound lights)."""
-    stops, moved = _bound_stops(index=index, signal_id=signal_id, config=config)
-    if moved:
-        heuristics.record(
-            heuristic_id="H4", element_id=signal_id, action="placed_at_s",
-            message=f"signal {signal_id}: on an ordinary road - stopline at its s, not at the lane start",
-        )
-    if index.bound.get(signal_id) or not config.facing_lanes.enabled:
-        return stops, True
-    targets = _targets(index=index, signal_id=signal_id, config=config)
-    if targets is None:
-        return stops, True
-    stops, any_drivable = _facing_stops(index=index, targets=targets, drivable_types=drivable_types, config=config)
+def _record_placed_at_s(*, signal_id: str, config: heuristics.HeuristicsConfig, location) -> None:
     heuristics.record(
+        heuristic_id="H4", element_id=signal_id, action="placed_at_s",
+        message=f"signal {signal_id}: on an ordinary road - stopline at its s, not at the lane start",
+        config=config, location=location,
+    )
+
+
+def _unscoped_stops(
+    *, index: _Index, signal_id: str, drivable_types: frozenset[str], config: heuristics.HeuristicsConfig, frame
+) -> tuple[list[LaneStop], bool]:
+    """The stops H3 gives a control no validity binds, and whether any of its roads has a drivable lane.
+
+    Without H3 (or for a control that named lanes it did not get) there are none, and the control
+    counts as on a drivable road.
+    """
+    targets = _targets(index=index, signal_id=signal_id, config=config, frame=frame)
+    if targets is None:
+        return [], True
+    stops, any_drivable = _facing_stops(index=index, targets=targets, drivable_types=drivable_types, config=config)
+    if not heuristics.record(
         heuristic_id="H3", element_id=signal_id, action="bound" if stops else "no_facing_lane",
         message=f"signal {signal_id}: no lane named - {len(stops)} lane(s) it faces",
-    )
+        config=config, location=_location(index=index, signal_id=signal_id, frame=frame),
+    ):
+        return [], True
     return stops, any_drivable
+
+
+def _control_stops(
+    *, index: _Index, signal_id: str, drivable_types: frozenset[str], config: heuristics.HeuristicsConfig, frame
+) -> tuple[list[LaneStop], bool]:
+    """The stops of one control and whether it is a vehicle control (H7 decides for unbound lights)."""
+    stops, found = _bound_stops(index=index, signal_id=signal_id, config=config)
+    if found:
+        _record_placed_at_s(
+            signal_id=signal_id, config=config, location=_location(index=index, signal_id=signal_id, frame=frame)
+        )
+    if index.bound.get(signal_id):
+        return stops, True
+    return _unscoped_stops(index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame)
 
 
 def _same_spot(*, a: dict, b: dict) -> bool:
@@ -414,15 +453,16 @@ def control_stoplines(
         signal_id = str(light.opendrive_id)
         if signal_id in light_stops:
             continue
-        stops, is_vehicle = _control_stops(index=index, signal_id=signal_id, drivable_types=drivable_types, config=config)
+        stops, is_vehicle = _control_stops(
+            index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
+        )
         light_stops[signal_id] = stops
-        if heuristics.is_vehicle_light(has_drivable_lane=is_vehicle, config=config):
+        if heuristics.is_vehicle_light(has_drivable_lane=is_vehicle, config=config) or not heuristics.record(
+            heuristic_id="H7", element_id=signal_id, action="not_a_vehicle_light",
+            message=f"light {signal_id}: its road has no drivable lane - not counted as a vehicle light",
+            config=config, location=_location(index=index, signal_id=signal_id, frame=frame),
+        ):
             vehicle_lights.add(signal_id)
-        else:
-            heuristics.record(
-                heuristic_id="H7", element_id=signal_id, action="not_a_vehicle_light",
-                message=f"light {signal_id}: its road has no drivable lane - not counted as a vehicle light",
-            )
 
     rows: list[dict] = []
     lit: set[str] = set()
@@ -452,40 +492,55 @@ def control_stoplines(
         signal_id = str(sign.opendrive_id)
         distances = np.linalg.norm(stencil_xy[agent_type] - local(sign.position), axis=1)
         nearest = float(distances.min()) if distances.size else float("inf")
-        if heuristics.matches_stencil(distance_m=nearest, config=config):
+        location = _location(index=index, signal_id=signal_id, frame=frame)
+        covered = heuristics.matches_stencil(distance_m=nearest, config=config) and heuristics.record(
+            heuristic_id="H5", element_id=signal_id, action="stencil_is_its_stopline",
+            message=f"sign {signal_id}: a {agent_type} stencil {nearest:.1f} m away is its stopline",
+            config=config, location=location,
+        )
+        if not heuristics.writes_sign_signal_stoplines(covered_by_stencil=covered):
+            continue
+        if not heuristics.applies(heuristic_id="H6", config=config):
             heuristics.record(
-                heuristic_id="H5", element_id=signal_id, action="stencil_is_its_stopline",
-                message=f"sign {signal_id}: a {agent_type} stencil {nearest:.1f} m away is its stopline",
+                heuristic_id="H6", element_id=signal_id, action="stopline_not_written",
+                message=f"sign {signal_id}: no stencil covers it - its own {agent_type} stopline rows are not written",
+                config=config, location=location,
             )
+            signs_missing.append(f"signal {signal_id}")
             continue
         sign_rows, by_stencil, by_sign = [], False, None
-        if heuristics.writes_sign_signal_stoplines(config=config):
-            stops = _sign_stops(index=index, signal_id=signal_id, drivable_types=drivable_types, config=config)
-            for stop in stops:
-                row = _row(stop=stop, frame=frame, actor_id=sign.opendrive_id, agent_type=agent_type, within=within)
-                if row is None or any(_same_spot(a=row, b=kept) for kept in sign_rows):
-                    continue
-                same = next(
-                    (kept for kept in sign_rows_written if kept["agent_type"] == agent_type and _same_spot(a=row, b=kept)), None
-                )
-                if same is not None:
-                    by_sign = same["actor_id"]
-                    continue
-                gap = _stencil_gap_on_lane(row=row, stencils=stencil_xy[agent_type])
-                if heuristics.matches_stencil(distance_m=gap, config=config):
-                    by_stencil = True
-                    continue
-                sign_rows.append(row)
+        stops = _sign_stops(
+            index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
+        )
+        for stop in stops:
+            row = _row(stop=stop, frame=frame, actor_id=sign.opendrive_id, agent_type=agent_type, within=within)
+            if row is None or any(_same_spot(a=row, b=kept) for kept in sign_rows):
+                continue
+            same = next(
+                (kept for kept in sign_rows_written if kept["agent_type"] == agent_type and _same_spot(a=row, b=kept)), None
+            )
+            if same is not None:
+                by_sign = same["actor_id"]
+                continue
+            gap = _stencil_gap_on_lane(row=row, stencils=stencil_xy[agent_type])
+            if heuristics.matches_stencil(distance_m=gap, config=config) and heuristics.applies(
+                heuristic_id="H5", config=config
+            ):
+                by_stencil = True
+                continue
+            sign_rows.append(row)
         if by_stencil and not sign_rows:
             heuristics.record(
                 heuristic_id="H5", element_id=signal_id, action="stencil_is_its_stopline",
                 message=f"sign {signal_id}: a {agent_type} stencil on the lane it binds is its stopline",
+                config=config, location=location,
             )
             continue
         if by_sign is not None and not sign_rows:
             heuristics.record(
                 heuristic_id="H6", element_id=signal_id, action="same_stop_as_another_sign",
                 message=f"sign {signal_id}: stops the same lane(s) at the same place as sign {by_sign}",
+                config=config, location=location,
             )
             continue
         if sign_rows:
@@ -494,6 +549,7 @@ def control_stoplines(
             heuristics.record(
                 heuristic_id="H6", element_id=signal_id, action="stopline_written",
                 message=f"sign {signal_id}: {len(sign_rows)} {agent_type} stopline row(s)",
+                config=config, location=location,
             )
         else:
             signs_missing.append(f"signal {signal_id}")
@@ -523,10 +579,8 @@ def report_painted_stop_lines(*, opendrive, frame, config: heuristics.Heuristics
         for tag, element, element_type in elements:
             if not heuristics.is_painted_stop_line(tag=tag, name=element.name, element_type=element_type, config=config):
                 continue
-            s = min(max(float(element.s), 0.0), road.plan_view.length)
-            position, tangent, _, _ = road.plan_view.calc(s, compute_curvature=False)
-            xy = np.array(position[:2]) + float(element.t) * np.array([-np.sin(tangent), np.cos(tangent)])
-            x, y = (round(float(v), 2) for v in frame.to_local(xy[0], xy[1]))
+            position = element_position(road=road, s=float(element.s), t=float(element.t), frame=frame)
+            x, y = (round(v, 2) for v in position)
             degradation.warning(
                 "%s %s: painted stop line at (%.2f, %.2f) - not converted (H9 painted_stop_line)",
                 tag, element.id, x, y,

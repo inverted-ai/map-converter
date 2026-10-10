@@ -46,6 +46,7 @@ from crdesigner.common.config.opendrive_config import OpenDriveConfig
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.network import Network
 from commonroad.scenario.lanelet import LaneletNetwork
 
+import autocritic_report
 import conversion_heuristics
 import conversion_report
 import map_validation
@@ -102,6 +103,8 @@ class MapConversionConfig:
         autocritic: Whether the converter judges its output, under which preset and thresholds
             (:mod:`map_validation`), e.g. ``autocritic.preset=strict``. A failing preset withholds the
             map outputs (exit code 4); the reports are still written.
+        report: Which parts of the AutoCritic report (:mod:`autocritic_report`) are written, e.g.
+            ``report.closeups=false``.
     """
 
     dir_path: Optional[str] = None
@@ -121,6 +124,7 @@ class MapConversionConfig:
     verifier_timeout_s: float = 0.0
     autofix: conversion_heuristics.AutoFixConfig = dataclasses.field(default_factory=conversion_heuristics.AutoFixConfig)
     autocritic: map_validation.AutoCriticConfig = dataclasses.field(default_factory=map_validation.AutoCriticConfig)
+    report: autocritic_report.ReportConfig = dataclasses.field(default_factory=autocritic_report.ReportConfig)
 
 
 @dataclasses.dataclass
@@ -1118,6 +1122,17 @@ def convert_map(cfg: MapConversionConfig) -> str:
     report_path = os.path.join(cfg.dir_path, f"{location}_conversion_report.json")
     try:
         osm_path, verdict = _convert(cfg=cfg, opendrive_path=opendrive_path)
+        if verdict is not None and cfg.report.enabled:
+            json_path, html_path = autocritic_report.write(
+                map_dir=cfg.dir_path,
+                location=location,
+                records=report.records,
+                verdict=dataclasses.asdict(verdict),
+                autofix_enabled=cfg.autofix.enabled,
+                would_have_fixed=cfg.autocritic.would_have_fixed,
+                config=cfg.report,
+            )
+            logger.info(f'Wrote AutoCritic report to {html_path} and {json_path}')
         if verdict is not None and verdict.status == 'fail':
             withhold_outputs(map_dir=cfg.dir_path, location=location)
             failed = [check.name for check in verdict.checks if not check.passed]

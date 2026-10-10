@@ -85,6 +85,10 @@ exit code 3 and write nothing.
 | `autocritic.enabled` | `true` | Judge the outputs and record the verdict in the conversion report; `false` records none. See "Validation" below. |
 | `autocritic.preset` | `none` | `none` (judge nothing), `perfect` (no fault of any kind) or `strict` (bounded faults); a failing preset withholds the map outputs (exit code 4). See "Validation" below. |
 | `autocritic.thresholds.<name>` | unset | Override one of the preset's thresholds, e.g. `autocritic.thresholds.min_routing_edge_pct=98`. |
+| `autocritic.would_have_fixed` | `true` | The AutoCritic report also lists where switched-off heuristics would have acted. |
+| `report.enabled` | `true` | Write the AutoCritic report (`<map>_autocritic.html` and `.json`); needs `autocritic.enabled`. |
+| `report.text` / `report.birdview` / `report.closeups` | `true` | The report's numbered lists, its whole-map image per section, its close-up images (24 per image). |
+| `report.max_closeups` | `240` | Most close-ups per section; further items are listed only. |
 
 ## Output files
 
@@ -98,6 +102,7 @@ exit code 3 and write nothing.
 | `<map>_signal_groups.json` | Traffic-light structure the OpenDRIVE file declares: junction per signal id (`membership`, with the source it came from), `<controller>` groups and `sequence`, conflicts, non-integer ids | `traffic_light_fsm.py` |
 | `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), the visualization FOV used, the traffic side of the roads (`RHT`, `LHT` or `mixed`), Python and package versions, UTC time | People, `map_report.py` |
 | `<map>_conversion_report.json` | Everything in the input the converter could not use as written, and what it did instead (see below). Written even when the conversion fails, once the input file is known | People |
+| `<map>_autocritic.html`, `<map>_autocritic.json` | The AutoCritic report (see "AutoCritic report" below); also written when a preset rejects the map | People; scripts (JSON) |
 
 `metadata.json` must stay loadable by `MapConfig(**json)`, which rejects unknown keys, so extra information is
 written to separate sidecar files.
@@ -193,6 +198,20 @@ lists those with no stopline by OpenDRIVE id:
 
 Painted stop lines never become, move or invent a stopline: a stop line with no light or sign is an unsigned
 stop. Each one is listed in the conversion report (`kind="not_converted"`, with its position) and under L13.
+
+### AutoCritic report
+
+`<map>_autocritic.html` is self-contained (images embedded); `<map>_autocritic.json` holds the same numbered
+items for scripts. After a summary (AutoFix on or off, preset, verdict) it has one section per:
+
+1. heuristic that changed the conversion against BasicConversion (AutoFix);
+2. heuristic that was off and would have acted (with AutoFix off, every heuristic; `autocritic.would_have_fixed`);
+3. check that failed, or that lists places (L10-L13).
+
+Each section numbers its items (element, position in the local frame, what happened) and draws them: a birdview
+of the whole map with every item circled and numbered, and a close-up of each (50 m wide, 24 per image). The
+`report.*` settings switch the parts off. The FSM heuristics H11-H13 are reported by `traffic_light_fsm.py` in
+`<map>_fsm_review.json`.
 
 ### Heuristics
 

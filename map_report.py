@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 XML_COUNTED_TAGS = ("controller", "control", "signal", "signalReference", "object")
 CORE_OUTPUT_SUFFIXES = (".osm", "_stoplines.json", "metadata.json")
-EXCLUDED_OUTPUT_SUFFIXES = ("_provenance.json", ".png", ".xodr", ".log")
+EXCLUDED_OUTPUT_SUFFIXES = ("_provenance.json", ".png", ".xodr", ".log", "_autocritic.html")
 NEVER_MOVES = ("wall_s", "peak_rss_mb")
 FLOAT_MOVE_FRACTION = 0.01
 THUMBNAIL_PX = 384
@@ -269,7 +269,7 @@ def canonical_conversion_report_digest(*, path: str, map_dir: str) -> str:
 
 
 def output_digests(*, map_dir: str) -> dict[str, str]:
-    """Digest of every output in ``map_dir`` except the PNG, provenance, logs and FSM output.
+    """Digest of every output in ``map_dir`` except the PNG, provenance, logs, the AutoCritic HTML (its JSON is digested) and FSM output.
 
     ``metadata.json``, the ``.osm`` and ``_stoplines.json`` are hashed raw; ``_mesh.json`` and
     ``_conversion_report.json`` canonically; any other JSON sidecar after replacing ``map_dir``

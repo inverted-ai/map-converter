@@ -109,11 +109,14 @@ class AutoCriticConfig:
             always measured. A failing preset withholds the map outputs (``convert_map`` exit code 4).
         thresholds: Overrides of the chosen preset's :class:`ValidationConfig` thresholds, by field
             name, e.g. ``{"min_routing_edge_pct": 98}``; ignored without a preset.
+        would_have_fixed: The AutoCritic report also lists where switched-off heuristics (all of
+            them with AutoFix off) would have acted.
     """
 
     enabled: bool = True
     preset: str = NO_PRESET
     thresholds: dict[str, float] = dataclasses.field(default_factory=dict)
+    would_have_fixed: bool = True
 
 
 def check_config(*, config: AutoCriticConfig) -> None:

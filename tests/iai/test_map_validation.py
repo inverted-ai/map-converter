@@ -1,6 +1,7 @@
 """Self-validation: threshold checks on a conversion's outputs and the map verifier run."""
 
 import json
+import math
 from typing import Optional
 
 import numpy as np
@@ -136,7 +137,7 @@ def test_conversion_report_holds_the_verdict(tmp_path):
     road = xb.straight_road(id="1", length=30.0, signals=[xb.SignalSpec(id="5", s=10.0, dynamic="no", type="206")])
     verdict, stderr = _convert(tmp_path=tmp_path, roads=[road])
     assert _failed_names(verdict=verdict) == {"routing_edge_pct", "stop_yield_stoplines"}
-    assert (verdict["status"], verdict["profile"]) == ("fail", "perfect")
+    assert (verdict["status"], verdict["profile"]) == ("not_judged", "none")
     assert verdict["profiles"] == {
         "perfect": {"status": "fail", "failed": ["routing_edge_pct", "stop_yield_stoplines"]},
         "strict": {"status": "fail", "failed": ["routing_edge_pct", "stop_yield_stoplines"]},
@@ -146,10 +147,12 @@ def test_conversion_report_holds_the_verdict(tmp_path):
         "lights_without_stopline": [],
         "stop_yield_signs": 1,
         "signs_without_stopline": ["signal 5"],
+        "positions": {"signal 5": [10.0, -5.0]},
     }
     assert verdict["verifier"]["status"] == "skipped"
-    assert "Validation: routing_edge_pct = 0.0" in stderr
-    assert "strict profile fails too" in stderr
+    by_name = {c["name"]: c for c in verdict["checks"]}
+    assert [(f["id"], f["location"]) for f in by_name["stop_yield_stoplines"]["locations"]] == [("signal 5", [10.0, -5.0])]
+    assert len(by_name["routing_edge_pct"]["locations"]) == 2  # both lanelets of the road
 
 
 def test_verifier_runs_on_request(tmp_path):
@@ -158,9 +161,10 @@ def test_verifier_runs_on_request(tmp_path):
 
 
 def test_strict_profile_is_chosen_on_request(tmp_path):
-    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)], **{"autocritic.preset": "strict"})
-    assert verdict["profile"] == "strict"
-    assert verdict["status"] == verdict["profiles"]["strict"]["status"]
+    road = xb.straight_road(id="1", length=30.0)
+    config = {"autocritic.preset": "strict", "autocritic.thresholds.min_routing_edge_pct": "0"}
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[road], **config)
+    assert (verdict["profile"], verdict["status"]) == ("strict", "pass")
 
 
 def test_stencil_near_the_sign_is_its_stopline(tmp_path):
@@ -212,12 +216,55 @@ def test_autocritic_off_records_no_verdict(tmp_path):
     assert verdict is None
 
 
-@pytest.mark.parametrize("field, value", [("verifier_timeout_s", "-1"), ("autocritic.preset", "lenient")])
+MAP_OUTPUTS = ("case.osm", "case_stoplines.json", "case_mesh.json", "metadata.json", "visualization.png", "case_signal_groups.json")
+
+
+def _two_way_road(*, tmp_path) -> None:
+    """One two-way road: its two lanelets have no routing edges, so routing_edge_pct fails every preset."""
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+
+
+def test_failing_preset_withholds_the_outputs_and_exits_4(tmp_path):
+    _two_way_road(tmp_path=tmp_path)
+    result = xb.run_convert_map(map_dir=str(tmp_path), **{"autocritic.preset": "perfect"})
+    assert result.returncode == conversion_common.REJECTED_EXIT_CODE, result.stderr
+    assert "routing_edge_pct" in result.stderr.strip().splitlines()[-1]
+    assert [name for name in MAP_OUTPUTS if (tmp_path / name).exists()] == []
+    with open(tmp_path / "case_conversion_report.json") as f:
+        report = json.load(f)
+    assert (report["outcome"], report["validation"]["status"]) == ("rejected", "fail")
+    assert "Validation: routing_edge_pct = 0.0" in result.stderr
+    assert "strict profile fails too" in result.stderr
+    assert (tmp_path / "case_provenance.json").exists()
+
+
+def test_threshold_override_decides_with_the_preset(tmp_path):
+    _two_way_road(tmp_path=tmp_path)
+    config = {"autocritic.preset": "perfect", "autocritic.thresholds.min_routing_edge_pct": "0"}
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)], **config)
+    assert (verdict["status"], verdict["profile"]) == ("pass", "perfect")
+    assert verdict["thresholds"]["min_routing_edge_pct"] == 0.0
+    assert verdict["profiles"]["perfect"]["status"] == "fail"  # the preset itself, without the override
+    assert all((tmp_path / name).exists() for name in MAP_OUTPUTS)
+
+
+def test_without_a_preset_nothing_is_judged_and_the_outputs_are_kept(tmp_path):
+    _two_way_road(tmp_path=tmp_path)
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)])
+    assert verdict["status"] == "not_judged"
+    assert verdict["profiles"]["perfect"]["failed"] == ["routing_edge_pct"]
+    assert all((tmp_path / name).exists() for name in MAP_OUTPUTS)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("verifier_timeout_s", "-1"), ("autocritic.preset", "lenient"), ("autocritic.thresholds.no_such_limit", "1")],
+)
 def test_bad_validation_settings_are_refused(tmp_path, field, value):
     xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
     result = xb.run_convert_map(map_dir=str(tmp_path), **{field: value})
     assert result.returncode == conversion_common.REFUSED_EXIT_CODE
-    assert field in result.stderr
+    assert field.split(".")[-1] in result.stderr
 
 
 def test_stopline_fsm_join_reports_lights_missing_from_the_fsms(tmp_path):
@@ -234,3 +281,56 @@ def test_stopline_fsm_join_reports_lights_missing_from_the_fsms(tmp_path):
         "in_several_intersections": ["2"],
         "ok": False,
     }
+
+
+def _check(*, verdict: dict, name: str) -> dict:
+    return next(c for c in verdict["checks"] if c["name"] == name)
+
+
+def test_signal_dropped_past_the_road_end_is_listed(tmp_path):
+    sign = xb.SignalSpec(id="7", s=55.0, dynamic="no", type="206", validity=(-1, -1))
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=50.0, signals=[sign])])
+    check = _check(verdict=verdict, name="dropped_signals")
+    assert (check["value"], check["passed"], check["limit"]) == (1, True, None)
+    assert check["locations"][0]["id"] == "signal 7"
+
+
+def test_linked_lanelets_farther_apart_than_the_seam_tolerance_are_listed(tmp_path):
+    road1 = xb.straight_road(id="1", length=50.0, successor=xb.LinkSpec(element_type="road", element_id="2", contact_point="end"))
+    road2 = xb.straight_road(
+        id="2", length=50.0, x=101.5, hdg=math.pi, successor=xb.LinkSpec(element_type="road", element_id="1", contact_point="end")
+    )
+    for lane in road1.lane_sections[0].lanes + road2.lane_sections[0].lanes:
+        lane.successor = -lane.id
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[road1, road2])
+    check = _check(verdict=verdict, name="linked_gaps")
+    assert check["value"] == 2
+    assert all(place["location"][0] == pytest.approx(50.75, abs=0.01) for place in check["locations"])
+
+
+def test_signal_far_from_its_stopline_is_listed_and_judged_on_request(tmp_path):
+    light = xb.SignalSpec(id="21", s=40.0, t=-70.0, validity=(-1, -1))
+    road = xb.straight_road(id="1", length=50.0, signals=[light])
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[road])
+    check = _check(verdict=verdict, name="far_signals")
+    assert [place["id"] for place in check["locations"]] == ["signal 21"]
+    assert check["passed"]
+    xb.write_xodr(map_dir=tmp_path / "judged", name="case", text=xb.build_xodr(roads=[road]))
+    result = xb.run_convert_map(
+        map_dir=str(tmp_path / "judged"),
+        **{
+            "autocritic.preset": "strict",
+            "autocritic.thresholds.min_routing_edge_pct": "0",
+            "autocritic.thresholds.max_far_signals": "0",
+        },
+    )
+    assert result.returncode == conversion_common.REJECTED_EXIT_CODE
+    assert "far_signals" in result.stderr.strip().splitlines()[-1]
+
+
+def test_painted_stop_lines_are_listed_as_not_converted(tmp_path):
+    road = xb.straight_road(id="1", length=50.0, objects=[xb.ObjectSpec(id="91", s=30.0, name="StopLine", type="-1", width=0.0, length=3.5)])
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[road])
+    check = _check(verdict=verdict, name="not_converted")
+    assert [(place["id"], place["detail"]) for place in check["locations"]] == [("object 91", "painted stop line")]
+    assert check["limit"] is None

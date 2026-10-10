@@ -1,9 +1,10 @@
 """Self-validation of one conversion: threshold checks on its outputs plus the CommonRoad map verifier.
 
 ``convert_map.py`` runs :func:`validate` after writing the outputs and stores the :class:`Verdict` in
-``<map>_conversion_report.json``. Two :data:`PROFILES` set the thresholds: ``perfect`` (the default,
-no fault of any kind) and ``strict`` (bounded faults). Every run is judged against both; the verdict
-is the one of the preset :class:`AutoCriticConfig` chooses. The output metrics come from :mod:`map_quality`; whether each traffic light and
+``<map>_conversion_report.json``. Two :data:`PROFILES` set the thresholds: ``perfect`` (no fault of
+any kind) and ``strict`` (bounded faults). Every run is measured against both; the verdict is the one
+of the preset :class:`AutoCriticConfig` chooses, with its threshold overrides. The default preset,
+``none``, judges nothing: the verdict is ``not_judged`` and lists the checks ``perfect`` would fail. The output metrics come from :mod:`map_quality`; whether each traffic light and
 stop/yield sign got a stopline (:class:`ControlCoverage`) comes from the converter, because the
 ``.osm`` does not carry the OpenDRIVE ids of the controls.
 """
@@ -40,6 +41,12 @@ class ValidationConfig:
         max_crossed_fraction: ... and only above this share of all lanelets.
         max_point_extent_m: Furthest a point may lie from the local origin.
         max_lanelets_without_subtype: Most lanelets allowed without a ``subtype`` tag.
+        max_linked_gaps: Most linked lanelet pairs whose ends lie farther apart than the seam
+            tolerance (``None``: listed, not judged).
+        max_dropped_signals: Most signals dropped because they lie past their road's end (``None``:
+            listed, not judged).
+        far_signal_m: A light or sign signal whose nearest stopline row lies farther than this is far.
+        max_far_signals: Most far signals (``None``: listed, not judged).
     """
 
     min_routing_edge_pct: float
@@ -48,6 +55,28 @@ class ValidationConfig:
     max_crossed_fraction: float
     max_point_extent_m: float = 100_000.0
     max_lanelets_without_subtype: int = 0
+    max_linked_gaps: Optional[int] = None
+    max_dropped_signals: Optional[int] = None
+    far_signal_m: float = 50.0
+    max_far_signals: Optional[int] = None
+
+
+@dataclasses.dataclass(slots=True)
+class ConversionFindings:
+    """What the conversion itself found, each item ``{id, location, detail}`` in the local frame.
+
+    Attributes:
+        linked_gaps: Linked lanelet pairs whose ends lie farther apart than the seam tolerance in use.
+        dropped_signals: Signals dropped because they lie past their road's end (H14).
+        signal_distances: Per light and sign signal with stopline rows, its distance to the nearest
+            (``distance_m`` instead of ``detail``).
+        painted_stop_lines: Painted stop lines, listed and never converted.
+    """
+
+    linked_gaps: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    dropped_signals: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    signal_distances: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    painted_stop_lines: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 PROFILES = {
@@ -64,7 +93,9 @@ PROFILES = {
         max_crossed_fraction=0.02,
     ),
 }
-DEFAULT_PROFILE = "perfect"
+NO_PRESET = "none"
+PRESETS = (NO_PRESET, *PROFILES)
+THRESHOLD_NAMES = tuple(f.name for f in dataclasses.fields(ValidationConfig))
 
 
 @dataclasses.dataclass(slots=True)
@@ -73,12 +104,34 @@ class AutoCriticConfig:
 
     Attributes:
         enabled: Run :func:`validate` and record the verdict; off records none.
-        preset: The :data:`PROFILES` entry the verdict uses: ``perfect`` (no fault of any kind)
-            or ``strict`` (bounded faults). Both are always evaluated.
+        preset: ``none`` (judge nothing), or the :data:`PROFILES` entry the verdict uses:
+            ``perfect`` (no fault of any kind) or ``strict`` (bounded faults). Both profiles are
+            always measured. A failing preset withholds the map outputs (``convert_map`` exit code 4).
+        thresholds: Overrides of the chosen preset's :class:`ValidationConfig` thresholds, by field
+            name, e.g. ``{"min_routing_edge_pct": 98}``; ignored without a preset.
     """
 
     enabled: bool = True
-    preset: str = DEFAULT_PROFILE
+    preset: str = NO_PRESET
+    thresholds: dict[str, float] = dataclasses.field(default_factory=dict)
+
+
+def check_config(*, config: AutoCriticConfig) -> None:
+    """Raise ``ValueError`` naming an unknown preset or threshold."""
+    if config.preset not in PRESETS:
+        raise ValueError(f"autocritic.preset must be one of {', '.join(PRESETS)}, not {config.preset!r}")
+    unknown = sorted(set(config.thresholds) - set(THRESHOLD_NAMES))
+    if unknown:
+        raise ValueError(f"autocritic.thresholds: unknown {', '.join(unknown)}; known: {', '.join(THRESHOLD_NAMES)}")
+
+
+def preset_config(*, preset: str, thresholds: dict[str, float]) -> Optional[ValidationConfig]:
+    """The thresholds ``preset`` judges with, overrides applied; ``None`` for ``none``."""
+    if preset == NO_PRESET:
+        return None
+    annotations = {f.name: str(f.type) for f in dataclasses.fields(ValidationConfig)}
+    overrides = {name: (int if "int" in annotations[name] else float)(value) for name, value in thresholds.items()}
+    return dataclasses.replace(PROFILES[preset], **overrides)
 
 
 @dataclasses.dataclass(slots=True)
@@ -91,23 +144,26 @@ class ControlCoverage:
         stop_yield_signs: Stop and yield signs: signals the sign tables read as STOP or YIELD, plus
             stop/yield stencil objects.
         signs_without_stopline: Those with no stopline, as ``"signal <id>"`` / ``"object <id>"``.
+        positions: Local ``[x, y]`` of each light and sign without a stopline, by the ids above.
     """
 
     lights: int
     lights_without_stopline: list[str]
     stop_yield_signs: int
     signs_without_stopline: list[str]
+    positions: dict[str, list[float]] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(slots=True)
 class Check:
-    """One threshold check: ``value`` against ``limit``."""
+    """One threshold check: ``value`` against ``limit``; a failed one lists where it fails (``locations``)."""
 
     name: str
     value: Any
     limit: Any
     passed: bool
     detail: str = ""
+    locations: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(slots=True)
@@ -115,10 +171,12 @@ class Verdict:
     """The outcome of :func:`validate`.
 
     Attributes:
-        status: ``pass`` or ``fail`` under ``profile``.
-        profile: The profile the verdict uses.
-        profiles: Per profile, its ``status`` and the names of its ``failed`` checks.
-        checks: Every check of ``profile``, passed or not.
+        status: ``pass`` or ``fail`` under ``profile``; ``not_judged`` without a preset.
+        profile: The preset the verdict uses (``none``, ``perfect`` or ``strict``).
+        profiles: Per profile, its ``status`` and the names of its ``failed`` checks (no overrides).
+        checks: Every check of ``profile`` with ``thresholds``, passed or not; without a preset,
+            those of ``perfect``, for information.
+        thresholds: The thresholds the verdict used (``{}`` without a preset).
         controls: The lights and signs checked for stoplines.
         metric_errors: Metrics that raised, as ``"<Class>: <message>"``.
         verifier: The map verifier's result (see :func:`run_map_verifier`).
@@ -128,6 +186,7 @@ class Verdict:
     profile: str
     profiles: dict[str, dict[str, Any]]
     checks: list[Check]
+    thresholds: dict[str, Any]
     controls: ControlCoverage
     metric_errors: dict[str, str]
     verifier: dict[str, Any]
@@ -139,12 +198,14 @@ def evaluate(
     metric_errors: dict[str, str],
     controls: ControlCoverage,
     config: ValidationConfig,
+    findings: Optional[ConversionFindings] = None,
 ) -> list[Check]:
-    """The threshold checks over :func:`map_quality.compute_all` results and ``controls``.
+    """The threshold checks over :func:`map_quality.compute_all` results, ``controls`` and ``findings``.
 
     A metric that raised (in ``metric_errors``) fails its check; one that returned ``None`` has nothing
-    to measure (e.g. no seams) and passes.
+    to measure (e.g. no seams) and passes. A check whose limit is ``None`` lists its places and passes.
     """
+    findings = findings or ConversionFindings()
     checks = []
 
     def add(*, name: str, metric: Optional[str], value: Any, limit: Any, passed: bool, detail: str) -> None:
@@ -228,6 +289,40 @@ def evaluate(
         passed=origin is not None and abs(origin[0]) <= 90.0 and abs(origin[1]) <= 180.0,
         detail="lanelet_map_origin is a valid latitude/longitude",
     )
+
+    def listed(*, name: str, places: list[dict[str, Any]], limit: Optional[int], detail: str) -> None:
+        passed = limit is None or len(places) <= limit
+        checks.append(Check(name=name, value=len(places), limit=limit, passed=passed, detail=detail, locations=places))
+
+    listed(
+        name="linked_gaps",
+        places=findings.linked_gaps,
+        limit=config.max_linked_gaps,
+        detail="linked lanelet pairs whose ends lie farther apart than the seam tolerance (not routable)",
+    )
+    listed(
+        name="dropped_signals",
+        places=findings.dropped_signals,
+        limit=config.max_dropped_signals,
+        detail="signals dropped because they lie past their road's end",
+    )
+    far = [
+        {"id": d["id"], "location": d["location"], "detail": f"{d['distance_m']} m from its nearest stopline"}
+        for d in findings.signal_distances
+        if d["distance_m"] > config.far_signal_m
+    ]
+    listed(
+        name="far_signals",
+        places=far,
+        limit=config.max_far_signals,
+        detail=f"lights and signs whose nearest stopline lies more than {config.far_signal_m:g} m away",
+    )
+    listed(
+        name="not_converted",
+        places=findings.painted_stop_lines,
+        limit=None,
+        detail="painted stop lines, never converted (unrecognised and dropped elements: see the report summary)",
+    )
     return checks
 
 
@@ -238,7 +333,7 @@ def outcome_message(*, profile: str, failed: dict[str, list[str]]) -> Optional[s
         profile: The chosen profile.
         failed: Per profile, the names of its failed checks.
     """
-    if not failed[profile]:
+    if profile == NO_PRESET or not failed[profile]:
         return None
     message = f"Validation ({profile}) failed: {', '.join(failed[profile])}."
     if profile == "perfect":
@@ -334,13 +429,35 @@ def _kill_process_group(*, pid: Optional[int]) -> None:
 
 
 
+def fault_locations(
+    *, check: str, outputs: map_quality.ConversionOutputs, controls: ControlCoverage
+) -> list[dict[str, Any]]:
+    """Where ``check`` fails: each ``{id, location, detail}``, location in the local frame (empty when it has none)."""
+    if check == "traffic_light_stoplines":
+        missing = controls.lights_without_stopline
+    elif check == "stop_yield_stoplines":
+        missing = controls.signs_without_stopline
+    else:
+        listing = map_quality.FAULT_LOCATIONS.get(check)
+        try:
+            return [] if listing is None else listing(outputs=outputs)
+        except Exception as exc:  # noqa: BLE001 - the check already failed; a missing listing must not hide it
+            logger.warning(f"Could not list where {check} fails: {type(exc).__name__}: {exc}")
+            return []
+    return [
+        {"id": element, "location": controls.positions.get(element), "detail": "no stopline"} for element in missing
+    ]
+
+
 def validate(
     *,
     map_dir: str,
     lanelet_network: Optional[Any],
     controls: ControlCoverage,
     verifier_timeout_s: float,
-    profile: str = DEFAULT_PROFILE,
+    profile: str = NO_PRESET,
+    thresholds: Optional[dict[str, float]] = None,
+    findings: Optional[ConversionFindings] = None,
 ) -> Verdict:
     """Check a converted map: :mod:`map_quality` metrics and ``controls`` under every profile, and the map verifier.
 
@@ -351,7 +468,9 @@ def validate(
             for a trimmed map, whose untrimmed network the other checks do not judge).
         controls: The lights and stop/yield signs and which of them got a stopline.
         verifier_timeout_s: Cap on the map verifier; ``0`` skips it.
-        profile: The :data:`PROFILES` entry the verdict uses.
+        profile: The preset the verdict uses (:data:`PRESETS`).
+        thresholds: Overrides of the preset's thresholds (:func:`preset_config`).
+        findings: What the conversion found (linked gaps, dropped and far signals, painted stop lines).
 
     Returns:
         The verdict. Its failed checks, and :func:`outcome_message`, are logged as warnings.
@@ -359,14 +478,30 @@ def validate(
     outputs = map_quality.ConversionOutputs.load(map_dir=map_dir)
     metrics, errors = map_quality.compute_all(outputs=outputs)
     checks = {
-        name: evaluate(metrics=metrics, metric_errors=errors, controls=controls, config=config)
+        name: evaluate(metrics=metrics, metric_errors=errors, controls=controls, config=config, findings=findings)
         for name, config in PROFILES.items()
     }
     failed = {name: [c.name for c in profile_checks if not c.passed] for name, profile_checks in checks.items()}
-    for check in checks[profile]:
+    config = preset_config(preset=profile, thresholds=thresholds or {})
+    judged = (
+        checks["perfect"]
+        if config is None
+        else evaluate(metrics=metrics, metric_errors=errors, controls=controls, config=config, findings=findings)
+    )
+    judged = [
+        check
+        if check.passed or check.locations
+        else dataclasses.replace(
+            check, locations=fault_locations(check=check.name, outputs=outputs, controls=controls)
+        )
+        for check in judged
+    ]
+    judged_failed = [c.name for c in judged if not c.passed]
+    for check in judged:
         if not check.passed:
-            logger.warning(f"Validation: {check.name} = {check.value} (limit {check.limit}): {check.detail}")
-    message = outcome_message(profile=profile, failed=failed)
+            log = logger.info if config is None else logger.warning
+            log(f"Validation: {check.name} = {check.value} (limit {check.limit}): {check.detail}")
+    message = outcome_message(profile=profile, failed={**failed, profile: judged_failed})
     if message is not None:
         logger.warning(message)
     verifier = run_map_verifier(
@@ -376,10 +511,11 @@ def validate(
     )
     logger.info(f"Map verifier: {verifier['status']} in {verifier['seconds']} s")
     return Verdict(
-        status="fail" if failed[profile] else "pass",
+        status="not_judged" if config is None else "fail" if judged_failed else "pass",
         profile=profile,
         profiles={name: {"status": "fail" if names else "pass", "failed": names} for name, names in failed.items()},
-        checks=checks[profile],
+        checks=judged,
+        thresholds={} if config is None else dataclasses.asdict(config),
         controls=controls,
         metric_errors=errors,
         verifier=verifier,

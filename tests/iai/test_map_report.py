@@ -41,6 +41,15 @@ def test_refusal_exit_code_is_refused_with_message(tmp_path):
     assert mr.classify(result=result, root=str(tmp_path)) == {"outcome": "refused", "message": "Cannot convert: no geo-reference"}
 
 
+def test_rejection_exit_code_is_rejected_with_message(tmp_path):
+    code = "import sys\nprint('AutoCritic (perfect) rejected the map: routing_edge_pct', file=sys.stderr)\nsys.exit(4)\n"
+    result = _child(tmp_path=tmp_path, code=code)
+    assert mr.classify(result=result, root=str(tmp_path)) == {
+        "outcome": "rejected",
+        "message": "AutoCritic (perfect) rejected the map: routing_edge_pct",
+    }
+
+
 def test_missing_script_is_an_exception_not_a_refusal(tmp_path):
     result = mr.run_child(argv=[sys.executable, str(tmp_path / "absent.py")], cwd=str(tmp_path), timeout_s=30, log_prefix=str(tmp_path / "absent"))
     assert mr.classify(result=result, root=str(tmp_path))["outcome"] == "exception"

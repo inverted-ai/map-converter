@@ -15,7 +15,8 @@ import collections
 import dataclasses
 import logging
 import math
-from typing import Callable, Optional
+import re
+from typing import Any, Callable, Optional
 
 import numpy as np
 from torchdrivesim.map import Stopline
@@ -27,6 +28,7 @@ import map_validation
 logger = logging.getLogger(__name__)
 
 SIGN_AGENT_TYPES = {"STOP": "stop_sign", "YIELD": "yield_sign"}  # sign-table element names -> stopline agent_type
+STOP_LINE_NAME = re.compile(r"stop_?line", re.IGNORECASE)
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -48,10 +50,13 @@ class Target:
 
 @dataclasses.dataclass(slots=True)
 class ControlStoplines:
-    """The stopline rows of one conversion and the :class:`map_validation.ControlCoverage` they give."""
+    """The stopline rows of one conversion, the :class:`map_validation.ControlCoverage` they give, and
+    per light and sign signal with rows the distance from the signal to its nearest row (``{id, location,
+    distance_m}``, location = the signal)."""
 
     rows: list[dict]
     coverage: map_validation.ControlCoverage
+    distances: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(slots=True)
@@ -557,37 +562,81 @@ def control_stoplines(
     lights_in_area = sorted(
         {str(light.opendrive_id) for light in road_network._traffic_lights if in_area(light.position)} & vehicle_lights
     )
+    lights_missing = [i for i in lights_in_area if i not in lit]
+    positions = {
+        **{f"signal {sign.opendrive_id}": sign.position for sign in road_network._traffic_signs},
+        **{str(light.opendrive_id): light.position for light in road_network._traffic_lights},
+    }
     coverage = map_validation.ControlCoverage(
         lights=len(lights_in_area),
-        lights_without_stopline=[i for i in lights_in_area if i not in lit],
+        lights_without_stopline=lights_missing,
         stop_yield_signs=signs,
         signs_without_stopline=sorted(signs_missing),
+        positions={
+            element: [round(float(v), 2) for v in local(positions[element])]
+            for element in lights_missing + signs_missing
+            if element in positions
+        },
     )
-    return ControlStoplines(rows=rows, coverage=coverage)
+    return ControlStoplines(
+        rows=rows, coverage=coverage, distances=_signal_row_distances(index=index, rows=rows, frame=frame)
+    )
 
 
-def report_painted_stop_lines(*, opendrive, frame, config: heuristics.HeuristicsConfig) -> int:
-    """List every painted stop line (H9) in the conversion report; none becomes a stopline row.
+def _signal_row_distances(*, index: _Index, rows: list[dict], frame) -> list[dict[str, Any]]:
+    """Per signal with rows, the distance (m) from the signal to its nearest row."""
+    by_actor: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
+    for row in rows:
+        by_actor[str(row["actor_id"])].append((row["x"], row["y"]))
+    distances = []
+    for signal_id, centres in sorted(by_actor.items()):
+        location = _location(index=index, signal_id=signal_id, frame=frame)
+        if location is None:
+            continue
+        nearest = min(math.dist(location, centre) for centre in centres)
+        distances.append(
+            {"id": f"signal {signal_id}", "location": [round(v, 2) for v in location], "distance_m": round(nearest, 2)}
+        )
+    return distances
+
+
+def is_painted_stop_line(*, tag: str, name: Optional[str], element_type: Optional[str]) -> bool:
+    """An object of type ``stopLine`` or named ``StopLine``, or a signal of type 294 or named ``StopLine``.
+
+    Painted stop lines never become, move or invent a stopline (a stop line with no control is an
+    unsigned stop, and the painted position differs from where CARLA's lights stop); AutoCritic
+    lists them as not converted. Corpus encodings: objects named ``StopLine`` (CARLA, one other
+    exporter), objects of type ``stopline`` (one map, 222), signals named ``StopLine`` (one exporter, 114).
+    """
+    if tag == "signal" and element_type == "294":
+        return True
+    if tag == "object" and (element_type or "").lower() == "stopline":
+        return True
+    return STOP_LINE_NAME.fullmatch(name or "") is not None
+
+
+def report_painted_stop_lines(*, opendrive, frame) -> list[dict[str, Any]]:
+    """List every painted stop line in the conversion report; none becomes a stopline row.
 
     Returns:
-        How many were listed.
+        Each one as ``{id, location, detail}`` (local frame).
     """
     degradation = logging.getLogger(conversion_report.DEGRADATION_LOGGER)
-    count = 0
+    listed = []
     for road in opendrive.roads:
         elements = [("object", obj, obj.type) for obj in road.objects] + [("signal", sig, sig.type) for sig in road.signals]
         for tag, element, element_type in elements:
-            if not heuristics.is_painted_stop_line(tag=tag, name=element.name, element_type=element_type, config=config):
+            if not is_painted_stop_line(tag=tag, name=element.name, element_type=element_type):
                 continue
             position = element_position(road=road, s=float(element.s), t=float(element.t), frame=frame)
             x, y = (round(v, 2) for v in position)
             degradation.warning(
-                "%s %s: painted stop line at (%.2f, %.2f) - not converted (H9 painted_stop_line)",
+                "%s %s: painted stop line at (%.2f, %.2f) - not converted",
                 tag, element.id, x, y,
                 extra={"kind": "not_converted", "element": tag, "id": str(element.id), "value": f"({x}, {y})",
                        "action": "listed"},
             )
-            count += 1
-    if count:
-        logger.info(f"{count} painted stop line(s) listed in the conversion report; none becomes a stopline")
-    return count
+            listed.append({"id": f"{tag} {element.id}", "location": [x, y], "detail": "painted stop line"})
+    if listed:
+        logger.info(f"{len(listed)} painted stop line(s) listed in the conversion report; none becomes a stopline")
+    return listed

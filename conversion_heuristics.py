@@ -43,7 +43,6 @@ from commonroad.scenario.traffic_sign import TrafficSignIDUsa
 from conversion_report import DEGRADATION_LOGGER
 
 US_STOP_YIELD_CODES = frozenset(item.value.upper() for item in TrafficSignIDUsa if item.name in ("STOP", "YIELD"))
-STOP_LINE_NAME = re.compile(r"stop_?line", re.IGNORECASE)
 
 
 @dataclasses.dataclass(slots=True)
@@ -159,7 +158,6 @@ class HeuristicsConfig:
     sign_signal_stoplines: Switch = dataclasses.field(default_factory=lambda: Switch(enabled=False))
     non_vehicle_light: Switch = dataclasses.field(default_factory=Switch)
     us_sign_codes: Switch = dataclasses.field(default_factory=Switch)
-    painted_stop_line: Switch = dataclasses.field(default_factory=Switch)
     seam_tolerance: SeamToleranceConfig = dataclasses.field(default_factory=SeamToleranceConfig)
     fsm_distance_clusters: FsmDistanceClustersConfig = dataclasses.field(default_factory=FsmDistanceClustersConfig)
     fsm_axis_split: FsmAxisSplitConfig = dataclasses.field(default_factory=FsmAxisSplitConfig)
@@ -455,27 +453,6 @@ def us_sign_code(
             return code_type, code_subtype
     return None
 
-
-@_heuristic(id="H9", name="painted_stop_line")
-def is_painted_stop_line(*, tag: str, name: Optional[str], element_type: Optional[str], config: HeuristicsConfig) -> bool:
-    """An object of type ``stopLine`` or named ``StopLine``, or a signal of type 294 or named ``StopLine``, is a painted stop line.
-
-    Assumes: these are the painted lines at stops. They are listed in the conversion report
-    (``kind="not_converted"``) and never become, move or invent a stopline: a stop line with no
-    control is an unsigned stop, and the painted position differs from where CARLA's lights stop.
-
-    Evidence: corpus encodings: objects named ``StopLine`` (CARLA, one other exporter), objects of
-    type ``stopline`` (one map, 222), signals named ``StopLine`` (one exporter, 114).
-
-    Breaks when: a source names other markings ``StopLine``; they are listed as stop lines.
-    """
-    if not config.painted_stop_line.enabled:
-        return False
-    if tag == "signal" and element_type == "294":
-        return True
-    if tag == "object" and (element_type or "").lower() == "stopline":
-        return True
-    return STOP_LINE_NAME.fullmatch(name or "") is not None
 
 
 READER_S_TOLERANCE_M = 0.01

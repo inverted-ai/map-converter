@@ -366,7 +366,9 @@ def test_unknown_key_in_a_config_file_is_refused(tmp_path):
 
 def test_config_file_is_read_by_the_command_line(tmp_path):
     xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
-    config = _write_config(path=tmp_path / "c.yaml", text="autocritic: {preset: strict}\n")
+    config = _write_config(
+        path=tmp_path / "c.yaml", text="autocritic: {preset: strict, thresholds: {min_routing_edge_pct: 0}}\n"
+    )
     result = xb.run_convert_map(map_dir=str(tmp_path), config=config)
     assert result.returncode == 0, result.stderr
     with open(tmp_path / "case_conversion_report.json") as f:

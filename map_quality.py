@@ -20,7 +20,7 @@ import json
 import logging
 import math
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 from lxml import etree
@@ -183,27 +183,45 @@ def load_error_count(*, outputs: ConversionOutputs) -> int:
     return len(outputs.load_errors)
 
 
+def _lanelet_centre(*, lanelet) -> list[float]:
+    ends = [lanelet.leftBound[0], lanelet.leftBound[-1], lanelet.rightBound[0], lanelet.rightBound[-1]]
+    return [round(sum(p.x for p in ends) / 4, 2), round(sum(p.y for p in ends) / 4, 2)]
+
+
+def _fault(*, element: str, location: Sequence[float], detail: str = "") -> dict[str, Any]:
+    return {"id": element, "location": [round(float(v), 2) for v in location[:2]], "detail": detail}
+
+
+def unrouted_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
+    """Lanelets with no routing-graph edge (Germany, vehicle rules), with their centres."""
+    lanelets = list(outputs.lanelet_map.laneletLayer)
+    if not lanelets:
+        return []
+    graph = vehicle_routing_graph(lanelet_map=outputs.lanelet_map)
+    return [
+        _fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll))
+        for ll in lanelets
+        if not (
+            graph.following(ll)
+            or graph.previous(ll)
+            or graph.left(ll)
+            or graph.right(ll)
+            or graph.adjacentLeft(ll)
+            or graph.adjacentRight(ll)
+        )
+    ]
+
+
 def routing_edge_pct(*, outputs: ConversionOutputs) -> Optional[float]:
     """Percentage of lanelets with at least one routing-graph edge (Germany, vehicle rules).
 
     An edge is a following, previous, left, right, adjacent-left or adjacent-right relation.
     ``None`` for a map without lanelets.
     """
-    lanelets = list(outputs.lanelet_map.laneletLayer)
-    if not lanelets:
+    count = len(outputs.lanelet_map.laneletLayer)
+    if not count:
         return None
-    graph = vehicle_routing_graph(lanelet_map=outputs.lanelet_map)
-    connected = sum(
-        1
-        for ll in lanelets
-        if graph.following(ll)
-        or graph.previous(ll)
-        or graph.left(ll)
-        or graph.right(ll)
-        or graph.adjacentLeft(ll)
-        or graph.adjacentRight(ll)
-    )
-    return 100.0 * connected / len(lanelets)
+    return 100.0 * (count - len(unrouted_lanelets(outputs=outputs))) / count
 
 
 def seam_handshake_pct(*, outputs: ConversionOutputs) -> Optional[float]:
@@ -214,18 +232,28 @@ def seam_handshake_pct(*, outputs: ConversionOutputs) -> Optional[float]:
     shared point ids, so this predicts routability independently of the routing graph.
     ``None`` when the map has no seams.
     """
+    seams, unshaken = _seams(outputs=outputs)
+    return 100.0 * (seams - len(unshaken)) / seams if seams else None
+
+
+def unshaken_seams(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
+    """The geometric seams (see :func:`seam_handshake_pct`) whose end points do not share ids, at the seam."""
+    return _seams(outputs=outputs)[1]
+
+
+def _seams(*, outputs: ConversionOutputs) -> tuple[int, list[dict[str, Any]]]:
     from scipy.spatial import cKDTree
 
     lanelets = list(outputs.lanelet_map.laneletLayer)
     if len(lanelets) < 2:
-        return None
+        return 0, []
     left_starts = np.array([(ll.leftBound[0].x, ll.leftBound[0].y) for ll in lanelets])
     right_starts = np.array([(ll.rightBound[0].x, ll.rightBound[0].y) for ll in lanelets])
     left_ends = np.array([(ll.leftBound[-1].x, ll.leftBound[-1].y) for ll in lanelets])
     right_ends = np.array([(ll.rightBound[-1].x, ll.rightBound[-1].y) for ll in lanelets])
     candidates = cKDTree(left_starts).query_ball_point(left_ends, r=SEAM_TOLERANCE_M)
     seams = 0
-    shaken = 0
+    unshaken = []
     for i, js in enumerate(candidates):
         ll = lanelets[i]
         for j in js:
@@ -233,12 +261,17 @@ def seam_handshake_pct(*, outputs: ConversionOutputs) -> Optional[float]:
                 continue
             other = lanelets[j]
             seams += 1
-            if (
+            if not (
                 ll.leftBound[-1].id == other.leftBound[0].id
                 and ll.rightBound[-1].id == other.rightBound[0].id
             ):
-                shaken += 1
-    return 100.0 * shaken / seams if seams else None
+                unshaken.append(
+                    _fault(
+                        element=f"lanelets {ll.id} -> {other.id}",
+                        location=(left_ends[i] + right_ends[i]) / 2,
+                    )
+                )
+    return seams, unshaken
 
 
 def z_conflicts(*, outputs: ConversionOutputs) -> dict[str, float]:
@@ -287,7 +320,16 @@ def one_way_no_count(*, outputs: ConversionOutputs) -> int:
 
 def lanelets_without_subtype(*, outputs: ConversionOutputs) -> int:
     """Lanelets with no ``subtype`` tag (consumers that filter by subtype drop them)."""
-    return sum(1 for ll in outputs.lanelet_map.laneletLayer if "subtype" not in ll.attributes)
+    return len(subtypeless_lanelets(outputs=outputs))
+
+
+def subtypeless_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
+    """The lanelets with no ``subtype`` tag, with their centres."""
+    return [
+        _fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll))
+        for ll in outputs.lanelet_map.laneletLayer
+        if "subtype" not in ll.attributes
+    ]
 
 
 def point_extent_m(*, outputs: ConversionOutputs) -> Optional[float]:
@@ -298,6 +340,14 @@ def point_extent_m(*, outputs: ConversionOutputs) -> Optional[float]:
     if not len(outputs.points):
         return None
     return float(np.abs(outputs.points[:, :2]).max())
+
+
+def furthest_point(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
+    """The point that sets :func:`point_extent_m`."""
+    if not len(outputs.points):
+        return []
+    index = int(np.abs(outputs.points[:, :2]).max(axis=1).argmax())
+    return [_fault(element="point", location=outputs.points[index, :2])]
 
 
 def osm_size_bytes(*, outputs: ConversionOutputs) -> int:
@@ -328,21 +378,32 @@ def crossed_geometry(*, outputs: ConversionOutputs) -> dict[str, int]:
         ``CROSSED_BOUNDS_GAP_M``. ``invalid_polygons``: lanelet polygons shapely reports as
         invalid (self-intersecting).
     """
+    faults = crossed_lanelets(outputs=outputs)
+    return {kind: sum(1 for f in faults if kind in f["detail"]) for kind in ("reversed_bounds", "invalid_polygons")}
+
+
+def crossed_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
+    """The lanelets :func:`crossed_geometry` counts, with their centres; ``detail`` names the kinds."""
     from shapely.geometry import Polygon
 
-    reversed_bounds = 0
-    invalid = 0
+    faults = []
     for ll in outputs.lanelet_map.laneletLayer:
         left = [(p.x, p.y) for p in ll.leftBound]
         right = [(p.x, p.y) for p in ll.rightBound]
         straight = math.dist(left[0], right[0]) + math.dist(left[-1], right[-1])
         crossed = math.dist(left[0], right[-1]) + math.dist(left[-1], right[0])
-        if straight - crossed > CROSSED_BOUNDS_GAP_M:
-            reversed_bounds += 1
         ring = left + right[::-1]
-        if len(ring) >= 3 and not Polygon(ring).is_valid:
-            invalid += 1
-    return {"reversed_bounds": reversed_bounds, "invalid_polygons": invalid}
+        kinds = [
+            kind
+            for kind, found in (
+                ("reversed_bounds", straight - crossed > CROSSED_BOUNDS_GAP_M),
+                ("invalid_polygons", len(ring) >= 3 and not Polygon(ring).is_valid),
+            )
+            if found
+        ]
+        if kinds:
+            faults.append(_fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll), detail=" ".join(kinds)))
+    return faults
 
 
 def mesh_in_frame_fraction(*, outputs: ConversionOutputs) -> Optional[float]:
@@ -380,6 +441,16 @@ METRICS: dict[str, Callable[..., Any]] = {
     "mesh_in_frame_fraction": mesh_in_frame_fraction,
     "lanelets_without_subtype": lanelets_without_subtype,
     "point_extent_m": point_extent_m,
+}
+
+
+# Per validation check, the function listing the places that fail it (each ``{id, location, detail}``).
+FAULT_LOCATIONS: dict[str, Callable[..., list[dict[str, Any]]]] = {
+    "routing_edge_pct": unrouted_lanelets,
+    "seam_handshake_pct": unshaken_seams,
+    "crossed_lanelets": crossed_lanelets,
+    "lanelets_without_subtype": subtypeless_lanelets,
+    "point_extent_m": furthest_point,
 }
 
 

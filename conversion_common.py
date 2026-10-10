@@ -12,6 +12,12 @@ import subprocess
 # convert_map.py exits with this code when it declines a run on purpose (invalid configuration or
 # an input it will not place); Python itself uses 1 for exceptions and 2 for "can't open file".
 REFUSED_EXIT_CODE = 3
+# convert_map.py exits with this code when AutoCritic's preset rejects the converted map (outputs withheld).
+REJECTED_EXIT_CODE = 4
+
+
+class MapRejected(Exception):
+    """AutoCritic's preset failed the converted map; its outputs were withheld, its reports written."""
 
 
 def sha256_file(*, path: str) -> str:

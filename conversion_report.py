@@ -26,6 +26,8 @@ from typing import Any, Optional
 
 from lxml import etree
 
+from conversion_common import MapRejected
+
 DEGRADATION_LOGGER = "crdesigner.degradation"
 UNRECOGNISED_KINDS = ("unknown_value",)
 MAX_IDS_PER_TOKEN = 20
@@ -132,7 +134,8 @@ class ConversionReport(logging.Handler):
         Args:
             path: Where to write it.
             xodr_path: The converted input.
-            error: The exception that ended the run, if any.
+            error: The exception that ended the run, if any; :class:`MapRejected` makes the
+                outcome ``rejected`` (AutoCritic failed the map), any other ``failed``.
             validation: The validation verdict (as a dict), for a run that got that far.
 
         Returns:
@@ -140,7 +143,7 @@ class ConversionReport(logging.Handler):
         """
         report = {
             "input": os.path.abspath(xodr_path),
-            "outcome": "ok" if error is None else "failed",
+            "outcome": "ok" if error is None else "rejected" if isinstance(error, MapRejected) else "failed",
             "error": None if error is None else {"type": type(error).__name__, "message": str(error)},
             "validation": validation,
             **self.summary(elements_seen=count_elements(xodr_path=xodr_path)),

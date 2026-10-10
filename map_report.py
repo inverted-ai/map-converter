@@ -48,7 +48,7 @@ from typing import Any, Callable, Optional
 from lxml import etree
 
 import map_quality
-from conversion_common import REFUSED_EXIT_CODE, git_identity, sha256_file
+from conversion_common import REFUSED_EXIT_CODE, REJECTED_EXIT_CODE, git_identity, sha256_file
 from traffic_light_fsm import load_metadata, resolve_map_path
 
 logger = logging.getLogger(__name__)
@@ -134,11 +134,12 @@ _EXCEPTION_RE = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|
 
 
 def classify(*, result: ChildResult, root: str) -> dict[str, Any]:
-    """Outcome of a conversion child: ``ok``, ``refused``, ``exception``, ``timeout`` or ``pdb``.
+    """Outcome of a conversion child: ``ok``, ``refused``, ``rejected``, ``exception``, ``timeout`` or ``pdb``.
 
     pdb prints its ``(Pdb)`` prompt on stdout and, with stdin closed, quits via ``BdbQuit``,
-    so both streams are checked. ``refused`` is ``convert_map.py``'s dedicated exit code (an
-    invalid configuration or an input the converter will not place), recorded with its message.
+    so both streams are checked. ``refused`` and ``rejected`` are ``convert_map.py``'s dedicated
+    exit codes (an invalid configuration or an input the converter will not place; AutoCritic's
+    preset failed the map), recorded with their message.
     For an exception, the class and the innermost frame (relative to ``root`` when inside it)
     are recorded.
     """
@@ -149,9 +150,10 @@ def classify(*, result: ChildResult, root: str) -> dict[str, Any]:
         return {"outcome": "pdb", **_last_frame(stderr=result.stderr, root=root)}
     if result.returncode == 0:
         return {"outcome": "ok"}
-    if result.returncode == REFUSED_EXIT_CODE:
+    if result.returncode in (REFUSED_EXIT_CODE, REJECTED_EXIT_CODE):
         lines = [ln.strip() for ln in result.stderr.splitlines() if ln.strip()]
-        return {"outcome": "refused", "message": lines[-1] if lines else None}
+        outcome = "refused" if result.returncode == REFUSED_EXIT_CODE else "rejected"
+        return {"outcome": outcome, "message": lines[-1] if lines else None}
     return {
         "outcome": "exception",
         "exception": _exception_class(stderr=result.stderr),
@@ -775,7 +777,7 @@ table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
 th{position:sticky;top:0;background:var(--bg);font-weight:600}
 td.n{text-align:right;font-variant-numeric:tabular-nums}
-.ok{color:var(--ok);font-weight:600}.refused{color:var(--muted);font-weight:600}.exception,.pdb,.timeout{color:var(--bad);font-weight:600}
+.ok{color:var(--ok);font-weight:600}.refused,.rejected{color:var(--muted);font-weight:600}.exception,.pdb,.timeout{color:var(--bad);font-weight:600}
 img.thumb{width:160px;height:160px;object-fit:contain;border:1px solid var(--line);border-radius:4px;background:#fff}
 .charts img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff;margin:4px 0}
 code{font-size:12px}
@@ -817,7 +819,7 @@ def _page(*, title: str, body: str) -> str:
     )
 
 
-OUTCOME_COLOURS = {"ok": "#0ca30c", "refused": "#8a8f94", "exception": "#d03b3b", "timeout": "#ec835a", "pdb": "#fab219"}
+OUTCOME_COLOURS = {"ok": "#0ca30c", "refused": "#8a8f94", "rejected": "#6b5fb5", "exception": "#d03b3b", "timeout": "#ec835a", "pdb": "#fab219"}
 SERIES_COLOUR = "#2a78d6"
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"

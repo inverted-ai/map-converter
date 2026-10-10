@@ -70,6 +70,20 @@ def test_seam_handshake_shared_vs_duplicated_points():
     assert mq.seam_handshake_pct(outputs=_outputs(lanelets=[a])) is None
 
 
+def test_unrouted_lanelets_are_listed_at_their_centres():
+    a, b = _chain()
+    isolated = _lanelet(left=[_point(x=0, y=52), _point(x=10, y=52)], right=[_point(x=0, y=50), _point(x=10, y=50)])
+    faults = mq.unrouted_lanelets(outputs=_outputs(lanelets=[a, b, isolated]))
+    assert [(f["id"], f["location"]) for f in faults] == [(f"lanelet {isolated.id}", [5.0, 51.0])]
+
+
+def test_unshaken_seams_are_listed_at_the_seam():
+    a, _ = _chain()
+    c = _lanelet(left=[_point(x=10, y=2), _point(x=20, y=2)], right=[_point(x=10, y=0), _point(x=20, y=0)])
+    faults = mq.unshaken_seams(outputs=_outputs(lanelets=[a, c]))
+    assert [(f["id"], f["location"]) for f in faults] == [(f"lanelets {a.id} -> {c.id}", [10.0, 1.0])]
+
+
 def test_z_conflicts_count_and_max():
     a, _ = _chain()
     extra = [_point(x=0, y=2, z=3.0), _point(x=10, y=0, z=0.005)]  # 3 m conflict; 5 mm is noise

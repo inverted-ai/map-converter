@@ -50,7 +50,7 @@ import conversion_heuristics
 import conversion_report
 import map_validation
 import traffic_controls
-from conversion_common import REFUSED_EXIT_CODE, git_identity, sha256_file
+from conversion_common import REFUSED_EXIT_CODE, REJECTED_EXIT_CODE, MapRejected, git_identity, sha256_file
 from opendrive_signal_groups import write_signal_groups
 
 
@@ -99,8 +99,9 @@ class MapConversionConfig:
         autofix: The guesses about the author's intent (:mod:`conversion_heuristics`): all of
             them on or off, and each one's settings, e.g.
             ``autofix.heuristics.sign_signal_stoplines.enabled=true``.
-        autocritic: Whether the converter judges its output, and under which preset
-            (:mod:`map_validation`), e.g. ``autocritic.preset=strict``.
+        autocritic: Whether the converter judges its output, under which preset and thresholds
+            (:mod:`map_validation`), e.g. ``autocritic.preset=strict``. A failing preset withholds the
+            map outputs (exit code 4); the reports are still written.
     """
 
     dir_path: Optional[str] = None
@@ -461,6 +462,7 @@ class ParsedXodr:
     frame: CustomTransfomer
     traffic_side: Optional[str]  # "RHT", "LHT" or "mixed"
     geo_reference_status: str  # "declared", "absent" or "unusable_zero_origin_allowed"
+    dropped_signals: list[dict] = dataclasses.field(default_factory=list)  # H14 drops: {id, location, detail}
 
 
 @dataclasses.dataclass(slots=True)
@@ -475,6 +477,7 @@ class ExportedOsm:
     road_network: Network
     lanelet_network: LaneletNetwork
     osm_path: str
+    linked_gaps: list[dict]  # linked lanelet ends farther apart than the seam tolerance in use: {id, location, detail}
     unsimplified_network: Optional[LaneletNetwork] = None
 
 
@@ -525,8 +528,8 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
 
     Raises:
         ConfigError: neither or both of ``dir_path`` and ``xodr_path``, ``trim_radius`` without
-            ``center``, a negative ``verifier_timeout_s``, an unknown ``autocritic.preset``, an
-            unusable ``autofix.heuristics`` parameter, ``xodr_path`` not an existing ``.xodr`` file, or
+            ``center``, a negative ``verifier_timeout_s``, an unknown ``autocritic.preset`` or
+            threshold, an unusable ``autofix.heuristics`` parameter, ``xodr_path`` not an existing ``.xodr`` file, or
             ``dir_path`` not holding exactly one ``.xodr``.
     """
     if (cfg.dir_path is None) == (cfg.xodr_path is None):
@@ -535,11 +538,8 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError('trim_radius requires center')
     if cfg.verifier_timeout_s < 0:
         raise ConfigError('verifier_timeout_s must be 0 (skip the verifier) or positive')
-    if cfg.autocritic.preset not in map_validation.PROFILES:
-        raise ConfigError(
-            f'autocritic.preset must be one of {", ".join(map_validation.PROFILES)}, not {cfg.autocritic.preset!r}'
-        )
     try:
+        map_validation.check_config(config=cfg.autocritic)
         conversion_heuristics.check_config(config=cfg.autofix.heuristics)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
@@ -710,12 +710,25 @@ def parse_xodr(
             f'placed. Correct their s, or convert with autofix.enabled=true and '
             f'autofix.heuristics.signal_past_road_end.enabled=true.'
         )
+    dropped_signals = [
+        {
+            'id': f'signal {signal.id}',
+            'location': [
+                round(v, 2)
+                for v in traffic_controls.element_position(road=road, s=float(signal.s), t=float(signal.t), frame=frame)
+            ],
+            'detail': f'past the end of road {road.id}',
+        }
+        for road, signal, s in past_end
+        if s is None
+    ]
     for road, signal, s in past_end:
         if s is None:
             road.signals.remove(signal)
         else:
             signal.s = s
     return ParsedXodr(
+        dropped_signals=dropped_signals,
         location=location,
         opendrive=opendrive,
         geo_reference=geo_reference,
@@ -817,6 +830,12 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
         )
 
     record_seam_gaps(lanelet_network=lanelet_network, heuristics=heuristics, frame=parsed.frame)
+    tolerance = conversion_heuristics.shared_node_tolerance(config=heuristics)
+    linked_gaps = [
+        {'id': f'lanelets {pred} -> {succ}', 'location': [round(v, 2) for v in middle], 'detail': f'{gap:.2f} m apart'}
+        for pred, succ, gap, middle in linked_end_gaps(lanelet_network=lanelet_network, frame=parsed.frame)
+        if gap > tolerance
+    ]
     osm_path = os.path.join(cfg.dir_path, f"{parsed.location}.osm")
     logger.info(f'Writing converted Lanelet2 map to {osm_path}')
     with open(osm_path, "wb") as file_out:
@@ -825,15 +844,17 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
         road_network=road_network,
         lanelet_network=lanelet_network,
         osm_path=osm_path,
+        linked_gaps=linked_gaps,
         unsimplified_network=unsimplified_network,
     )
 
 
-def record_seam_gaps(
-    *, lanelet_network: LaneletNetwork, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
-) -> int:
-    """Record H10 for every predecessor/successor pair of lanelets whose ends lie a little apart; return how many."""
-    count = 0
+def linked_end_gaps(
+    *, lanelet_network: LaneletNetwork, frame: CustomTransfomer
+) -> list[tuple[int, int, float, tuple[float, float]]]:
+    """Per predecessor/successor pair: their ids, the larger of the left and right boundary gaps (m), and the local
+    middle of the seam."""
+    gaps = []
     for lanelet in lanelet_network.lanelets:
         for successor_id in lanelet.successor:
             successor = lanelet_network.find_lanelet_by_id(successor_id)
@@ -843,15 +864,26 @@ def record_seam_gaps(
                 float(np.linalg.norm(lanelet.left_vertices[-1][:2] - successor.left_vertices[0][:2])),
                 float(np.linalg.norm(lanelet.right_vertices[-1][:2] - successor.right_vertices[0][:2])),
             )
-            if not conversion_heuristics.joins_seam(gap_m=gap, config=heuristics):
-                continue
             middle = (lanelet.center_vertices[-1][:2] + successor.center_vertices[0][:2]) / 2
-            conversion_heuristics.record(
-                heuristic_id='H10', element_id=f'{lanelet.lanelet_id}->{successor_id}', action='seam_shared',
-                message=f'lanelets {lanelet.lanelet_id} -> {successor_id}: linked ends {gap:.2f} m apart - one seam',
-                config=heuristics, location=frame.to_local(middle[0], middle[1]),
-            )
-            count += 1
+            x, y = frame.to_local(middle[0], middle[1])
+            gaps.append((lanelet.lanelet_id, successor_id, gap, (float(x), float(y))))
+    return gaps
+
+
+def record_seam_gaps(
+    *, lanelet_network: LaneletNetwork, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
+) -> int:
+    """Record H10 for every predecessor/successor pair of lanelets whose ends lie a little apart; return how many."""
+    count = 0
+    for pred, succ, gap, middle in linked_end_gaps(lanelet_network=lanelet_network, frame=frame):
+        if not conversion_heuristics.joins_seam(gap_m=gap, config=heuristics):
+            continue
+        conversion_heuristics.record(
+            heuristic_id='H10', element_id=f'{pred}->{succ}', action='seam_shared',
+            message=f'lanelets {pred} -> {succ}: linked ends {gap:.2f} m apart - one seam',
+            config=heuristics, location=middle,
+        )
+        count += 1
     return count
 
 
@@ -877,10 +909,13 @@ def _within_trim(*, cfg: MapConversionConfig, x: float, y: float, z: Optional[fl
 
 @dataclasses.dataclass(slots=True)
 class ExtractedStoplines:
-    """The written stoplines file and the coverage of lights and stop/yield signs it gives."""
+    """The written stoplines file, the coverage of lights and stop/yield signs it gives, each signal's
+    distance to its nearest row, and the painted stop lines listed as not converted."""
 
     path: str
     controls: map_validation.ControlCoverage
+    distances: list[dict]
+    painted_stop_lines: list[dict]
 
 
 def extract_stoplines(
@@ -907,12 +942,14 @@ def extract_stoplines(
         drivable_types=frozenset(CONVERTED_LANE_TYPES),
         config=heuristics,
     )
-    traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame, config=heuristics)
+    painted = traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame)
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
         json.dump(built.rows, f, indent=4)
-    return ExtractedStoplines(path=stoplines_path, controls=built.coverage)
+    return ExtractedStoplines(
+        path=stoplines_path, controls=built.coverage, distances=built.distances, painted_stop_lines=painted
+    )
 
 
 def build_mesh(*, cfg: MapConversionConfig, location: str, osm_path: str, projector) -> BuiltMesh:
@@ -1078,8 +1115,16 @@ def convert_map(cfg: MapConversionConfig) -> str:
         cfg = dataclasses.replace(cfg, dir_path=out_dir)
     report = conversion_report.attach()
     error, verdict = None, None
+    report_path = os.path.join(cfg.dir_path, f"{location}_conversion_report.json")
     try:
         osm_path, verdict = _convert(cfg=cfg, opendrive_path=opendrive_path)
+        if verdict is not None and verdict.status == 'fail':
+            withhold_outputs(map_dir=cfg.dir_path, location=location)
+            failed = [check.name for check in verdict.checks if not check.passed]
+            raise MapRejected(
+                f'AutoCritic ({verdict.profile}) rejected the map: {", ".join(failed)} - map outputs withheld; '
+                f'see {os.path.abspath(report_path)}'
+            )
         return osm_path
     except BaseException as exc:
         error = exc
@@ -1087,12 +1132,33 @@ def convert_map(cfg: MapConversionConfig) -> str:
     finally:
         conversion_report.detach(handler=report)
         path = report.write(
-            path=os.path.join(cfg.dir_path, f"{location}_conversion_report.json"),
+            path=report_path,
             xodr_path=opendrive_path,
             error=error,
             validation=None if verdict is None else dataclasses.asdict(verdict),
         )
         logger.info(f'Wrote conversion report ({len(report.records)} degradation records) to {path}')
+
+
+def map_output_paths(*, map_dir: str, location: str) -> list[str]:
+    """The map outputs a conversion writes into ``map_dir`` (not its reports)."""
+    names = (
+        f'{location}.osm',
+        f'{location}_stoplines.json',
+        f'{location}_mesh.json',
+        f'{location}_signal_groups.json',
+        'metadata.json',
+        'visualization.png',
+    )
+    return [os.path.abspath(os.path.join(map_dir, name)) for name in names]
+
+
+def withhold_outputs(*, map_dir: str, location: str) -> list[str]:
+    """Delete the map outputs of a rejected conversion; return those deleted."""
+    deleted = [path for path in map_output_paths(map_dir=map_dir, location=location) if os.path.exists(path)]
+    for path in deleted:
+        os.remove(path)
+    return deleted
 
 
 def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Optional[map_validation.Verdict]]:
@@ -1135,6 +1201,13 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         controls=stoplines.controls,
         verifier_timeout_s=cfg.verifier_timeout_s,
         profile=cfg.autocritic.preset,
+        thresholds=cfg.autocritic.thresholds,
+        findings=map_validation.ConversionFindings(
+            linked_gaps=exported.linked_gaps,
+            dropped_signals=parsed.dropped_signals,
+            signal_distances=stoplines.distances,
+            painted_stop_lines=stoplines.painted_stop_lines,
+        ),
     )
     logger.info(f'Validation: {verdict.status}')
     return os.path.abspath(exported.osm_path), verdict
@@ -1156,3 +1229,6 @@ if __name__ == '__main__':
     except InputError as exc:
         logger.error(f'Cannot convert: {exc}')
         sys.exit(REFUSED_EXIT_CODE)
+    except MapRejected as exc:
+        logger.error(str(exc))
+        sys.exit(REJECTED_EXIT_CODE)

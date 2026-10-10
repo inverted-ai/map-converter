@@ -83,7 +83,8 @@ exit code 3 and write nothing.
 | `autofix.enabled` | `true` | Apply the guesses about the author's intent that are enabled; `false` applies none of them. See "Heuristics" below. |
 | `autofix.heuristics.<name>.<setting>` | see "Heuristics" | Switch one guess on or off, or retune it, e.g. `autofix.heuristics.sign_signal_stoplines.enabled=true`. |
 | `autocritic.enabled` | `true` | Judge the outputs and record the verdict in the conversion report; `false` records none. See "Validation" below. |
-| `autocritic.preset` | `perfect` | Which validation profile the verdict uses: `perfect` (no fault of any kind) or `strict` (bounded faults). |
+| `autocritic.preset` | `none` | `none` (judge nothing), `perfect` (no fault of any kind) or `strict` (bounded faults); a failing preset withholds the map outputs (exit code 4). See "Validation" below. |
+| `autocritic.thresholds.<name>` | unset | Override one of the preset's thresholds, e.g. `autocritic.thresholds.min_routing_edge_pct=98`. |
 
 ## Output files
 
@@ -138,13 +139,21 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 After writing the outputs, the converter checks them and stores the verdict under `validation` in the
 conversion report. The checks run under two profiles, defined in `map_validation.PROFILES`:
 
-1. `perfect` (the default): no fault of any kind.
-2. `strict`: small, bounded faults are accepted.
+1. `none` (the default): judges nothing. The verdict's `status` is `not_judged`; its checks are those of
+   `perfect`, for information.
+2. `perfect`: no fault of any kind.
+3. `strict`: small, bounded faults are accepted.
 
-Both profiles are evaluated on every run (unless `autocritic.enabled=false`, which skips validation and leaves
-`validation` null). `status` (`pass` or `fail`) is that of `profile`, the one `autocritic.preset` chose, and `profiles` gives each profile's status and failed checks. A failed check prints a
-`Validation:` warning. A failed `perfect` verdict also says whether `strict` passes: if it does, convert with
-`autocritic.preset=strict` and review the listed faults by hand. A failed verdict never stops the conversion.
+`autocritic.preset` chooses the preset, and `autocritic.thresholds.<name>` overrides any of its thresholds (the
+`ValidationConfig` fields in `map_validation.py`, e.g. `autocritic.thresholds.min_routing_edge_pct=98`); the
+overrides apply only with a preset. Both profiles are measured on every run (unless `autocritic.enabled=false`,
+which skips validation and leaves `validation` null): `profiles` gives each one's status and failed checks
+without overrides, `thresholds` the thresholds the verdict used, and each failed check lists where it fails
+(`locations`: `id`, local `location` and `detail`).
+
+**A preset that fails rejects the map:** the converter deletes the map outputs it wrote (`.osm`, stoplines, mesh,
+signal groups, `metadata.json`, `visualization.png`), keeps the conversion report and provenance, prints which
+checks failed and exits with code 4. A failed `perfect` verdict also says whether `strict` passes.
 
 | # | Check | `perfect` fails when | `strict` fails when |
 |---|---|---|---|
@@ -157,6 +166,16 @@ Both profiles are evaluated on every run (unless `autocritic.enabled=false`, whi
 | L7 | `point_extent_m` | a point lies more than 100 km from the local origin | same |
 | L8 | `lanelets_without_subtype` | any lanelet lacks a `subtype` | same |
 | L9 | `origin_in_range` | `lanelet_map_origin` is not a valid latitude/longitude | same |
+| L10 | `linked_gaps` | listed, not judged (`max_linked_gaps`) | same |
+| L11 | `dropped_signals` | listed, not judged (`max_dropped_signals`) | same |
+| L12 | `far_signals` | listed, not judged (`max_far_signals`; far = nearest stopline more than `far_signal_m`, 50 m) | same |
+| L13 | `not_converted` | listed, never judged | same |
+
+L10-L13 come from the conversion itself: lanelets the OpenDRIVE links whose ends lie farther apart than the seam
+tolerance (H10), so routing cannot cross; signals H14 dropped because they lie past their road's end; lights and
+signs whose nearest stopline row lies far from the signal; and painted stop lines (unrecognised and dropped
+elements are in the report's `unrecognised_tokens` and `elements`). Their limits are unset in both presets until
+the corpus review sets them; set one with `autocritic.thresholds.<name>`.
 
 The output metrics come from `map_quality.py` (the same metrics `map_report.py` records). A metric that raises
 fails its check; one with nothing to measure (no seams, say) passes.
@@ -172,8 +191,8 @@ lists those with no stopline by OpenDRIVE id:
    `Stencil_GiveWay` or `Stencil_Yield_Triangles` object, which writes its own row. A sign signal is covered
    by a stencil of the same kind near it (H5) or, with H6 on, by its own rows.
 
-Painted stop lines (H9) never become, move or invent a stopline: a stop line with no light or sign is an
-unsigned stop. Each one is listed in the conversion report (`kind="not_converted"`, with its position).
+Painted stop lines never become, move or invent a stopline: a stop line with no light or sign is an unsigned
+stop. Each one is listed in the conversion report (`kind="not_converted"`, with its position) and under L13.
 
 ### Heuristics
 
@@ -194,7 +213,6 @@ switched-off one would have acted (`applied` false), with its position.
 | H6 | `sign_signal_stoplines` | off | The converter creates stopline rows for stop/yield sign signals (where H5 finds no stencil): lanes read in the lane section at the sign's (or reference's) s, on a junction road where the lane enters it, one row per lane |
 | H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
 | H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |
-| H9 | `painted_stop_line` | on | Objects of type `stopLine` or named `StopLine`, and signals of type `294` or named `StopLine`, are painted stop lines (listed, never converted) |
 | H10 | `seam_tolerance` | on, `max_gap_m=1.0` | Linked lanelets whose ends lie up to `max_gap_m` apart share their end nodes, so routing crosses the seam; without it only ends within 1 cm do |
 | H11 | `fsm_distance_clusters` | on, `max_distance_m=50` | `traffic_light_fsm.py`: lights this close are one intersection (two declared junctions never merge); without it each junction, and each light no junction claims, is its own |
 | H12 | `fsm_axis_split` | on, `min_angle_rad=0.5` | `traffic_light_fsm.py`: an intersection's phases are split by stopline direction; without it they are the declared controllers, in sequence order, and one phase per light no controller names |
@@ -431,7 +449,8 @@ the same order and with the same results as a serial run; only times differ. It 
 self-contained `report.html`. Per map it records:
 
 - **outcome**: `ok`; `refused` (the converter declined on purpose, e.g. an unusable geo-reference, with its
-  message); `exception` (with the exception class and the innermost `file:line`); `timeout`; or `pdb` (the
+  message); `rejected` (an AutoCritic preset failed the map and its outputs were withheld, with the failed
+  checks); `exception` (with the exception class and the innermost `file:line`); `timeout`; or `pdb` (the
   converter stopped in a debugger);
 - wall time and peak memory of the conversion;
 - input identity: sha256 (duplicates marked), size, header vendor and OpenDRIVE revision, counts of

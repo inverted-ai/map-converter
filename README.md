@@ -472,6 +472,9 @@ self-contained `report.html`. Per map it records:
   checks); `exception` (with the exception class and the innermost `file:line`); `timeout`; or `pdb` (the
   converter stopped in a debugger);
 - wall time and peak memory of the conversion;
+- `autocritic`: the verdict's preset and status, each profile's status, the failed checks, per heuristic how
+  often it applied and how often it would have (`applied`, `not_applied`), and the AutoCritic report's path
+  (also for a rejected map); the HTML table links each report;
 - input identity: sha256 (duplicates marked), size, header vendor and OpenDRIVE revision, counts of
   `<controller>`, `<control>`, `<signal>`, `<signalReference>`, `<object>`, and every `roadMark` type, with
   the types the converter recognises listed in `road_mark_types_handled`;

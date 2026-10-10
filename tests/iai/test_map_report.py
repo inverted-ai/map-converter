@@ -175,6 +175,17 @@ def test_run_records_outcomes(two_runs):
     assert "custom" not in report["road_mark_types_handled"]
 
 
+def test_run_records_the_autocritic_verdict_and_findings(two_runs):
+    good = {m["relpath"]: m for m in two_runs[0]["maps"]}["good/fixture.xodr"]
+    critic = good["autocritic"]
+    assert (critic["preset"], critic["status"]) == ("none", "not_judged")
+    assert set(critic["profiles"]) == {"perfect", "strict"}
+    assert isinstance(critic["failed"], list)
+    assert all(isinstance(n, int) for n in [*critic["applied"].values(), *critic["not_applied"].values()])
+    assert critic["report"].endswith("fixture_autocritic.html") and os.path.isabs(critic["report"])
+    assert {m["relpath"]: m for m in two_runs[0]["maps"]}["bad/no_lanes.xodr"]["autocritic"] is None
+
+
 def test_run_paths_are_absolute(two_runs):
     report = two_runs[0]
     for key in ("maps_dir", "out_dir", "converter", "ruler"):

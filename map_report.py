@@ -334,6 +334,35 @@ def fsm_summary(*, controller_path: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
+def autocritic_summary(*, map_dir: str) -> Optional[dict[str, Any]]:
+    """The AutoCritic verdict and findings of a conversion, from its ``<map>_conversion_report.json``.
+
+    Returns:
+        ``preset``, ``status``, per profile its ``status`` (``profiles``), the ``failed`` checks of the
+        verdict, per heuristic how often it was ``applied`` and how often it would have applied
+        (``not_applied``), and the absolute path of the ``report`` HTML (``None`` when not written);
+        ``None`` when the conversion recorded no verdict.
+    """
+    paths = glob.glob(os.path.join(map_dir, "*_conversion_report.json"))
+    if not paths:
+        return None
+    with open(paths[0]) as f:
+        conversion = json.load(f)
+    verdict = conversion.get("validation")
+    if not verdict:
+        return None
+    html_paths = glob.glob(os.path.join(map_dir, "*_autocritic.html"))
+    return {
+        "preset": verdict["profile"],
+        "status": verdict["status"],
+        "profiles": {name: entry["status"] for name, entry in verdict["profiles"].items()},
+        "failed": [check["name"] for check in verdict["checks"] if not check["passed"]],
+        "applied": {key: entry["count"] for key, entry in conversion.get("heuristics", {}).items()},
+        "not_applied": {key: entry["count"] for key, entry in conversion.get("heuristics_not_applied", {}).items()},
+        "report": os.path.abspath(html_paths[0]) if html_paths else None,
+    }
+
+
 def fsm_review_summary(*, review_path: str) -> dict[str, Any]:
     """Per-level intersection counts, unassigned lights and flagged intersections from ``<map>_fsm_review.json``."""
     with open(review_path) as f:
@@ -398,6 +427,7 @@ def convert_one(
             "peak_rss_mb": result.peak_rss_mb,
         },
         "outputs_dir": map_dir,
+        "autocritic": autocritic_summary(map_dir=map_dir),
         "metrics": {},
         "metric_errors": {},
         "digests": {},
@@ -668,10 +698,11 @@ def flatten(*, record: dict[str, Any]) -> dict[str, Any]:
         else:
             flat[prefix] = value
 
-    for section in ("conversion", "metrics", "digests", "fsm"):
+    for section in ("conversion", "autocritic", "metrics", "digests", "fsm"):
         if section in record:
             walk(section, record[section])
     flat.pop("conversion.returncode", None)
+    flat.pop("autocritic.report", None)
     flat["input.sha256"] = record["input"]["sha256"]
     return flat
 
@@ -777,11 +808,25 @@ table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
 th{position:sticky;top:0;background:var(--bg);font-weight:600}
 td.n{text-align:right;font-variant-numeric:tabular-nums}
-.ok{color:var(--ok);font-weight:600}.refused,.rejected{color:var(--muted);font-weight:600}.exception,.pdb,.timeout{color:var(--bad);font-weight:600}
+.muted{color:var(--muted)}.ok{color:var(--ok);font-weight:600}.refused,.rejected{color:var(--muted);font-weight:600}.exception,.pdb,.timeout{color:var(--bad);font-weight:600}
 img.thumb{width:160px;height:160px;object-fit:contain;border:1px solid var(--line);border-radius:4px;background:#fff}
 .charts img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px;background:#fff;margin:4px 0}
 code{font-size:12px}
 """
+
+
+def _critic_cell(*, critic: Optional[dict[str, Any]]) -> str:
+    """Verdict (per profile), heuristic counts and a link to the AutoCritic report of one map."""
+    if critic is None:
+        return ""
+    profiles = ", ".join(f"{name} {status}" for name, status in sorted(critic["profiles"].items()))
+    applied = sum(critic["applied"].values())
+    not_applied = sum(critic["not_applied"].values())
+    link = f" <a href='file://{html.escape(critic['report'])}'>report</a>" if critic["report"] else ""
+    return (
+        f"{html.escape(critic['preset'])}: {html.escape(critic['status'])}<br>"
+        f"<span class=muted>{html.escape(profiles)}; AutoFix {applied}, would {not_applied}</span>{link}"
+    )
 
 
 def _thumbnail_data_uri(*, path: str) -> Optional[str]:
@@ -938,6 +983,7 @@ def render_report_html(*, report: dict[str, Any]) -> str:
             f"<td class=n>{_fmt(value=sum(stoplines.values()))}</td>"
             f"<td class=n>{_fmt(value=m['input']['counts']['controller'])}</td>"
             f"<td class=n>{_fmt(value=fsm.get('intersections'))}</td>"
+            f"<td>{_critic_cell(critic=m.get('autocritic'))}</td>"
             f"<td>{_img(path=os.path.join(m['outputs_dir'], 'visualization.png'))}</td>"
             "</tr>"
         )
@@ -945,7 +991,7 @@ def render_report_html(*, report: dict[str, Any]) -> str:
         "<tr><th>map</th><th>vendor</th><th>outcome</th><th>detail</th><th>time s</th>"
         "<th>peak MB</th><th>lanelets</th><th>routing %</th><th>seam %</th><th>z-conflicts</th>"
         "<th>crossed rev/invalid</th><th>stoplines</th><th>&lt;controller&gt;</th>"
-        "<th>FSM intersections</th><th>visualization</th></tr>"
+        "<th>FSM intersections</th><th>AutoCritic</th><th>visualization</th></tr>"
     )
     outcomes = collections.Counter(m["conversion"]["outcome"] for m in report["maps"])
     summary = ", ".join(f"{k}: {v}" for k, v in sorted(outcomes.items()))

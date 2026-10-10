@@ -595,3 +595,21 @@ def test_fsm_follows_the_autofix_settings_the_map_was_converted_with(tmp_path):
     (tmp_path / "m_provenance.json").write_text(json.dumps({"config": {"autofix": {"enabled": False}}}))
     assert t.autofix_from_provenance(map_dir=str(tmp_path)) == ch.AutoFixConfig(enabled=False)
     assert t.autofix_from_provenance(map_dir=str(tmp_path / "missing")) == ch.AutoFixConfig()
+
+
+
+def test_phase_greening_crossing_approaches_is_flagged_whatever_the_certainty():
+    actors = _four_way(first_id=1, x=0)
+    groups = _signal_groups(
+        membership={str(a.actor_id): "J" for a in actors},
+        controllers=[{"id": "a", "signal_ids": ["1", "3"]}, {"id": "b", "signal_ids": ["2", "4"]}],
+    )
+    [result] = t.resolve_intersection_groups(actors=actors, config=t.FsmConfig(use_xodr_groups=True), signal_groups=groups)
+    assert result.certainty == 1.0  # declared junction and phases
+    assert result.conflicting_phases == [0, 1] and result.reason == "conflict"
+    assert t.flagged_intersections(resolved=[result], config=t.FsmConfig()) == [0]
+
+
+def test_axis_split_phases_have_no_conflict():
+    [result] = t.resolve_intersection_groups(actors=_four_way(first_id=1, x=0), config=t.FsmConfig(use_xodr_junctions=False))
+    assert result.conflicting_phases == [] and result.reason == "clear"

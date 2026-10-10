@@ -79,6 +79,7 @@ exit code 3 and write nothing.
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
 | `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing; when the `<geoReference>` and header `<offset>` put road geometry outside the projection, the offset is dropped too (file coordinates). (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
 | `verifier_timeout_s` | `0` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it (on large maps it takes minutes). A run that reaches the cap records `timeout` and carries on. |
+| `verifier_formulas` | `[]` (all) | The verifier formulas to check, by name, e.g. `verifier_formulas='[UNIQUE_ID,SAME_VERTICES_SIZE]'`; an unknown name stops the run (exit code 3). |
 | `config` | unset | A YAML file of settings (see above); command-line arguments override it. |
 | `autofix.enabled` | `true` | Apply the guesses about the author's intent that are enabled; `false` applies none of them. See "Heuristics" below. |
 | `autofix.heuristics.<name>.<setting>` | see "Heuristics" | Switch one guess on or off, or retune it, e.g. `autofix.heuristics.sign_signal_stoplines.enabled=true`. |
@@ -297,9 +298,11 @@ parts in [0, 1]:
 2. `axis`: how cleanly the two phase groups' stopline directions separate (1.0 for one group, or when XODR
    controllers declare the groups).
 
-`reason` names the limiting part (`spatial` or `axis`), or is `clear` (1.0) or `declared` (levels B and C).
-`topology_refined` marks intersections split by lanelet topology. `flagged` lists the intersections below
-`--review-threshold` (default 0.7) for a human to check. The controller file is unchanged.
+`reason` names the limiting part (`spatial` or `axis`), or is `clear` (1.0) or `declared` (levels B and C), or
+`conflict`: `conflicting_phases` lists the phases whose lights' stopline directions differ by more than 45°
+(crossing approaches green together), whatever the certainty. `topology_refined` marks intersections split by
+lanelet topology. `flagged` lists the intersections below `--review-threshold` (default 0.7) or with a
+conflicting phase, for a human to check. The controller file is unchanged.
 
 To add `<map>_signal_groups.json` to a map converted before this file existed:
 

@@ -97,6 +97,8 @@ class MapConversionConfig:
             coordinates). A map with no ``<geoReference>`` always converts at (0, 0), with a warning.
         verifier_timeout_s: Cap (s) on the CommonRoad map verifier the validation stage runs; 0
             (the default) skips it. A run that hits the cap records ``timeout`` and continues.
+        verifier_formulas: The verifier's formulas to check, by name (e.g. ``[UNIQUE_ID]``); empty
+            (the default) checks all of them.
         autofix: The guesses about the author's intent (:mod:`conversion_heuristics`): all of
             them on or off, and each one's settings, e.g.
             ``autofix.heuristics.sign_signal_stoplines.enabled=true``.
@@ -122,6 +124,7 @@ class MapConversionConfig:
     simplify_tolerance_factor: float = 2.0
     allow_zero_origin: bool = False
     verifier_timeout_s: float = 0.0
+    verifier_formulas: list[str] = dataclasses.field(default_factory=list)
     autofix: conversion_heuristics.AutoFixConfig = dataclasses.field(default_factory=conversion_heuristics.AutoFixConfig)
     autocritic: map_validation.AutoCriticConfig = dataclasses.field(default_factory=map_validation.AutoCriticConfig)
     report: autocritic_report.ReportConfig = dataclasses.field(default_factory=autocritic_report.ReportConfig)
@@ -542,6 +545,9 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError('trim_radius requires center')
     if cfg.verifier_timeout_s < 0:
         raise ConfigError('verifier_timeout_s must be 0 (skip the verifier) or positive')
+    unknown = sorted(set(cfg.verifier_formulas) - set(map_validation.verifier_formula_names()))
+    if unknown:
+        raise ConfigError(f'verifier_formulas: unknown {", ".join(unknown)}')
     try:
         map_validation.check_config(config=cfg.autocritic)
         conversion_heuristics.check_config(config=cfg.autofix.heuristics)
@@ -1215,6 +1221,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         lanelet_network=exported.unsimplified_network,
         controls=stoplines.controls,
         verifier_timeout_s=cfg.verifier_timeout_s,
+        verifier_formulas=cfg.verifier_formulas,
         profile=cfg.autocritic.preset,
         thresholds=cfg.autocritic.thresholds,
         findings=map_validation.ConversionFindings(

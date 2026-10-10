@@ -63,6 +63,8 @@ class FsmConfig:
         certainty_threshold: Below this, an intersection is refined with lanelet topology (H13).
         review_threshold: Below this, an intersection is flagged for review in
             ``<map>_fsm_review.json``.
+        conflict_angle_rad: A phase whose lights' stopline axes differ by more than this (crossing
+            approaches green together) flags its intersection for review, whatever its certainty.
         use_xodr_junctions: Keep each OpenDRIVE junction's lights in one intersection (needs the
             ``<map>_signal_groups.json`` sidecar). Off: distance clustering only.
         use_xodr_groups: Also take phase groups from the junction's controllers (one controller,
@@ -79,6 +81,7 @@ class FsmConfig:
     all_red: float = 3.0
     certainty_threshold: float = 0.5
     review_threshold: float = 0.7
+    conflict_angle_rad: float = math.pi / 4
     use_xodr_junctions: bool = True
     use_xodr_groups: bool = False
     use_xodr_sequence: bool = False
@@ -534,6 +537,8 @@ class IntersectionResult:
             junction declares the membership.
         axis: :func:`axis_certainty` of the phase groups; 1.0 when XODR controllers declare them.
         topology_refined: Split out of a low-certainty intersection by lanelet topology.
+        conflicting_phases: Indices of the phases (in ``groups``) holding lights whose stopline
+            axes differ by more than ``FsmConfig.conflict_angle_rad``.
     """
 
     actors: list[int]
@@ -543,6 +548,7 @@ class IntersectionResult:
     spatial: float = 1.0
     axis: float = 1.0
     topology_refined: bool = False
+    conflicting_phases: list[int] = dataclasses.field(default_factory=list)
 
     @property
     def certainty(self) -> float:
@@ -551,7 +557,10 @@ class IntersectionResult:
 
     @property
     def reason(self) -> str:
-        """``declared`` when XODR fixes both parts, ``clear`` at 1.0, else the limiting part."""
+        """``conflict`` when a phase greens crossing approaches; ``declared`` when XODR fixes both parts,
+        ``clear`` at 1.0, else the limiting part."""
+        if self.conflicting_phases:
+            return "conflict"
         if self.level in DECLARED_LEVELS:
             return "declared"
         if self.certainty >= 1.0:
@@ -821,6 +830,7 @@ def resolve_intersection_groups(
                 if level in DECLARED_LEVELS
                 else axis_certainty(groups=groups, actors=actors, config=config),
                 topology_refined=refined,
+                conflicting_phases=conflicting_phases(groups=groups, actors=actors, config=config),
             )
         )
     unassigned = unassigned_light_ids(actors=actors, membership=membership)
@@ -834,9 +844,22 @@ def resolve_intersection_groups(
     return results
 
 
+def conflicting_phases(*, groups: list[list[int]], actors: list[Actor], config: FsmConfig) -> list[int]:
+    """Indices of the phases whose lights' stopline axes differ by more than ``config.conflict_angle_rad``."""
+    return [
+        k
+        for k, group in enumerate(groups)
+        if any(
+            _axis_distance(a=actors[i].axis, b=actors[j].axis) > config.conflict_angle_rad
+            for n, i in enumerate(group)
+            for j in group[n + 1 :]
+        )
+    ]
+
+
 def flagged_intersections(*, resolved: list[IntersectionResult], config: FsmConfig) -> list[int]:
-    """Indices of the intersections whose certainty is below ``config.review_threshold``."""
-    return [i for i, r in enumerate(resolved) if r.certainty < config.review_threshold]
+    """Indices of the intersections below ``config.review_threshold`` or with a conflicting phase."""
+    return [i for i, r in enumerate(resolved) if r.certainty < config.review_threshold or r.conflicting_phases]
 
 
 def generate_fsms(
@@ -1029,6 +1052,7 @@ def write_review(
             "axis": round(r.axis, 3),
             "reason": r.reason,
             "topology_refined": r.topology_refined,
+            "conflicting_phases": r.conflicting_phases,
         }
         for r in resolved
     ]

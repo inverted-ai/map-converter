@@ -352,8 +352,19 @@ def outcome_message(*, profile: str, failed: dict[str, list[str]]) -> Optional[s
     return message
 
 
-def run_map_verifier(*, lanelet_network: Optional[Any], timeout_s: float, partition_above: int) -> dict[str, Any]:
+def verifier_formula_names() -> list[str]:
+    """Names of every formula CommonRoad's ``MapVerifier`` can check."""
+    from crdesigner.verification_repairing.verification.formula_ids import extract_formula_ids
+
+    return list(dict.fromkeys(getattr(formula, "name", str(formula)) for formula in extract_formula_ids()))
+
+
+def run_map_verifier(
+    *, lanelet_network: Optional[Any], timeout_s: float, partition_above: int, formulas: Optional[list[str]] = None
+) -> dict[str, Any]:
     """Run CommonRoad's ``MapVerifier`` (report-only) in a child process killed after ``timeout_s``.
+
+    ``formulas`` restricts it to those formula names (empty or ``None``: all; recorded as ``formulas``).
 
     The verifier assumes each lanelet's bounds have equal vertex counts, so pass the network before
     boundary simplification. Partitioned runs verify each block in its own process; a block that
@@ -368,12 +379,26 @@ def run_map_verifier(*, lanelet_network: Optional[Any], timeout_s: float, partit
 
     lanelets = 0 if lanelet_network is None else len(lanelet_network.lanelets)
     partitioned = lanelets > partition_above and pymetis_imported
-    result: dict[str, Any] = {"status": "skipped", "partitioned": partitioned, "lanelets": lanelets, "seconds": 0.0}
+    result: dict[str, Any] = {
+        "status": "skipped",
+        "partitioned": partitioned,
+        "lanelets": lanelets,
+        "seconds": 0.0,
+        "formulas": list(formulas or []),
+    }
     if timeout_s <= 0 or lanelet_network is None:
         return result
     context = multiprocessing.get_context("spawn")
     results = context.Queue()
-    child = context.Process(target=_verify_in_child, kwargs={"lanelet_network": lanelet_network, "partitioned": partitioned, "results": results})
+    child = context.Process(
+        target=_verify_in_child,
+        kwargs={
+            "lanelet_network": lanelet_network,
+            "partitioned": partitioned,
+            "formulas": list(formulas or []),
+            "results": results,
+        },
+    )
     start = time.monotonic()
     child.start()
     outcome = None
@@ -395,7 +420,7 @@ def run_map_verifier(*, lanelet_network: Optional[Any], timeout_s: float, partit
     return result
 
 
-def _verify_in_child(*, lanelet_network: Any, partitioned: bool, results: Any) -> None:
+def _verify_in_child(*, lanelet_network: Any, partitioned: bool, formulas: list[str], results: Any) -> None:
     os.setpgrp()  # the partitioned verifier starts its own processes; a timeout kills the whole group
     try:
         from crdesigner.verification_repairing.config import MapVerParams
@@ -403,7 +428,11 @@ def _verify_in_child(*, lanelet_network: Any, partitioned: bool, results: Any) -
         from crdesigner.verification_repairing.verification.map_verifier import MapVerifier
 
         config = MapVerParams()
-        config.verification.formulas = extract_formula_ids()
+        config.verification.formulas = [
+            formula
+            for formula in extract_formula_ids()
+            if not formulas or getattr(formula, "name", str(formula)) in formulas
+        ]
         config.evaluation.partitioned = partitioned
         states = MapVerifier(lanelet_network, config).verify()
         results.put(
@@ -458,6 +487,7 @@ def validate(
     lanelet_network: Optional[Any],
     controls: ControlCoverage,
     verifier_timeout_s: float,
+    verifier_formulas: Optional[list[str]] = None,
     profile: str = NO_PRESET,
     thresholds: Optional[dict[str, float]] = None,
     findings: Optional[ConversionFindings] = None,
@@ -471,6 +501,7 @@ def validate(
             for a trimmed map, whose untrimmed network the other checks do not judge).
         controls: The lights and stop/yield signs and which of them got a stopline.
         verifier_timeout_s: Cap on the map verifier; ``0`` skips it.
+        verifier_formulas: The verifier formulas to check by name; empty or ``None`` checks all.
         profile: The preset the verdict uses (:data:`PRESETS`).
         thresholds: Overrides of the preset's thresholds (:func:`preset_config`).
         findings: What the conversion found (linked gaps, dropped and far signals, painted stop lines).
@@ -511,6 +542,7 @@ def validate(
         lanelet_network=lanelet_network,
         timeout_s=verifier_timeout_s,
         partition_above=VERIFIER_PARTITION_ABOVE,
+        formulas=verifier_formulas or [],
     )
     logger.info(f"Map verifier: {verifier['status']} in {verifier['seconds']} s")
     return Verdict(

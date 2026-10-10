@@ -155,6 +155,18 @@ def test_conversion_report_holds_the_verdict(tmp_path):
     assert len(by_name["routing_edge_pct"]["locations"]) == 2  # both lanelets of the road
 
 
+def test_verifier_checks_only_the_formulas_asked_for(tmp_path):
+    verdict, _ = _convert(
+        tmp_path=tmp_path,
+        roads=[xb.straight_road(id="1", length=30.0)],
+        verifier_timeout_s="300",
+        verifier_formulas="[UNIQUE_ID,SAME_VERTICES_SIZE]",
+    )
+    assert verdict["verifier"]["status"] == "ok"
+    assert verdict["verifier"]["formulas"] == ["UNIQUE_ID", "SAME_VERTICES_SIZE"]
+    assert set(verdict["verifier"]["invalid_states"]) <= {"UNIQUE_ID", "SAME_VERTICES_SIZE"}
+
+
 def test_verifier_runs_on_request(tmp_path):
     verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)], verifier_timeout_s="300")
     assert (verdict["verifier"]["status"], verdict["verifier"]["partitioned"]) == ("ok", False)
@@ -258,7 +270,12 @@ def test_without_a_preset_nothing_is_judged_and_the_outputs_are_kept(tmp_path):
 
 @pytest.mark.parametrize(
     "field, value",
-    [("verifier_timeout_s", "-1"), ("autocritic.preset", "lenient"), ("autocritic.thresholds.no_such_limit", "1")],
+    [
+        ("verifier_timeout_s", "-1"),
+        ("autocritic.preset", "lenient"),
+        ("autocritic.thresholds.no_such_limit", "1"),
+        ("verifier_formulas", "[NO_SUCH_FORMULA]"),
+    ],
 )
 def test_bad_validation_settings_are_refused(tmp_path, field, value):
     xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))

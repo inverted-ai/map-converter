@@ -33,10 +33,15 @@ STOP_LINE_NAME = re.compile(r"stop_?line", re.IGNORECASE)
 
 @dataclasses.dataclass(slots=True, frozen=True)
 class LaneStop:
-    """Where one stopline crosses one lane: the lane's inner and outer border points, ``(x, y, z)`` in file coordinates."""
+    """Where one stopline crosses one lane: the lane's inner and outer border points, ``(x, y, z)`` in file coordinates.
+
+    ``junction_distance_m``: for a sign stop, how far along its road the lane enters a junction
+    (:func:`_junction_distance`); unset (inf) for lights.
+    """
 
     inner: np.ndarray
     outer: np.ndarray
+    junction_distance_m: float = math.inf
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -118,6 +123,19 @@ def _lane_id_in(*, road, lane_id: int, section) -> int:
         successor = None if lane is None or lane.link is None else lane.link.successorId
         lane_id = lane_id if successor is None else int(successor)
     return lane_id
+
+
+def _junction_distance(*, road, s: float, travels_with_s: bool) -> float:
+    """How far (m) from ``s`` traffic in this direction travels along ``road`` before entering a junction.
+
+    0 on a junction's connecting road; inf when the road's end in that direction links to no junction.
+    """
+    if road.junction is not None:
+        return 0.0
+    link = road.link.successor if travels_with_s else road.link.predecessor
+    if link is None or link.elementType != "junction":
+        return math.inf
+    return max(float(road.plan_view.length) - s, 0.0) if travels_with_s else max(s, 0.0)
 
 
 def _lane_at_s(*, plane, section, s: float) -> LaneStop:
@@ -239,7 +257,9 @@ def _facing_stops(
         for section, plane in chosen:
             if not heuristics.faces(orientation=target.orientation, travels_with_s=_travels_with_s(plane=plane), config=config):
                 continue
-            stops.append(_lane_at_s(plane=plane, section=section, s=target.s) if at_s else _lane_entry(plane=plane))
+            stop = _lane_at_s(plane=plane, section=section, s=target.s) if at_s else _lane_entry(plane=plane)
+            distance = _junction_distance(road=road, s=target.s, travels_with_s=_travels_with_s(plane=plane))
+            stops.append(dataclasses.replace(stop, junction_distance_m=distance))
     return stops, any_drivable
 
 
@@ -309,9 +329,11 @@ def _sign_stops(
             at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config)
             found = found or at_s
             if at_s and heuristics.applies(heuristic_id="H4", config=config):
-                stops.append(_lane_at_s(plane=plane, section=section, s=s))
+                stop = _lane_at_s(plane=plane, section=section, s=s)
             else:
-                stops.append(_road_entry(index=index, road=road, section=section, plane=plane))
+                stop = _road_entry(index=index, road=road, section=section, plane=plane)
+            distance = _junction_distance(road=road, s=s, travels_with_s=_travels_with_s(plane=plane))
+            stops.append(dataclasses.replace(stop, junction_distance_m=distance))
     if found:
         _record_placed_at_s(signal_id=signal_id, config=config, location=location)
     return stops
@@ -374,6 +396,10 @@ def _control_stops(
     if index.bound.get(signal_id):
         return stops, True
     return _unscoped_stops(index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame)
+
+
+def _junction_phrase(*, distance_m: float) -> str:
+    return "on lanes that reach no junction" if math.isinf(distance_m) else f"{distance_m:.1f} m before a junction"
 
 
 def _same_spot(*, a: dict, b: dict) -> bool:
@@ -517,7 +543,12 @@ def control_stoplines(
         stops = _sign_stops(
             index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
         )
+        limit = config.sign_signal_stoplines.max_junction_distance_m
+        too_far = [stop.junction_distance_m for stop in stops if limit is not None and stop.junction_distance_m > limit]
+        written_distances = []
         for stop in stops:
+            if limit is not None and stop.junction_distance_m > limit:
+                continue
             row = _row(stop=stop, frame=frame, actor_id=sign.opendrive_id, agent_type=agent_type, within=within)
             if row is None or any(_same_spot(a=row, b=kept) for kept in sign_rows):
                 continue
@@ -528,12 +559,13 @@ def control_stoplines(
                 by_sign = same["actor_id"]
                 continue
             gap = _stencil_gap_on_lane(row=row, stencils=stencil_xy[agent_type])
-            if heuristics.matches_stencil(distance_m=gap, config=config) and heuristics.applies(
+            if gap <= config.sign_signal_stoplines.stencil_lane_distance_m and heuristics.applies(
                 heuristic_id="H5", config=config
             ):
                 by_stencil = True
                 continue
             sign_rows.append(row)
+            written_distances.append(stop.junction_distance_m)
         if by_stencil and not sign_rows:
             heuristics.record(
                 heuristic_id="H5", element_id=signal_id, action="stencil_is_its_stopline",
@@ -553,9 +585,19 @@ def control_stoplines(
             sign_rows_written += sign_rows
             heuristics.record(
                 heuristic_id="H6", element_id=signal_id, action="stopline_written",
-                message=f"sign {signal_id}: {len(sign_rows)} {agent_type} stopline row(s)",
+                message=f"sign {signal_id}: {len(sign_rows)} {agent_type} stopline row(s), "
+                + _junction_phrase(distance_m=min(written_distances)),
                 config=config, location=location,
             )
+        elif too_far:
+            heuristics.record(
+                heuristic_id="H6", element_id=signal_id, action="beyond_junction_limit",
+                message=f"sign {signal_id}: no {agent_type} row - its lanes are "
+                + _junction_phrase(distance_m=min(too_far))
+                + f" (limit {limit:g} m)",
+                config=config, location=location,
+            )
+            signs_missing.append(f"signal {signal_id}")
         else:
             signs_missing.append(f"signal {signal_id}")
 

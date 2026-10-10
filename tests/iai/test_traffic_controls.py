@@ -14,6 +14,9 @@ import conversion_heuristics as ch
 from tests.iai import xodr_builder as xb
 
 LANE_RIGHT_Y = -1.75
+H6_ON = {"autofix.heuristics.sign_signal_stoplines.enabled": "true"}
+# A plain road links to no junction; these tests exercise the rows, not the junction-distance limit.
+H6_ON_ANY_DISTANCE = {**H6_ON, "autofix.heuristics.sign_signal_stoplines.max_junction_distance_m": "null"}
 LANE_LEFT_Y = 1.75
 
 
@@ -185,7 +188,7 @@ def test_sign_signal_stoplines_on_request(tmp_path):
     stop = xb.SignalSpec(id="81", s=40.0, dynamic="no", type="206", validity=(-1, -1))
     give_way = xb.SignalSpec(id="82", s=20.0, dynamic="no", type="205", orientation="-")
     out = _convert(
-        tmp_path=tmp_path, roads=[_plain_road(signals=[stop, give_way])], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"}
+        tmp_path=tmp_path, roads=[_plain_road(signals=[stop, give_way])], **H6_ON_ANY_DISTANCE
     )
     assert _rows(out=out, agent_type="stop_sign") == [("81", 40.0, LANE_RIGHT_Y, 0.0)]
     assert _rows(out=out, agent_type="yield_sign") == [("82", 20.0, LANE_LEFT_Y, round(-math.pi, 3))]
@@ -196,7 +199,7 @@ def test_sign_signal_stoplines_on_request(tmp_path):
 def test_sign_next_to_its_stencil_writes_only_the_stencil_row(tmp_path):
     stop = xb.SignalSpec(id="81", s=40.0, dynamic="no", type="206", validity=(-1, -1))
     road = _plain_road(signals=[stop], objects=[xb.ObjectSpec(id="9", s=38.0)])
-    out = _convert(tmp_path=tmp_path, roads=[road], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
+    out = _convert(tmp_path=tmp_path, roads=[road], **H6_ON_ANY_DISTANCE)
     assert [row[0] for row in _rows(out=out, agent_type="stop_sign")] == ["9"]
     assert out["controls"]["signs_without_stopline"] == []
     assert _heuristic_ids(out=out, heuristic_id="H5") == ["81"]
@@ -213,7 +216,7 @@ def test_sign_row_next_to_a_stencil_row_on_its_lane_is_not_written(tmp_path):
     # The sign stands 12 m from the stencil (beyond H5), but its row would land 2 m from the stencil's row.
     stop = xb.SignalSpec(id="81", s=40.0, t=-12.0, dynamic="no", type="206", validity=(-1, -1))
     road = _plain_road(signals=[stop], objects=[xb.ObjectSpec(id="9", s=38.0)])
-    out = _convert(tmp_path=tmp_path, roads=[road], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
+    out = _convert(tmp_path=tmp_path, roads=[road], **H6_ON_ANY_DISTANCE)
     assert [row[0] for row in _rows(out=out, agent_type="stop_sign")] == ["9"]
     assert out["controls"]["signs_without_stopline"] == []
     assert _heuristic_ids(out=out, heuristic_id="H5") == ["81"]
@@ -226,7 +229,7 @@ def test_sign_referenced_twice_on_one_lane_writes_one_row(tmp_path):
         xb.SignalReferenceSpec(id="83", s=0.0, validity=(-1, -1)),
         xb.SignalReferenceSpec(id="83", s=0.0, validity=(-1, -1)),
     ]
-    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
+    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **H6_ON)
     assert _rows(out=out, agent_type="stop_sign") == [("83", 50.0, LANE_RIGHT_Y, 0.0)]
 
 
@@ -242,7 +245,7 @@ def test_sign_reference_lanes_are_read_in_the_lane_section_at_its_s(tmp_path):
     ]
     roads[0].signals.append(xb.SignalSpec(id="84", s=45.0, t=-5.0, dynamic="no", type="206", validity=(0, 0)))
     road2.signal_references.append(xb.SignalReferenceSpec(id="84", s=15.0, validity=(-2, -2)))
-    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
+    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **H6_ON)
     # Where driving lane -1 enters the connecting road, not on the first section's shoulder.
     assert _rows(out=out, agent_type="stop_sign") == [("84", 50.0, LANE_RIGHT_Y, 0.0)]
 
@@ -252,9 +255,39 @@ def test_two_signs_stopping_the_same_lane_write_one_row(tmp_path):
         xb.SignalSpec(id="85", s=40.0, t=-5.0, dynamic="no", type="206", validity=(-1, -1)),
         xb.SignalSpec(id="86", s=40.0, t=5.0, dynamic="no", type="206", orientation="+"),
     ]
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=stops)], **{"autofix.heuristics.sign_signal_stoplines.enabled": "true"})
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=stops)], **H6_ON_ANY_DISTANCE)
     assert _rows(out=out, agent_type="stop_sign") == [("85", 40.0, LANE_RIGHT_Y, 0.0)]
     assert out["controls"]["signs_without_stopline"] == []
+
+
+
+def test_sign_farther_from_a_junction_than_the_limit_writes_no_row(tmp_path):
+    # A plain road links to no junction: its lanes never reach one (default limit 30 m).
+    stop = xb.SignalSpec(id="81", s=40.0, dynamic="no", type="206", validity=(-1, -1))
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])], **H6_ON)
+    assert _rows(out=out, agent_type="stop_sign") == []
+    assert out["controls"]["signs_without_stopline"] == ["signal 81"]
+    (finding,) = _findings(out=out, heuristic_id="H6")
+    assert "no junction" in finding["message"]
+
+
+def test_sign_within_the_limit_of_a_junction_writes_its_row(tmp_path):
+    roads, junctions, _ = xb.junction_map(with_signals=False)
+    roads[0].signals.append(xb.SignalSpec(id="87", s=45.0, dynamic="no", type="206", validity=(-1, -1)))
+    limit = {**H6_ON, "autofix.heuristics.sign_signal_stoplines.max_junction_distance_m": "30"}
+    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions, **limit)
+    assert _rows(out=out, agent_type="stop_sign") == [("87", 45.0, LANE_RIGHT_Y, 0.0)]
+    (finding,) = _findings(out=out, heuristic_id="H6")
+    assert "5.0 m before a junction" in finding["message"]
+
+
+def test_stencil_check_along_the_lane_has_its_own_distance(tmp_path):
+    # As in test_sign_row_next_to_a_stencil_row_on_its_lane_is_not_written, but the lane check reaches only 1 m.
+    stop = xb.SignalSpec(id="81", s=40.0, t=-12.0, dynamic="no", type="206", validity=(-1, -1))
+    road = _plain_road(signals=[stop], objects=[xb.ObjectSpec(id="9", s=38.0)])
+    narrow = {**H6_ON_ANY_DISTANCE, "autofix.heuristics.sign_signal_stoplines.stencil_lane_distance_m": "1"}
+    out = _convert(tmp_path=tmp_path, roads=[road], **narrow)
+    assert sorted(row[0] for row in _rows(out=out, agent_type="stop_sign")) == ["81", "9"]
 
 
 def test_painted_stop_lines_are_reported_and_write_no_row(tmp_path):

@@ -79,6 +79,26 @@ class SignStencilMatchConfig:
 
 
 @dataclasses.dataclass(slots=True)
+class SignSignalStoplinesConfig:
+    """H6.
+
+    Attributes:
+        enabled: Whether it is applied (off by default).
+        max_junction_distance_m: A sign row is written only on a lane that enters a junction within
+            this distance (m) of the sign, along the road; ``None`` writes it whatever the distance.
+            30 m: on the corpus fast tier every H6 sign's nearest row is either within 3.9 m of the
+            junction (273 of 313 signs) or more than 95 m from it or on a lane reaching none (mid-road
+            rows, decision 77.7); stop and yield signs stand at the approach.
+        stencil_lane_distance_m: A lane gets no sign row where a same-kind stencil lies within this
+            distance (m) along it of the row (the stencil is the stop).
+    """
+
+    enabled: bool = False
+    max_junction_distance_m: Optional[float] = 30.0
+    stencil_lane_distance_m: float = 10.0
+
+
+@dataclasses.dataclass(slots=True)
 class SeamToleranceConfig:
     """H10.
 
@@ -155,7 +175,7 @@ class HeuristicsConfig:
     facing_lanes: Switch = dataclasses.field(default_factory=Switch)
     stop_at_signal_s: Switch = dataclasses.field(default_factory=Switch)
     sign_stencil_match: SignStencilMatchConfig = dataclasses.field(default_factory=SignStencilMatchConfig)
-    sign_signal_stoplines: Switch = dataclasses.field(default_factory=lambda: Switch(enabled=False))
+    sign_signal_stoplines: SignSignalStoplinesConfig = dataclasses.field(default_factory=SignSignalStoplinesConfig)
     non_vehicle_light: Switch = dataclasses.field(default_factory=Switch)
     us_sign_codes: Switch = dataclasses.field(default_factory=Switch)
     seam_tolerance: SeamToleranceConfig = dataclasses.field(default_factory=SeamToleranceConfig)
@@ -231,6 +251,8 @@ def check_config(*, config: HeuristicsConfig) -> None:
         )
     for name, value in (
         ("seam_tolerance.max_gap_m", config.seam_tolerance.max_gap_m),
+        ("sign_signal_stoplines.stencil_lane_distance_m", config.sign_signal_stoplines.stencil_lane_distance_m),
+        ("sign_signal_stoplines.max_junction_distance_m", config.sign_signal_stoplines.max_junction_distance_m or 0.0),
         ("fsm_distance_clusters.max_distance_m", config.fsm_distance_clusters.max_distance_m),
         ("fsm_axis_split.min_angle_rad", config.fsm_axis_split.min_angle_rad),
         ("fsm_topology_refinement.max_hops", config.fsm_topology_refinement.max_hops),
@@ -399,7 +421,8 @@ def writes_sign_signal_stoplines(*, covered_by_stencil: bool) -> bool:
     ``<validity>`` names lanes of the lane section its signal or reference stands in; on a
     junction road its stopline is where that lane enters the road (lane links followed across
     sections). One row per lane, also when several references or signs stop the same lane at the
-    same place.
+    same place; none on a lane that enters a junction farther than ``max_junction_distance_m`` along
+    the road (when set), or where a same-kind stencil lies within ``stencil_lane_distance_m`` along it.
 
     Evidence: CARLA maps and others carry many signs without a stencil (one map 136 yield signs,
     another 39 signs and no stencil). Off until the rows it would add are reviewed.

@@ -593,6 +593,32 @@ def _junction_of(*, intersection: list[int], actors: list[Actor], membership: di
     return next(iter(junctions)) if len(junctions) == 1 else None
 
 
+def _controller_members(
+    *, intersection: list[int], actors: list[Actor], signal_groups: Optional[dict]
+) -> tuple[list[tuple[Optional[int], list[int]]], set[int]]:
+    """Per ``<controller>`` naming lights of the intersection, its ``sequence`` and those lights; and all lights placed."""
+    by_id = {str(actors[i].actor_id): i for i in intersection}
+    groups: list[tuple[Optional[int], list[int]]] = []
+    placed: set[int] = set()
+    for controller in (signal_groups or {}).get("controllers", []):
+        members = [by_id[sid] for sid in controller["signal_ids"] if sid in by_id and by_id[sid] not in placed]
+        if members:
+            groups.append((controller.get("sequence"), members))
+            placed.update(members)
+    return groups, placed
+
+
+def _ordered_phases(
+    *, groups: list[tuple[Optional[int], list[int]]], actors: list[Actor], by_sequence: bool
+) -> tuple[list[list[int]], str]:
+    """Controller phases by ``sequence`` (``by_sequence``, every group having one), else larger first."""
+    if by_sequence and all(seq is not None for seq, _ in groups):
+        ordered = sorted(groups, key=lambda sg: (sg[0], min(actors[i].actor_id for i in sg[1])))
+        return [g for _, g in ordered], LEVEL_SEQUENCE
+    ordered = sorted(groups, key=lambda sg: (-len(sg[1]), min(actors[i].actor_id for i in sg[1])))
+    return [g for _, g in ordered], LEVEL_GROUPS
+
+
 def _controller_groups(
     *, intersection: list[int], actors: list[Actor], signal_groups: dict, use_sequence: bool
 ) -> tuple[Optional[list[list[int]]], str]:
@@ -602,14 +628,7 @@ def _controller_groups(
     mean axis is nearest its own. Ordered by controller ``sequence`` when ``use_sequence`` and every
     group has one, else larger group first. Returns ``(None, level)`` when no controller applies.
     """
-    by_id = {str(actors[i].actor_id): i for i in intersection}
-    groups: list[tuple[Optional[int], list[int]]] = []
-    placed: set[int] = set()
-    for controller in signal_groups.get("controllers", []):
-        members = [by_id[sid] for sid in controller["signal_ids"] if sid in by_id and by_id[sid] not in placed]
-        if members:
-            groups.append((controller.get("sequence"), members))
-            placed.update(members)
+    groups, placed = _controller_members(intersection=intersection, actors=actors, signal_groups=signal_groups)
     if not groups:
         return None, LEVEL_JUNCTIONS
     for i in intersection:
@@ -623,11 +642,7 @@ def _controller_groups(
             "Intersection with lights %s: every XODR controller holds a single light - each light gets its own phase",
             sorted(actors[i].actor_id for i in intersection),
         )
-    if use_sequence and all(seq is not None for seq, _ in groups):
-        ordered = sorted(groups, key=lambda sg: (sg[0], min(actors[i].actor_id for i in sg[1])))
-        return [g for _, g in ordered], LEVEL_SEQUENCE
-    ordered = sorted(groups, key=lambda sg: (-len(sg[1]), min(actors[i].actor_id for i in sg[1])))
-    return [g for _, g in ordered], LEVEL_GROUPS
+    return _ordered_phases(groups=groups, actors=actors, by_sequence=use_sequence)
 
 
 def declared_phases(
@@ -642,23 +657,10 @@ def declared_phases(
         The phases (indices into ``actors``) and ``sequence`` or ``groups`` when controllers were
         used, else ``None``.
     """
-    by_id = {str(actors[i].actor_id): i for i in intersection}
-    groups: list[tuple[Optional[int], list[int]]] = []
-    placed: set[int] = set()
-    for controller in (signal_groups or {}).get("controllers", []):
-        members = [by_id[sid] for sid in controller["signal_ids"] if sid in by_id and by_id[sid] not in placed]
-        if members:
-            groups.append((controller.get("sequence"), members))
-            placed.update(members)
-    level = None
-    if groups and all(seq is not None for seq, _ in groups):
-        groups.sort(key=lambda sg: (sg[0], min(actors[i].actor_id for i in sg[1])))
-        level = LEVEL_SEQUENCE
-    elif groups:
-        groups.sort(key=lambda sg: (-len(sg[1]), min(actors[i].actor_id for i in sg[1])))
-        level = LEVEL_GROUPS
+    groups, placed = _controller_members(intersection=intersection, actors=actors, signal_groups=signal_groups)
+    phases, level = _ordered_phases(groups=groups, actors=actors, by_sequence=True) if groups else ([], None)
     singles = [[i] for i in sorted(intersection, key=lambda i: actors[i].actor_id) if i not in placed]
-    return [g for _, g in groups] + singles, level
+    return phases + singles, level
 
 
 def declared_intersections(*, actors: list[Actor], membership: dict[str, str]) -> list[list[int]]:

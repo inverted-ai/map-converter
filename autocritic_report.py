@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from conversion_report import heuristic_number
 from traffic_light_fsm import load_metadata, resolve_map_path, utm_projector
 
 CLOSEUPS_PER_PAGE = 24
@@ -67,10 +68,6 @@ def _rounded(*, value: Any) -> Any:
     return round(value, 2) if isinstance(value, float) else value
 
 
-def _heuristic_order(key: str) -> int:
-    return int(key.removeprefix("H"))
-
-
 def build(
     *, records: list[dict[str, Any]], verdict: Optional[dict[str, Any]], autofix_enabled: bool, would_have_fixed: bool
 ) -> dict[str, Any]:
@@ -83,29 +80,30 @@ def build(
         would_have_fixed: Include the places switched-off heuristics would have acted.
     """
     by_heuristic: dict[tuple[bool, str], list[dict[str, Any]]] = {}
+    names: dict[str, str] = {}
     for r in records:
         if r.get("kind") != "heuristic":
             continue
+        names[r["element"]] = r["value"]
         by_heuristic.setdefault((bool(r["applied"]), r["element"]), []).append(
             {
                 "element": str(r["id"]),
                 "location": r.get("location"),
                 "detail": r["message"].split(": ", 1)[-1],  # without the "<id> <name>: " prefix
-                "name": r["value"],
             }
         )
     sections = []
     for applied, kind in ((True, "autofix"), (False, "would_have_fixed")):
         if not applied and not would_have_fixed:
             continue
-        for key in sorted((k for a, k in by_heuristic if a == applied), key=_heuristic_order):
+        for key in sorted((k for a, k in by_heuristic if a == applied), key=heuristic_number):
             entries = by_heuristic[(applied, key)]
             sections.append(
                 {
                     "kind": kind,
                     "key": key,
-                    "title": f"{key} {entries[0]['name']}",
-                    "items": _items(entries=[{k: v for k, v in e.items() if k != "name"} for e in entries]),
+                    "title": f"{key} {names[key]}",
+                    "items": _items(entries=entries),
                 }
             )
     for check in (verdict or {}).get("checks", []):
@@ -181,7 +179,12 @@ def _draw_roads(*, ax, polylines: list[np.ndarray], linewidth: float) -> None:
     ax.set_yticks([])
 
 
-def _birdview(*, polylines: list[np.ndarray], items: list[dict[str, Any]]) -> str:
+def _bounding_boxes(*, polylines: list[np.ndarray]) -> np.ndarray:
+    """``(n, 4)``: each polyline's ``min x, min y, max x, max y``."""
+    return np.array([[*p.min(axis=0), *p.max(axis=0)] for p in polylines]).reshape(-1, 4)
+
+
+def _birdview(*, polylines: list[np.ndarray], boxes: np.ndarray, items: list[dict[str, Any]]) -> str:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -194,8 +197,9 @@ def _birdview(*, polylines: list[np.ndarray], items: list[dict[str, Any]]) -> st
     if len(items) <= NUMBERED_ON_BIRDVIEW:
         for item in items:
             ax.annotate(str(item["number"]), item["location"], color=MARKER, fontsize=7, xytext=(4, 4), textcoords="offset points")
-    everything = np.vstack([*polylines, points]) if polylines else points
-    low, high = everything.min(axis=0), everything.max(axis=0)
+    low, high = points.min(axis=0), points.max(axis=0)
+    if len(boxes):
+        low, high = np.minimum(low, boxes[:, :2].min(axis=0)), np.maximum(high, boxes[:, 2:].max(axis=0))
     pad = max(10.0, 0.03 * float((high - low).max()))
     ax.set_xlim(low[0] - pad, high[0] + pad)
     ax.set_ylim(low[1] - pad, high[1] + pad)
@@ -213,7 +217,7 @@ def _closeup_tile(*, polylines: list[np.ndarray], boxes: np.ndarray, item: dict[
     tile = Image.new("RGB", (CLOSEUP_TILE_PX, CLOSEUP_TILE_PX), "white")
     draw = ImageDraw.Draw(tile)
     near = (boxes[:, 0] <= x + h) & (boxes[:, 2] >= x - h) & (boxes[:, 1] <= y + h) & (boxes[:, 3] >= y - h)
-    for line in (p for p, keep in zip(polylines, near) if keep):
+    for line in (polylines[k] for k in np.flatnonzero(near)):
         pixels = np.column_stack(((line[:, 0] - (x - h)) * scale, ((y + h) - line[:, 1]) * scale))
         draw.line([tuple(v) for v in pixels], fill=ROAD, width=1)
     centre, r = CLOSEUP_TILE_PX / 2, CLOSEUP_MARKER_PX
@@ -224,11 +228,10 @@ def _closeup_tile(*, polylines: list[np.ndarray], boxes: np.ndarray, item: dict[
     return tile
 
 
-def _closeup_pages(*, polylines: list[np.ndarray], items: list[dict[str, Any]]) -> list[str]:
+def _closeup_pages(*, polylines: list[np.ndarray], boxes: np.ndarray, items: list[dict[str, Any]]) -> list[str]:
     """Close-ups of ``items``, ``CLOSEUPS_PER_PAGE`` per image (drawn with PIL: far faster than one axes each)."""
     from PIL import Image
 
-    boxes = np.array([[*p.min(axis=0), *p.max(axis=0)] for p in polylines]).reshape(-1, 4)
     pages = []
     for start in range(0, len(items), CLOSEUPS_PER_PAGE):
         page_items = items[start : start + CLOSEUPS_PER_PAGE]
@@ -252,16 +255,13 @@ h1{font-size:22px}h2{font-size:18px;border-top:1px solid var(--line);padding-top
 ol{padding-left:2.2em}li{overflow-wrap:anywhere}
 """
 
-SECTION_HEADINGS = {
-    "autofix": "AutoFix: what it changed against BasicConversion",
-    "would_have_fixed": "Would have fixed: heuristics that were off",
-    "metric": "AutoCritic metrics: where they fail or list places",
-}
+SECTION_HEADINGS = {"autofix": "AutoFix", "would_have_fixed": "Would have fixed", "metric": "AutoCritic metrics"}
 
 
 def render_html(*, report: dict[str, Any], polylines: list[np.ndarray], config: ReportConfig, title: str) -> str:
     """The self-contained HTML of ``report`` (images embedded as PNG data URIs)."""
     summary = report["summary"]
+    boxes = _bounding_boxes(polylines=polylines)
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
         f"<title>{html.escape(title)} AutoCritic</title><style>{CSS}</style></head><body>",
@@ -275,7 +275,7 @@ def render_html(*, report: dict[str, Any], polylines: list[np.ndarray], config: 
         items = section["items"]
         placed = [i for i in items if i.get("location") is not None]
         parts.append(
-            f"<h2>{number}. {html.escape(SECTION_HEADINGS[section['kind']].split(':')[0])}: {html.escape(section['title'])}</h2>"
+            f"<h2>{number}. {html.escape(SECTION_HEADINGS[section['kind']])}: {html.escape(section['title'])}</h2>"
         )
         if section.get("detail"):
             parts.append(f"<p class=muted>{html.escape(section['detail'])}</p>")
@@ -289,10 +289,10 @@ def render_html(*, report: dict[str, Any], polylines: list[np.ndarray], config: 
                 )
             parts.append("</ol>")
         if config.birdview and placed:
-            parts.append(f"<img src='{_birdview(polylines=polylines, items=placed)}' alt='birdview'>")
+            parts.append(f"<img src='{_birdview(polylines=polylines, boxes=boxes, items=placed)}' alt='birdview'>")
         if config.closeups and placed:
             shown = placed[: config.max_closeups]
-            for page in _closeup_pages(polylines=polylines, items=shown):
+            for page in _closeup_pages(polylines=polylines, boxes=boxes, items=shown):
                 parts.append(f"<img src='{page}' alt='close-ups'>")
             if len(placed) > len(shown):
                 parts.append(f"<p class=muted>{len(placed) - len(shown)} more items have no close-up (report.max_closeups).</p>")

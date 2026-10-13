@@ -512,10 +512,6 @@ def next_to_start(
     return next((rel for rel in pending if used_mb + costs[rel].peak_rss_mb <= budget_mb), None)
 
 
-def _convert_in_worker(kwargs: dict[str, Any]) -> dict[str, Any]:
-    return convert_one(**kwargs)
-
-
 def _convert_all(
     *,
     jobs: dict[str, dict[str, Any]],
@@ -544,8 +540,8 @@ def _convert_all(
                 pending.remove(rel)
                 running.append(rel)
                 pool.apply_async(
-                    _convert_in_worker,
-                    (jobs[rel],),
+                    convert_one,
+                    kwds=jobs[rel],
                     callback=lambda record, rel=rel: done.put((rel, record)),
                     error_callback=lambda exc, rel=rel: done.put((rel, exc)),
                 )

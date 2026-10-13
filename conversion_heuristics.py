@@ -245,21 +245,13 @@ def by_id(*, heuristic_id: str) -> Heuristic:
 def check_config(*, config: HeuristicsConfig) -> None:
     """Raise ``ValueError`` naming the first unusable parameter."""
     prefix = "autofix.heuristics"
-    if not config.sign_stencil_match.max_distance_m >= 0:
-        raise ValueError(
-            f"{prefix}.sign_stencil_match.max_distance_m must be >= 0, got {config.sign_stencil_match.max_distance_m}"
-        )
-    for name, value in (
-        ("seam_tolerance.max_gap_m", config.seam_tolerance.max_gap_m),
-        ("sign_signal_stoplines.stencil_lane_distance_m", config.sign_signal_stoplines.stencil_lane_distance_m),
-        ("sign_signal_stoplines.max_junction_distance_m", config.sign_signal_stoplines.max_junction_distance_m or 0.0),
-        ("fsm_distance_clusters.max_distance_m", config.fsm_distance_clusters.max_distance_m),
-        ("fsm_axis_split.min_angle_rad", config.fsm_axis_split.min_angle_rad),
-        ("fsm_topology_refinement.max_hops", config.fsm_topology_refinement.max_hops),
-        ("signal_past_road_end.max_overshoot_m", config.signal_past_road_end.max_overshoot_m),
-    ):
-        if not value >= 0:
-            raise ValueError(f"{prefix}.{name} must be >= 0, got {value}")
+    for entry in dataclasses.fields(HeuristicsConfig):
+        settings = getattr(config, entry.name)
+        for setting in dataclasses.fields(settings):
+            value = getattr(settings, setting.name)
+            numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+            if numeric and not value >= 0:
+                raise ValueError(f"{prefix}.{entry.name}.{setting.name} must be >= 0, got {value}")
     try:
         re.compile(config.light_type_code.pattern)
     except re.error as exc:
@@ -333,7 +325,7 @@ def is_traffic_light(*, signal_type: Optional[str], config: HeuristicsConfig) ->
 
 
 @_heuristic(id="H2", name="centre_line_validity")
-def names_only_the_centre_line(*, validity_from: object, validity_to: object, config: HeuristicsConfig) -> bool:
+def names_only_the_centre_line(*, validity_from: object, validity_to: object) -> bool:
     """A ``<validity>`` naming only lane 0 names no lane.
 
     Assumes: lane 0 is the reference line, not a lane; an exporter that writes
@@ -354,7 +346,7 @@ def names_only_the_centre_line(*, validity_from: object, validity_to: object, co
 
 
 @_heuristic(id="H3", name="facing_lanes")
-def faces(*, orientation: Optional[str], travels_with_s: bool, config: HeuristicsConfig) -> bool:
+def faces(*, orientation: Optional[str], travels_with_s: bool) -> bool:
     """A control no lane names covers the drivable lanes that travel the way it faces.
 
     Assumes: OpenDRIVE ``orientation`` ``+`` means valid for traffic travelling in +s, ``-`` in -s,
@@ -377,7 +369,7 @@ def faces(*, orientation: Optional[str], travels_with_s: bool, config: Heuristic
 
 
 @_heuristic(id="H4", name="stop_at_signal_s")
-def stops_at_signal_s(*, on_junction_road: bool, config: HeuristicsConfig) -> bool:
+def stops_at_signal_s(*, on_junction_road: bool) -> bool:
     """Outside a junction a control's stopline sits at the signal's (or reference's) s on each lane.
 
     Assumes: a control on a junction's connecting road (the CARLA layout) stops traffic where the
@@ -434,7 +426,7 @@ def writes_sign_signal_stoplines(*, covered_by_stencil: bool) -> bool:
 
 
 @_heuristic(id="H7", name="non_vehicle_light")
-def is_vehicle_light(*, has_drivable_lane: bool, config: HeuristicsConfig) -> bool:
+def is_vehicle_light(*, has_drivable_lane: bool) -> bool:
     """A light whose road has no drivable lane on either side is a pedestrian or cyclist signal.
 
     Assumes: a light that no lane names, on a road with only sidewalk, shoulder or other

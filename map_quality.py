@@ -188,7 +188,8 @@ def _lanelet_centre(*, lanelet) -> list[float]:
     return [round(sum(p.x for p in ends) / 4, 2), round(sum(p.y for p in ends) / 4, 2)]
 
 
-def _fault(*, element: str, location: Sequence[float], detail: str = "") -> dict[str, Any]:
+def fault(*, element: str, location: Sequence[float], detail: str = "") -> dict[str, Any]:
+    """One place a check fails (or a finding): ``{id, location, detail}``, location rounded to 1 cm."""
     return {"id": element, "location": [round(float(v), 2) for v in location[:2]], "detail": detail}
 
 
@@ -199,7 +200,7 @@ def unrouted_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
         return []
     graph = vehicle_routing_graph(lanelet_map=outputs.lanelet_map)
     return [
-        _fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll))
+        fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll))
         for ll in lanelets
         if not (
             graph.following(ll)
@@ -266,7 +267,7 @@ def _seams(*, outputs: ConversionOutputs) -> tuple[int, list[dict[str, Any]]]:
                 and ll.rightBound[-1].id == other.rightBound[0].id
             ):
                 unshaken.append(
-                    _fault(
+                    fault(
                         element=f"lanelets {ll.id} -> {other.id}",
                         location=(left_ends[i] + right_ends[i]) / 2,
                     )
@@ -326,7 +327,7 @@ def lanelets_without_subtype(*, outputs: ConversionOutputs) -> int:
 def subtypeless_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
     """The lanelets with no ``subtype`` tag, with their centres."""
     return [
-        _fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll))
+        fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll))
         for ll in outputs.lanelet_map.laneletLayer
         if "subtype" not in ll.attributes
     ]
@@ -347,7 +348,7 @@ def furthest_point(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
     if not len(outputs.points):
         return []
     index = int(np.abs(outputs.points[:, :2]).max(axis=1).argmax())
-    return [_fault(element="point", location=outputs.points[index, :2])]
+    return [fault(element="point", location=outputs.points[index, :2])]
 
 
 def osm_size_bytes(*, outputs: ConversionOutputs) -> int:
@@ -402,7 +403,7 @@ def crossed_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
             if found
         ]
         if kinds:
-            faults.append(_fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll), detail=" ".join(kinds)))
+            faults.append(fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll), detail=" ".join(kinds)))
     return faults
 
 

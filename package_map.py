@@ -18,6 +18,7 @@ import sys
 import zipfile
 
 from conversion_common import MAP_SERVICE_MAX_OSM_MB, REFUSED_EXIT_CODE
+from traffic_light_fsm import load_metadata, resolve_map_path
 
 METADATA_PATH_FIELDS = ("lanelet_path", "mesh_path", "stoplines_path", "traffic_light_controller_path")
 
@@ -45,13 +46,12 @@ def package(*, map_dir: str, out: str | None = None, max_osm_mb: float = MAP_SER
     metadata_path = os.path.join(map_dir, "metadata.json")
     if not os.path.isfile(metadata_path):
         raise PackageRefused(f"{map_dir} has no metadata.json (not converted, or its outputs were withheld)")
-    with open(metadata_path) as f:
-        metadata = json.load(f)
+    metadata = load_metadata(map_dir=map_dir)
     name = metadata["name"]
     files = [metadata_path]
     for field in METADATA_PATH_FIELDS:
         if metadata.get(field):
-            path = os.path.join(map_dir, metadata[field])
+            path = resolve_map_path(map_dir=map_dir, name=metadata[field])
             if not os.path.isfile(path):
                 raise PackageRefused(f"{path} (metadata.json {field}) does not exist")
             files.append(path)
@@ -59,7 +59,7 @@ def package(*, map_dir: str, out: str | None = None, max_osm_mb: float = MAP_SER
     if not os.path.isfile(provenance_path):
         raise PackageRefused(f"{provenance_path} does not exist; the package could not be stamped")
     files.append(provenance_path)
-    osm_path = os.path.join(map_dir, metadata["lanelet_path"])
+    osm_path = resolve_map_path(map_dir=map_dir, name=metadata["lanelet_path"])
     osm_mb = os.path.getsize(osm_path) / (1 << 20)
     if osm_mb > max_osm_mb:
         raise PackageRefused(f"{osm_path} is {osm_mb:.1f} MB, over the {max_osm_mb:g} MB limit of the map service")

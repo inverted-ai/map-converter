@@ -49,6 +49,7 @@ from commonroad.scenario.lanelet import LaneletNetwork
 import autocritic_report
 import conversion_heuristics
 import conversion_report
+import map_quality
 import map_validation
 import traffic_controls
 from conversion_common import (
@@ -728,20 +729,16 @@ def parse_xodr(
             f'placed. Correct their s, or convert with autofix.enabled=true and '
             f'autofix.heuristics.signal_past_road_end.enabled=true.'
         )
-    dropped_signals = [
-        {
-            'id': f'signal {signal.id}',
-            'location': [
-                round(v, 2)
-                for v in traffic_controls.element_position(road=road, s=float(signal.s), t=float(signal.t), frame=frame)
-            ],
-            'detail': f'past the end of road {road.id}',
-        }
-        for road, signal, s in past_end
-        if s is None
-    ]
+    dropped_signals = []
     for road, signal, s in past_end:
         if s is None:
+            dropped_signals.append(
+                map_quality.fault(
+                    element=f'signal {signal.id}',
+                    location=_signal_position(road=road, signal=signal, frame=frame),
+                    detail=f'past the end of road {road.id}',
+                )
+            )
             road.signals.remove(signal)
         else:
             signal.s = s
@@ -777,6 +774,7 @@ def traffic_side_of(*, opendrive) -> Optional[str]:
 def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
     """Convert OpenDRIVE to CommonRoad, then write the Lanelet2 ``.osm`` within the size budget."""
     heuristics = conversion_heuristics.applied_heuristics(autofix=cfg.autofix)
+    tolerance = conversion_heuristics.shared_node_tolerance(config=heuristics)
     # Convert OpenDRIVE to CommonRoad
     open_drive_config = OpenDriveConfig()
     open_drive_config.min_delta_s = 1.5
@@ -824,7 +822,7 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
         l2osm = CR2LaneletConverter(
             config=lanelet2_config,
             cr_config=commonroad_config,
-            shared_node_tolerance=conversion_heuristics.shared_node_tolerance(config=heuristics),
+            shared_node_tolerance=tolerance,
         )
         osm = l2osm.convert_lanelet_network(lanelet_network, transformer=parsed.frame)
         if next(osm.iter('node'), None) is None:
@@ -847,11 +845,11 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
             f'Raise simplify_max_iterations, raise simplify_tolerance, or relax osm_target_bytes.'
         )
 
-    record_seam_gaps(lanelet_network=lanelet_network, heuristics=heuristics, frame=parsed.frame)
-    tolerance = conversion_heuristics.shared_node_tolerance(config=heuristics)
+    gaps = linked_end_gaps(lanelet_network=lanelet_network, frame=parsed.frame)
+    record_seam_gaps(gaps=gaps, heuristics=heuristics)
     linked_gaps = [
-        {'id': f'lanelets {pred} -> {succ}', 'location': [round(v, 2) for v in middle], 'detail': f'{gap:.2f} m apart'}
-        for pred, succ, gap, middle in linked_end_gaps(lanelet_network=lanelet_network, frame=parsed.frame)
+        map_quality.fault(element=f'lanelets {pred} -> {succ}', location=middle, detail=f'{gap:.2f} m apart')
+        for pred, succ, gap, middle in gaps
         if gap > tolerance
     ]
     osm_path = os.path.join(cfg.dir_path, f"{parsed.location}.osm")
@@ -889,20 +887,16 @@ def linked_end_gaps(
 
 
 def record_seam_gaps(
-    *, lanelet_network: LaneletNetwork, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
-) -> int:
-    """Record H10 for every predecessor/successor pair of lanelets whose ends lie a little apart; return how many."""
-    count = 0
-    for pred, succ, gap, middle in linked_end_gaps(lanelet_network=lanelet_network, frame=frame):
-        if not conversion_heuristics.joins_seam(gap_m=gap, config=heuristics):
-            continue
-        conversion_heuristics.record(
-            heuristic_id='H10', element_id=f'{pred}->{succ}', action='seam_shared',
-            message=f'lanelets {pred} -> {succ}: linked ends {gap:.2f} m apart - one seam',
-            config=heuristics, location=middle,
-        )
-        count += 1
-    return count
+    *, gaps: list[tuple[int, int, float, tuple[float, float]]], heuristics: conversion_heuristics.HeuristicsConfig
+) -> None:
+    """Record H10 for every pair of :func:`linked_end_gaps` whose ends lie a little apart."""
+    for pred, succ, gap, middle in gaps:
+        if conversion_heuristics.joins_seam(gap_m=gap, config=heuristics):
+            conversion_heuristics.record(
+                heuristic_id='H10', element_id=f'{pred}->{succ}', action='seam_shared',
+                message=f'lanelets {pred} -> {succ}: linked ends {gap:.2f} m apart - one seam',
+                config=heuristics, location=middle,
+            )
 
 
 def trim(*, cfg: MapConversionConfig, osm_path: str, projector) -> None:

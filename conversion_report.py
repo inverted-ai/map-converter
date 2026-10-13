@@ -54,6 +54,11 @@ COUNTED_TAGS = (
 )
 
 
+def heuristic_number(key: str) -> int:
+    """Sort key of a heuristic id: ``H10`` after ``H9``."""
+    return int(key.removeprefix("H"))
+
+
 class ConversionReport(logging.Handler):
     """A logging handler that keeps every degradation record of one conversion."""
 
@@ -116,8 +121,10 @@ class ConversionReport(logging.Handler):
         return {
             "elements": elements,
             "unrecognised_tokens": sorted(tokens.values(), key=lambda t: (-t["count"], str(t["element"]))),
-            "heuristics": dict(sorted(heuristics[True].items(), key=lambda item: int(item[0][1:]))),
-            "heuristics_not_applied": dict(sorted(heuristics[False].items(), key=lambda item: int(item[0][1:]))),
+            "heuristics": dict(sorted(heuristics[True].items(), key=lambda item: heuristic_number(item[0]))),
+            "heuristics_not_applied": dict(
+                sorted(heuristics[False].items(), key=lambda item: heuristic_number(item[0]))
+            ),
             "records_by_kind": dict(sorted(collections.Counter(str(r["kind"]) for r in self.records).items())),
         }
 

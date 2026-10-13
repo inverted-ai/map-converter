@@ -352,11 +352,15 @@ def outcome_message(*, profile: str, failed: dict[str, list[str]]) -> Optional[s
     return message
 
 
+def _formula_name(*, formula: Any) -> str:
+    return getattr(formula, "name", str(formula))
+
+
 def verifier_formula_names() -> list[str]:
     """Names of every formula CommonRoad's ``MapVerifier`` can check."""
     from crdesigner.verification_repairing.verification.formula_ids import extract_formula_ids
 
-    return list(dict.fromkeys(getattr(formula, "name", str(formula)) for formula in extract_formula_ids()))
+    return list(dict.fromkeys(_formula_name(formula=formula) for formula in extract_formula_ids()))
 
 
 def run_map_verifier(
@@ -431,7 +435,7 @@ def _verify_in_child(*, lanelet_network: Any, partitioned: bool, formulas: list[
         config.verification.formulas = [
             formula
             for formula in extract_formula_ids()
-            if not formulas or getattr(formula, "name", str(formula)) in formulas
+            if not formulas or _formula_name(formula=formula) in formulas
         ]
         config.evaluation.partitioned = partitioned
         states = MapVerifier(lanelet_network, config).verify()
@@ -439,7 +443,7 @@ def _verify_in_child(*, lanelet_network: Any, partitioned: bool, formulas: list[
             {
                 "status": "ok",
                 "invalid_states": {
-                    getattr(formula, "name", str(formula)): {
+                    _formula_name(formula=formula): {
                         "count": len(locations),
                         "examples": [list(location) for location in sorted(locations)[:VERIFIER_EXAMPLES]],
                     }

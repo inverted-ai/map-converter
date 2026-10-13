@@ -23,6 +23,7 @@ from torchdrivesim.map import Stopline
 
 import conversion_heuristics as heuristics
 import conversion_report
+import map_quality
 import map_validation
 
 logger = logging.getLogger(__name__)
@@ -100,13 +101,17 @@ def _travels_with_s(*, plane) -> bool:
     return not plane.parametric_lanes[0].reverse
 
 
-def _lane_entry(*, plane) -> LaneStop:
-    """Where the lane enters its section, computed exactly as the vendored lanelet vertices are."""
-    first = plane.parametric_lanes[0]
-    elevation = first.calc_elevation(0.0)
-    inner = first.calc_border("inner", 0.0)[0]
-    outer = first.calc_border("outer", 0.0, compute_curvature=False)[0]
+def _lane_stop(*, lane, distance: float) -> LaneStop:
+    """Where a (parametric) lane is ``distance`` along it, computed exactly as the vendored lanelet vertices are."""
+    elevation = lane.calc_elevation(distance)
+    inner = lane.calc_border("inner", distance)[0]
+    outer = lane.calc_border("outer", distance, compute_curvature=False)[0]
     return LaneStop(inner=np.array([*inner, elevation]), outer=np.array([*outer, elevation]))
+
+
+def _lane_entry(*, plane) -> LaneStop:
+    """Where the lane enters its section."""
+    return _lane_stop(lane=plane.parametric_lanes[0], distance=0.0)
 
 
 def _section_at(*, road, s: float):
@@ -142,10 +147,7 @@ def _lane_at_s(*, plane, section, s: float) -> LaneStop:
     """Where the lane is at road position ``s`` (inside ``section``)."""
     local = min(max(s - section.sPos, 0.0), plane.length)
     distance = local if _travels_with_s(plane=plane) else plane.length - local
-    elevation = plane.calc_elevation(distance)
-    inner = plane.calc_border("inner", distance)[0]
-    outer = plane.calc_border("outer", distance, compute_curvature=False)[0]
-    return LaneStop(inner=np.array([*inner, elevation]), outer=np.array([*outer, elevation]))
+    return _lane_stop(lane=plane, distance=distance)
 
 
 def element_position(*, road, s: float, t: float, frame) -> tuple[float, float]:
@@ -181,7 +183,7 @@ def _bound_stops(
     stops, found = [], False
     for road, lane_id in index.bound.get(signal_id, []):
         first = road.lanes.lane_sections[0]
-        at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config)
+        at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None)
         found = found or at_s
         if not (at_s and heuristics.applies(heuristic_id="H4", config=config)):
             stops.append(_lane_entry(plane=_plane(index=index, road=road, section=first, lane_id=lane_id)))
@@ -195,12 +197,15 @@ def _bound_stops(
     return stops, found
 
 
-def _scoped(*, element) -> tuple[bool, bool]:
-    """(has a validity, the validity names only the centre line) of a signal or reference."""
-    validity_from = getattr(element, "validity_from", None)
-    validity_to = getattr(element, "validity_to", None)
-    return validity_from is not None, validity_from is not None and validity_to is not None and (
-        float(validity_from) == 0.0 and float(validity_to) == 0.0
+def _has_validity(*, element) -> bool:
+    """Whether a signal or reference has a ``<validity>``."""
+    return getattr(element, "validity_from", None) is not None
+
+
+def _names_only_the_centre_line(*, element) -> bool:
+    """H2's detection on a signal or reference (which may lack a validity)."""
+    return heuristics.names_only_the_centre_line(
+        validity_from=getattr(element, "validity_from", None), validity_to=getattr(element, "validity_to", None)
     )
 
 
@@ -210,12 +215,9 @@ def _targets(*, index: _Index, signal_id: str, config: heuristics.HeuristicsConf
     references = index.references.get(signal_id, [])
     centre_only = False
     for _, element in elements + references:
-        scoped, centre = _scoped(element=element)
-        if centre and heuristics.names_only_the_centre_line(
-            validity_from=element.validity_from, validity_to=element.validity_to, config=config
-        ):
+        if _names_only_the_centre_line(element=element):
             centre_only = True
-        elif scoped:
+        elif _has_validity(element=element):
             return None
     if centre_only and not heuristics.record(
         heuristic_id="H2", element_id=signal_id, action="no_lane_scope",
@@ -238,7 +240,7 @@ def _facing_stops(
         if not sections:
             continue
         at_s = heuristics.stops_at_signal_s(
-            on_junction_road=road.junction is not None, config=config
+            on_junction_road=road.junction is not None
         ) and heuristics.applies(heuristic_id="H4", config=config)
         candidates = []
         for section in sections:
@@ -255,7 +257,7 @@ def _facing_stops(
             entry_sections = {True: sections[0], False: sections[-1]}
             chosen = [(sec, p) for sec, p in candidates if sec is entry_sections[_travels_with_s(plane=p)]]
         for section, plane in chosen:
-            if not heuristics.faces(orientation=target.orientation, travels_with_s=_travels_with_s(plane=plane), config=config):
+            if not heuristics.faces(orientation=target.orientation, travels_with_s=_travels_with_s(plane=plane)):
                 continue
             stop = _lane_at_s(plane=plane, section=section, s=target.s) if at_s else _lane_entry(plane=plane)
             distance = _junction_distance(road=road, s=target.s, travels_with_s=_travels_with_s(plane=plane))
@@ -301,13 +303,8 @@ def _sign_stops(
     scoped = [
         (road, element)
         for road, element in elements
-        if _scoped(element=element)[0]
-        and not (
-            heuristics.names_only_the_centre_line(
-                validity_from=element.validity_from, validity_to=element.validity_to, config=config
-            )
-            and heuristics.applies(heuristic_id="H2", config=config)
-        )
+        if _has_validity(element=element)
+        and not (_names_only_the_centre_line(element=element) and heuristics.applies(heuristic_id="H2", config=config))
     ]
     location = _location(index=index, signal_id=signal_id, frame=frame)
     if not scoped:
@@ -326,7 +323,7 @@ def _sign_stops(
             plane = None if lane_id == 0 else _plane(index=index, road=road, section=section, lane_id=lane_id)
             if plane is None or plane.type not in drivable_types:
                 continue
-            at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None, config=config)
+            at_s = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None)
             found = found or at_s
             if at_s and heuristics.applies(heuristic_id="H4", config=config):
                 stop = _lane_at_s(plane=plane, section=section, s=s)
@@ -424,9 +421,9 @@ def _sign_kind(*, sign) -> Optional[str]:
     return next((SIGN_AGENT_TYPES[name] for name in sorted(names) if name in SIGN_AGENT_TYPES), None)
 
 
-def _stencil_rows(*, road_network, frame, within: Callable[..., bool]) -> tuple[list[dict], int]:
-    """Rows of the painted stop/yield stencils inside the trim, and how many there are."""
-    rows, count = [], 0
+def _stencil_rows(*, road_network, frame, within: Callable[..., bool]) -> list[dict]:
+    """Rows of the painted stop/yield stencils inside the trim."""
+    rows = []
     stencils = [("stop_sign", x) for x in road_network._iai_stop_signs] + [
         ("yield_sign", x) for x in road_network._iai_yield_signs
     ]
@@ -435,13 +432,12 @@ def _stencil_rows(*, road_network, frame, within: Callable[..., bool]) -> tuple[
         x, y = (float(v) for v in frame.to_local(xy[0], xy[1]))
         if not within(x=x, y=y, z=z):
             continue
-        count += 1
         stopline = Stopline(
             actor_id=object_id, agent_type=agent_type, x=x, y=y,
             length=1.0, width=float(width), orientation=float(orientation),
         )
         rows.append(dataclasses.asdict(stopline))
-    return rows, count
+    return rows
 
 
 def control_stoplines(
@@ -488,7 +484,7 @@ def control_stoplines(
             index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
         )
         light_stops[signal_id] = stops
-        if heuristics.is_vehicle_light(has_drivable_lane=is_vehicle, config=config) or not heuristics.record(
+        if heuristics.is_vehicle_light(has_drivable_lane=is_vehicle) or not heuristics.record(
             heuristic_id="H7", element_id=signal_id, action="not_a_vehicle_light",
             message=f"light {signal_id}: its road has no drivable lane - not counted as a vehicle light",
             config=config, location=_location(index=index, signal_id=signal_id, frame=frame),
@@ -507,13 +503,13 @@ def control_stoplines(
                 rows.append(row)
                 lit.add(signal_id)
 
-    stencil_rows, stencil_count = _stencil_rows(road_network=road_network, frame=frame, within=within)
+    stencil_rows = _stencil_rows(road_network=road_network, frame=frame, within=within)
     rows += stencil_rows
     stencil_xy = {
         agent_type: np.array([[r["x"], r["y"]] for r in stencil_rows if r["agent_type"] == agent_type]).reshape(-1, 2)
         for agent_type in SIGN_AGENT_TYPES.values()
     }
-    signs, signs_missing = stencil_count, []
+    signs, signs_missing = len(stencil_rows), []
     sign_rows_written: list[dict] = []
     for sign in road_network._traffic_signs:
         agent_type = _sign_kind(sign=sign)
@@ -544,10 +540,10 @@ def control_stoplines(
             index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
         )
         limit = config.sign_signal_stoplines.max_junction_distance_m
-        too_far = [stop.junction_distance_m for stop in stops if limit is not None and stop.junction_distance_m > limit]
-        written_distances = []
+        too_far, written_distances = [], []
         for stop in stops:
             if limit is not None and stop.junction_distance_m > limit:
+                too_far.append(stop.junction_distance_m)
                 continue
             row = _row(stop=stop, frame=frame, actor_id=sign.opendrive_id, agent_type=agent_type, within=within)
             if row is None or any(_same_spot(a=row, b=kept) for kept in sign_rows):
@@ -678,7 +674,7 @@ def report_painted_stop_lines(*, opendrive, frame) -> list[dict[str, Any]]:
                 extra={"kind": "not_converted", "element": tag, "id": str(element.id), "value": f"({x}, {y})",
                        "action": "listed"},
             )
-            listed.append({"id": f"{tag} {element.id}", "location": [x, y], "detail": "painted stop line"})
+            listed.append(map_quality.fault(element=f"{tag} {element.id}", location=(x, y), detail="painted stop line"))
     if listed:
         logger.info(f"{len(listed)} painted stop line(s) listed in the conversion report; none becomes a stopline")
     return listed

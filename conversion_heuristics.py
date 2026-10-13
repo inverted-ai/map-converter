@@ -83,7 +83,7 @@ class SignSignalStoplinesConfig:
     """H6.
 
     Attributes:
-        enabled: Whether it is applied (off by default).
+        enabled: Whether it is applied.
         max_junction_distance_m: A sign row is written only on a lane that enters a junction within
             this distance (m) of the sign, along the road; ``None`` writes it whatever the distance.
             30 m: on the corpus fast tier every H6 sign's nearest row is either within 3.9 m of the
@@ -93,7 +93,7 @@ class SignSignalStoplinesConfig:
             distance (m) along it of the row (the stencil is the stop).
     """
 
-    enabled: bool = False
+    enabled: bool = True
     max_junction_distance_m: Optional[float] = 30.0
     stencil_lane_distance_m: float = 10.0
 
@@ -406,7 +406,7 @@ def matches_stencil(*, distance_m: float, config: HeuristicsConfig) -> bool:
 
 @_heuristic(id="H6", name="sign_signal_stoplines")
 def writes_sign_signal_stoplines(*, covered_by_stencil: bool) -> bool:
-    """Stop and yield sign signals no stencil covers (H5) write their own stoplines (off by default).
+    """Stop and yield sign signals no stencil covers (H5) write their own stoplines.
 
     Assumes: a STOP/YIELD sign signal with no matching stencil (H5) stops traffic on the lanes it
     is bound to (validity, references, or H3), at its s outside a junction (H4). A sign's
@@ -417,7 +417,8 @@ def writes_sign_signal_stoplines(*, covered_by_stencil: bool) -> bool:
     the road (when set), or where a same-kind stencil lies within ``stencil_lane_distance_m`` along it.
 
     Evidence: CARLA maps and others carry many signs without a stencil (one map 136 yield signs,
-    another 39 signs and no stencil). Off until the rows it would add are reviewed.
+    another 39 signs and no stencil). On by default since gate G6, after the review of every row it adds
+    (decision 101; with the 30 m junction limit it adds rows on 15 fast-tier maps and removes none).
 
     Breaks when: a source places signs that do not mean a stop at that spot (e.g. advance
     warnings coded as STOP/YIELD); they become stoplines.

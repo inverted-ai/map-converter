@@ -49,7 +49,7 @@ Settings can also come from a YAML file, `config=/path/to/settings.yaml`, holdin
 ```yaml
 autofix:
   heuristics:
-    sign_signal_stoplines: {enabled: true}
+    sign_signal_stoplines: {enabled: false}
     sign_stencil_match: {max_distance_m: 5.0}
 autocritic:
   preset: strict
@@ -172,16 +172,16 @@ checks failed and exits with code 4. A failed `perfect` verdict also says whethe
 | L7 | `point_extent_m` | a point lies more than 100 km from the local origin | same |
 | L8 | `lanelets_without_subtype` | any lanelet lacks a `subtype` | same |
 | L9 | `origin_in_range` | `lanelet_map_origin` is not a valid latitude/longitude | same |
-| L10 | `linked_gaps` | listed, not judged (`max_linked_gaps`) | same |
-| L11 | `dropped_signals` | listed, not judged (`max_dropped_signals`) | same |
+| L10 | `linked_gaps` | any linked lanelet pair lies farther apart than the seam tolerance (`max_linked_gaps` 0) | listed, not judged |
+| L11 | `dropped_signals` | any signal was dropped past its road's end (`max_dropped_signals` 0) | listed, not judged |
 | L12 | `far_signals` | listed, not judged (`max_far_signals`; far = nearest stopline more than `far_signal_m`, 50 m) | same |
 | L13 | `not_converted` | listed, never judged | same |
 
 L10-L13 come from the conversion itself: lanelets the OpenDRIVE links whose ends lie farther apart than the seam
 tolerance (H10), so routing cannot cross; signals H14 dropped because they lie past their road's end; lights and
 signs whose nearest stopline row lies far from the signal; and painted stop lines (unrecognised and dropped
-elements are in the report's `unrecognised_tokens` and `elements`). Their limits are unset in both presets until
-the corpus review sets them; set one with `autocritic.thresholds.<name>`.
+elements are in the report's `unrecognised_tokens` and `elements`). Only `perfect` judges L10 and L11; L12 and
+L13 are listed in both presets. Set any limit with `autocritic.thresholds.<name>`.
 
 The output metrics come from `map_quality.py` (the same metrics `map_report.py` records). A metric that raises
 fails its check; one with nothing to measure (no seams, say) passes.
@@ -195,7 +195,7 @@ lists those with no stopline by OpenDRIVE id:
 2. A stop or yield sign needs a stopline. A sign can be a signal that the country's sign table reads as stop or
    yield (`206`/`205` in Germany, `R1-1` in the USA, for example; CommonRoad's US table has no yield sign), or a `Stencil_STOP`,
    `Stencil_GiveWay` or `Stencil_Yield_Triangles` object, which writes its own row. A sign signal is covered
-   by a stencil of the same kind near it (H5) or, with H6 on, by its own rows.
+   by a stencil of the same kind near it (H5) or by its own rows (H6).
 
 Painted stop lines never become, move or invent a stopline: a stop line with no light or sign is an unsigned
 stop. Each one is listed in the conversion report (`kind="not_converted"`, with its position) and under L13.
@@ -230,7 +230,7 @@ switched-off one would have acted (`applied` false), with its position.
 | H3 | `facing_lanes` | on | A light (or, with H6, a sign) no validity binds covers the drivable lanes its `orientation` faces, on its references' roads or else its own |
 | H4 | `stop_at_signal_s` | on | Outside a junction a stopline sits at the signal's (or reference's) s; on a junction's connecting road it sits where the lane enters |
 | H5 | `sign_stencil_match` | on, `max_distance_m=10` | A stop/yield stencil of the same kind within the distance of a sign (or, with H6, inside a lane the sign binds, within the distance of its row) is that sign's stopline |
-| H6 | `sign_signal_stoplines` | off, `max_junction_distance_m=30`, `stencil_lane_distance_m=10` | The converter creates stopline rows for stop/yield sign signals (where H5 finds no stencil): lanes read in the lane section at the sign's (or reference's) s, on a junction road where the lane enters it, one row per lane; only on lanes that enter a junction within `max_junction_distance_m` of the sign, and not where a same-kind stencil lies within `stencil_lane_distance_m` along the lane |
+| H6 | `sign_signal_stoplines` | on, `max_junction_distance_m=30`, `stencil_lane_distance_m=10` | The converter creates stopline rows for stop/yield sign signals (where H5 finds no stencil): lanes read in the lane section at the sign's (or reference's) s, on a junction road where the lane enters it, one row per lane; only on lanes that enter a junction within `max_junction_distance_m` of the sign, and not where a same-kind stencil lies within `stencil_lane_distance_m` along the lane |
 | H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
 | H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |
 | H10 | `seam_tolerance` | on, `max_gap_m=1.0` | Linked lanelets whose ends lie up to `max_gap_m` apart share their end nodes, so routing crosses the seam; without it only ends within 1 cm do |
@@ -569,8 +569,8 @@ options:
   tags) and is never concatenated with its neighbours; links to it are kept only where the lanes meet, and a
   connector retracing it in reverse is dropped.
 - Traffic lights come from dynamic `<signal>` elements with a light type code (H1); stop and yield stoplines
-  from `<object>` elements with CARLA's stencil names, and from sign signals only with H6 on. Other vendors'
-  encodings may produce no sign stoplines.
+  from `<object>` elements with CARLA's stencil names and from sign signals (H6) on lanes that enter a junction
+  within 30 m. Other vendors' encodings may produce no sign stoplines.
 - Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; with an `x_0`/`y_0` false easting/northing, origin
   at the map centre) and `+proj=utm +zone=…` (origin at the map centre); malformed tokens in the string are ignored with a warning.
   A map with no `<geoReference>` has only local coordinates: it converts at latitude/longitude (0, 0) with a

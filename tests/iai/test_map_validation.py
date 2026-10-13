@@ -308,7 +308,9 @@ def test_signal_dropped_past_the_road_end_is_listed(tmp_path):
     sign = xb.SignalSpec(id="7", s=55.0, dynamic="no", type="206", validity=(-1, -1))
     verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=50.0, signals=[sign])])
     check = _check(verdict=verdict, name="dropped_signals")
-    assert (check["value"], check["passed"], check["limit"]) == (1, True, None)
+    # Without a preset the checks are perfect's, for information: perfect allows no dropped signal.
+    assert (check["value"], check["passed"], check["limit"]) == (1, False, 0)
+    assert verdict["status"] == "not_judged"
     assert check["locations"][0]["id"] == "signal 7"
 
 
@@ -351,3 +353,10 @@ def test_painted_stop_lines_are_listed_as_not_converted(tmp_path):
     check = _check(verdict=verdict, name="not_converted")
     assert [(place["id"], place["detail"]) for place in check["locations"]] == [("object 91", "painted stop line")]
     assert check["limit"] is None
+
+
+
+def test_perfect_allows_no_linked_gap_and_no_dropped_signal():
+    assert (mv.PROFILES["perfect"].max_linked_gaps, mv.PROFILES["perfect"].max_dropped_signals) == (0, 0)
+    assert (mv.PROFILES["strict"].max_linked_gaps, mv.PROFILES["strict"].max_dropped_signals) == (None, None)
+    assert mv.PROFILES["perfect"].max_far_signals is None

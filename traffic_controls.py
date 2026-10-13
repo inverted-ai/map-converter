@@ -231,17 +231,17 @@ def _targets(*, index: _Index, signal_id: str, config: heuristics.HeuristicsConf
 
 def _facing_stops(
     *, index: _Index, targets: list[Target], drivable_types: frozenset[str], config: heuristics.HeuristicsConfig
-) -> tuple[list[LaneStop], bool]:
-    """Stops on the drivable lanes the targets face (H3, placed per H4), and whether any target road has a drivable lane."""
-    stops, any_drivable = [], False
+) -> tuple[list[LaneStop], bool, bool]:
+    """Stops on the drivable lanes the targets face (H3, placed per H4), whether any target road has a drivable
+    lane, and whether H4 detected a target off a junction with a facing lane."""
+    stops, any_drivable, placed_at_s = [], False, False
     for target in targets:
         road = target.road
         sections = road.lanes.lane_sections
         if not sections:
             continue
-        at_s = heuristics.stops_at_signal_s(
-            on_junction_road=road.junction is not None
-        ) and heuristics.applies(heuristic_id="H4", config=config)
+        detected = heuristics.stops_at_signal_s(on_junction_road=road.junction is not None)
+        at_s = detected and heuristics.applies(heuristic_id="H4", config=config)
         candidates = []
         for section in sections:
             for lane in section.right_lanes + section.left_lanes:
@@ -262,7 +262,8 @@ def _facing_stops(
             stop = _lane_at_s(plane=plane, section=section, s=target.s) if at_s else _lane_entry(plane=plane)
             distance = _junction_distance(road=road, s=target.s, travels_with_s=_travels_with_s(plane=plane))
             stops.append(dataclasses.replace(stop, junction_distance_m=distance))
-    return stops, any_drivable
+            placed_at_s = placed_at_s or detected
+    return stops, any_drivable, placed_at_s
 
 
 def _lane_across_sections(*, road, lane_id: int, start, end) -> Optional[int]:
@@ -307,6 +308,12 @@ def _sign_stops(
         and not (_names_only_the_centre_line(element=element) and heuristics.applies(heuristic_id="H2", config=config))
     ]
     location = _location(index=index, signal_id=signal_id, frame=frame)
+    if scoped and any(_names_only_the_centre_line(element=element) for _, element in elements):
+        heuristics.record(
+            heuristic_id="H2", element_id=signal_id, action="no_lane_scope",
+            message=f"sign {signal_id}: a validity names only lane 0 - that element is treated as having no validity",
+            config=config, location=location,
+        )
     if not scoped:
         stops, _ = _unscoped_stops(
             index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
@@ -371,13 +378,18 @@ def _unscoped_stops(
     targets = _targets(index=index, signal_id=signal_id, config=config, frame=frame)
     if targets is None:
         return [], True
-    stops, any_drivable = _facing_stops(index=index, targets=targets, drivable_types=drivable_types, config=config)
+    stops, any_drivable, placed_at_s = _facing_stops(
+        index=index, targets=targets, drivable_types=drivable_types, config=config
+    )
+    location = _location(index=index, signal_id=signal_id, frame=frame)
     if not heuristics.record(
         heuristic_id="H3", element_id=signal_id, action="bound" if stops else "no_facing_lane",
         message=f"signal {signal_id}: no lane named - {len(stops)} lane(s) it faces",
-        config=config, location=_location(index=index, signal_id=signal_id, frame=frame),
+        config=config, location=location,
     ):
         return [], True
+    if placed_at_s:
+        _record_placed_at_s(signal_id=signal_id, config=config, location=location)
     return stops, any_drivable
 
 
@@ -540,7 +552,7 @@ def control_stoplines(
             index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
         )
         limit = config.sign_signal_stoplines.max_junction_distance_m
-        too_far, written_distances = [], []
+        too_far, written_distances, lanes_with_stencil = [], [], 0
         for stop in stops:
             if limit is not None and stop.junction_distance_m > limit:
                 too_far.append(stop.junction_distance_m)
@@ -555,11 +567,11 @@ def control_stoplines(
                 by_sign = same["actor_id"]
                 continue
             gap = _stencil_gap_on_lane(row=row, stencils=stencil_xy[agent_type])
-            if gap <= config.sign_signal_stoplines.stencil_lane_distance_m and heuristics.applies(
-                heuristic_id="H5", config=config
-            ):
-                by_stencil = True
-                continue
+            if gap <= config.sign_signal_stoplines.stencil_lane_distance_m:
+                lanes_with_stencil += 1
+                if heuristics.applies(heuristic_id="H5", config=config):
+                    by_stencil = True
+                    continue
             sign_rows.append(row)
             written_distances.append(stop.junction_distance_m)
         if by_stencil and not sign_rows:
@@ -569,6 +581,13 @@ def control_stoplines(
                 config=config, location=location,
             )
             continue
+        if lanes_with_stencil:
+            heuristics.record(
+                heuristic_id="H5", element_id=signal_id, action="stencil_on_some_lanes",
+                message=f"sign {signal_id}: a {agent_type} stencil on {lanes_with_stencil} of the lanes it binds is "
+                "their stopline",
+                config=config, location=location,
+            )
         if by_sign is not None and not sign_rows:
             heuristics.record(
                 heuristic_id="H6", element_id=signal_id, action="same_stop_as_another_sign",

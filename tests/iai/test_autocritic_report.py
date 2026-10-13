@@ -100,7 +100,7 @@ def test_conversion_writes_the_report_next_to_the_outputs(tmp_path):
     assert result.returncode == 0, result.stderr
     report = json.loads((tmp_path / "case_autocritic.json").read_text())
     keys = {(s["kind"], s["key"]) for s in report["sections"]}
-    assert ("would_have_fixed", "H6") in keys  # sign stoplines are off by default
+    assert ("autofix", "H6") in keys  # H6 decided the sign gets no row: its lane reaches no junction
     assert ("metric", "routing_edge_pct") in keys
     assert "data:image/png;base64," in (tmp_path / "case_autocritic.html").read_text()
 

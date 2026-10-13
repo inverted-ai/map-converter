@@ -85,6 +85,8 @@ PROFILES = {
         min_seam_handshake_pct=100.0,
         min_crossed_count=1,
         max_crossed_fraction=0.0,
+        max_linked_gaps=0,
+        max_dropped_signals=0,
     ),
     "strict": ValidationConfig(
         min_routing_edge_pct=95.0,

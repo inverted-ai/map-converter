@@ -156,7 +156,7 @@ def test_dynamic_signal_without_a_light_type_is_a_sign(tmp_path):
     out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])])
     assert out["controls"]["lights"] == 0
     assert _heuristic_ids(out=out, heuristic_id="H1") == ["71"]
-    # Read with the US sign table it is a STOP sign (no stopline: sign stoplines are off by default).
+    # Read with the US sign table it is a STOP sign (no stopline: its lane reaches no junction within H6's 30 m).
     assert _heuristic_ids(out=out, heuristic_id="H8") == ["71"]
     assert (out["controls"]["stop_yield_signs"], out["controls"]["signs_without_stopline"]) == (1, ["signal 71"])
 
@@ -353,9 +353,11 @@ def test_a_disabled_heuristic_records_what_it_would_have_changed(tmp_path):
     assert [str(i) for i in out["not_applied"]["H4"]["ids"]] == ["21"]
 
 
-def test_sign_signal_stoplines_off_by_default_are_reported_as_not_applied(tmp_path):
+def test_switched_off_sign_signal_stoplines_are_reported_as_not_applied(tmp_path):
     stop = xb.SignalSpec(id="31", s=40.0, dynamic="no", type="206", validity=(-1, -1))
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])])
+    out = _convert(
+        tmp_path=tmp_path, roads=[_plain_road(signals=[stop])], **{"autofix.heuristics.sign_signal_stoplines.enabled": "false"}
+    )
     assert [row for row in out["rows"] if row["agent_type"] == "stop_sign"] == []
     assert [str(i) for i in out["not_applied"]["H6"]["ids"]] == ["31"]
 
@@ -374,3 +376,36 @@ def test_every_heuristic_has_an_id_a_name_a_switch_and_a_full_docstring():
     for h in ch.HEURISTICS:
         assert h.name in switches, h.name
         assert all(part in h.doc for part in ("Assumes:", "Evidence:", "Breaks when:")), h.id
+
+
+
+def test_sign_signal_stoplines_are_on_by_default():
+    assert ch.HeuristicsConfig().sign_signal_stoplines.enabled
+
+
+def test_unscoped_light_placed_at_its_s_records_h4(tmp_path):
+    # No validity: H3 binds the lane it faces, H4 places the row at the signal's s (both recorded).
+    light = xb.SignalSpec(id="43", s=40.0, orientation="+")
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])])
+    assert [row[:2] for row in _rows(out=out)] == [("43", 40.0)]
+    assert _heuristic_ids(out=out, heuristic_id="H3") == ["43"]
+    assert _heuristic_ids(out=out, heuristic_id="H4") == ["43"]
+
+
+def test_partly_scoped_sign_records_its_centre_line_validity(tmp_path):
+    roads, junctions, _ = xb.junction_map(with_signals=False)
+    roads[0].signals.append(xb.SignalSpec(id="88", s=45.0, t=-5.0, dynamic="no", type="206", validity=(0, 0)))
+    roads[1].signal_references.append(xb.SignalReferenceSpec(id="88", s=0.0, validity=(-1, -1)))
+    out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions)
+    assert _rows(out=out, agent_type="stop_sign") == [("88", 50.0, LANE_RIGHT_Y, 0.0)]
+    assert _heuristic_ids(out=out, heuristic_id="H2") == ["88"]
+
+
+def test_stencil_covering_some_of_a_signs_lanes_is_recorded(tmp_path):
+    # The sign binds lanes -1 and -2; a stop stencil lies on lane -1 only, so lane -2 gets the sign's row.
+    stop = xb.SignalSpec(id="89", s=40.0, t=-12.0, dynamic="no", type="206", validity=(-2, -1))
+    road = _plain_road(signals=[stop], n_right=2, objects=[xb.ObjectSpec(id="9", s=38.0)])
+    out = _convert(tmp_path=tmp_path, roads=[road], **H6_ON_ANY_DISTANCE)
+    assert sorted(row[0] for row in _rows(out=out, agent_type="stop_sign")) == ["89", "9"]
+    (finding,) = [r for r in _findings(out=out, heuristic_id="H5") if r["id"] == "89"]
+    assert finding["action"] == "stencil_on_some_lanes" and finding["applied"]

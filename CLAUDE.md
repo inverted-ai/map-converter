@@ -28,7 +28,8 @@ This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonR
 - `conversion_heuristics.py` — **every guess about the XODR author's intent** (H1-H8, H10-H14: id, name = `HeuristicsConfig` entry, docstring with assumption / evidence / what breaks it), configured as `autofix.heuristics.<name>.<setting>=` (`autofix.enabled=false` switches all off: BasicConversion). Each rule function only detects; every detection is a `kind="heuristic"` record (`record`) with `applied` and a local `location`, and the call site acts only when it is applied. New guesses go here, not as special cases elsewhere.
 - `autocritic_report.py` — `<map>_autocritic.json` / self-contained `.html`: numbered AutoFix, would-have-fixed and failing-check items with a birdview and close-ups per section (`ReportConfig` = `report.*`); written by `convert_map` before a rejection withholds the outputs.
 - `conversion_report.py` — the `logging.Handler` `convert_map` attaches to `crdesigner.degradation`; writes `<map>_conversion_report.json` (element counts, unrecognised tokens, every record), also for failed runs.
-- `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers.
+- `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers (keeps the original as `<file>.orig`).
+- `package_map.py` — a converted map as the map service's upload ZIP, named and commented with the converter commit; refuses withheld outputs and an `.osm` over `MAP_SERVICE_MAX_OSM_MB` (30, also `osm_target_bytes`' default).
 - `convert_lanelet_to_opendrive.py` — reverse direction via CARLA's tools.
 - `crdesigner/` — **vendored** CommonRoad Scenario Designer. Treat as upstream.
 - `tests/` — upstream pytest suite (pytest + pytest-qt); `tests/iai/` — IAI tests and the synthetic XODR builder.

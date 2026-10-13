@@ -5,10 +5,12 @@ lowering node resolution. The user marks unwanted nodes/ways/relations with
 action="delete" during manual editing; this script removes those elements,
 strips dangling <nd>/<member> references from surviving ways and relations,
 cascades to ways that fall below 2 nodes and relations that fall below 2 members,
-and finally sweeps any newly-orphaned nodes. The file is overwritten in place.
+and finally sweeps any newly-orphaned nodes. The file is overwritten in place; the
+first prune keeps the original as ``<file>.orig`` (later prunes never overwrite it).
 """
 
 import argparse
+import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -23,11 +25,14 @@ def _has_action_delete(*, elem: ET.Element) -> bool:
     return False
 
 
-def prune(*, path: Path) -> None:
-    """Apply action="delete" markers in `path` and overwrite the file in place.
+def prune(*, path: Path) -> Path:
+    """Apply action="delete" markers in `path` and overwrite the file in place, keeping the original.
 
     Args:
         path: Path to an OSM XML file. Must exist and have <osm> as root.
+
+    Returns:
+        Absolute path of the kept original, ``<path>.orig`` (written by the first prune only).
 
     Raises:
         FileNotFoundError: If `path` does not exist or is not a regular file.
@@ -125,6 +130,10 @@ def prune(*, path: Path) -> None:
             root.remove(node)
             orphan_node_deletes += 1
 
+    path = path.resolve()
+    backup = path.with_name(path.name + ".orig")
+    if not backup.exists():
+        shutil.copy2(path, backup)
     tree.write(path, xml_declaration=True, encoding="UTF-8")
 
     size_after = path.stat().st_size
@@ -148,6 +157,8 @@ def prune(*, path: Path) -> None:
         f"single_member={single_member_relation_deletes})"
     )
     print(f"  size:      {size_before / mb:.2f} MB -> {size_after / mb:.2f} MB")
+    print(f"  original kept at {backup}")
+    return backup
 
 
 def main() -> None:
@@ -156,6 +167,7 @@ def main() -> None:
     parser.add_argument(
         "--path",
         type=Path,
+        required=True,
         help="Path to the OSM file to prune in place",
     )
     args = parser.parse_args()

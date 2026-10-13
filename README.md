@@ -74,8 +74,8 @@ exit code 3 and write nothing.
 | `trim_radius` | unset | Keep only lanelets and stoplines within this many metres of `center` (requires `center`). |
 | `trim_vertical_limits` | unset | `[min_z, max_z]`: stoplines outside the band are dropped; with `trim_radius`, lanelet points outside it are trimmed too. |
 | `simplify_tolerance` | `0.2` | Maximum lateral error (m) of the Douglas-Peucker simplification of lanelet boundaries; `0` disables it. |
-| `osm_target_bytes` | `1048576000` | Size budget for the `.osm`: the tolerance widens until the file fits, and the run fails if it never does. Unset disables the budget. |
-| `simplify_max_iterations` | `1` | Attempts at fitting the size budget. |
+| `osm_target_bytes` | `31457280` (30 MiB) | Size budget for the `.osm`, by default the Inverted AI map service's upload limit: the tolerance widens until the file fits, and the run fails if it never does. Unset disables the budget. |
+| `simplify_max_iterations` | `4` | Attempts at fitting the size budget (the tolerance doubles each time). |
 | `simplify_tolerance_factor` | `2.0` | Factor the tolerance grows by per attempt. |
 | `allow_zero_origin` | `false` | Convert a map whose `<geoReference>` is present but unusable at latitude/longitude (0, 0) instead of failing; when the `<geoReference>` and header `<offset>` put road geometry outside the projection, the offset is dropped too (file coordinates). (A map with no `<geoReference>` always converts at (0, 0), with a warning.) |
 | `verifier_timeout_s` | `0` | Cap in seconds on the CommonRoad map verifier the validation stage runs (see "Validation" below); `0` skips it (on large maps it takes minutes). A run that reaches the cap records `timeout` and carries on. |
@@ -440,10 +440,23 @@ options:
 ## Removing elements marked for deletion
 
 `prune_osm_deletes.py` applies `action="delete"` markers left by an OSM editor (e.g. JOSM) to a `.osm`,
-removes dangling references, and **overwrites the file in place**; keep a copy first.
+removes dangling references, and **overwrites the file in place**. The first prune keeps the original as
+`<file>.orig` next to it; later prunes never overwrite that copy.
 
 ```bash
 /path/to/map-converter/.venv/bin/python /path/to/map-converter/prune_osm_deletes.py --path /path/to/maps/MyMap/MyMap.osm
+```
+
+## Packaging a map for upload
+
+`package_map.py` writes the ZIP the Inverted AI map service accepts: `metadata.json`, the files it names (`.osm`,
+mesh, stoplines, traffic-light controller when present) and `<map>_provenance.json`, all at the ZIP's root. It is
+named `<map>_<converter commit>.zip` (12 characters; `unversioned` outside a git checkout), with the commit, its
+dirty flag and the conversion time in the ZIP comment. It refuses (exit code 3) a map whose outputs were withheld
+and an `.osm` over the service's 30 MiB limit (`--max-osm-mb`).
+
+```bash
+/path/to/map-converter/.venv/bin/python /path/to/map-converter/package_map.py /path/to/maps/MyMap
 ```
 
 ## Measuring conversions: `map_report.py`

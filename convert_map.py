@@ -51,7 +51,14 @@ import conversion_heuristics
 import conversion_report
 import map_validation
 import traffic_controls
-from conversion_common import REFUSED_EXIT_CODE, REJECTED_EXIT_CODE, MapRejected, git_identity, sha256_file
+from conversion_common import (
+    MAP_SERVICE_MAX_OSM_MB,
+    REFUSED_EXIT_CODE,
+    REJECTED_EXIT_CODE,
+    MapRejected,
+    git_identity,
+    sha256_file,
+)
 from opendrive_signal_groups import write_signal_groups
 
 
@@ -88,7 +95,8 @@ class MapConversionConfig:
         simplify_tolerance: Maximum lateral error (m) of the Douglas-Peucker simplification of
             lanelet boundaries before export; 0 or None disables it.
         osm_target_bytes: Size budget for the ``.osm``; the tolerance widens until the file fits
-            and the run fails if it never does. None disables the budget.
+            and the run fails if it never does. None disables the budget. Default: the map
+            service's limit (``MAP_SERVICE_MAX_OSM_MB``, 30 MiB).
         simplify_max_iterations: Attempts at fitting the size budget.
         simplify_tolerance_factor: Factor the tolerance grows by per attempt.
         allow_zero_origin: Convert a map whose ``<geoReference>`` is present but unusable at
@@ -119,8 +127,8 @@ class MapConversionConfig:
     trim_vertical_limits: Optional[Tuple[float, float]] = None
     # Raise (e.g. 0.5) for very large maps where file size matters more than curve fidelity.
     simplify_tolerance: Optional[float] = 0.2
-    osm_target_bytes: Optional[int] = 1000 * 1024 * 1024 #10 * 1024 * 1024
-    simplify_max_iterations: int = 1
+    osm_target_bytes: Optional[int] = MAP_SERVICE_MAX_OSM_MB << 20
+    simplify_max_iterations: int = 4
     simplify_tolerance_factor: float = 2.0
     allow_zero_origin: bool = False
     verifier_timeout_s: float = 0.0

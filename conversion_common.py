@@ -12,6 +12,9 @@ import subprocess
 # convert_map.py exits with this code when it declines a run on purpose (invalid configuration or
 # an input it will not place); Python itself uses 1 for exceptions and 2 for "can't open file".
 REFUSED_EXIT_CODE = 3
+# The Inverted AI map service refuses an .osm larger than this many MiB (driving-models
+# map_service/iai_map/settings.py max_map_size_mb); the converter's default size budget.
+MAP_SERVICE_MAX_OSM_MB = 30
 # convert_map.py exits with this code when AutoCritic's preset rejects the converted map (outputs withheld).
 REJECTED_EXIT_CODE = 4
 

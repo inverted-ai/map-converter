@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, List, Optional, Union
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.road_record import (
     RoadRecord,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
 
 if TYPE_CHECKING:
     from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import Road
@@ -233,6 +234,7 @@ class Lane:
 
     @type.setter
     def type(self, value):
+        value = translate("lane.type", value, getattr(self._parent_road, "id", None))
         if value not in self.laneTypes:
             road_id = getattr(self._parent_road, "id", None)
             logging.getLogger("crdesigner.degradation").warning(
@@ -611,7 +613,7 @@ class RoadMark:
 
     @type.setter
     def type(self, value):
-        self._type = str(value)
+        self._type = str(translate("roadMark.type", value))
 
     @property
     def weight(self) -> str:

@@ -13,7 +13,7 @@ Vendored code reports every input it cannot use as written through
   ``<tag>.<attribute>``.
 - ``id``: the enclosing road, signal, object or junction id, when known.
 - ``value``: the offending value (or a count, for aggregated records).
-- ``action``: what the converter did instead, e.g. ``dropped``, ``defaulted``, ``coerced``.
+- ``action``: what the converter did instead, e.g. ``dropped``, ``defaulted``, ``read_as_<name>`` (a vocabulary translation, ``kind="translated"``).
 """
 
 from __future__ import annotations

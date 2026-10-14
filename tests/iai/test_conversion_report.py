@@ -43,7 +43,7 @@ CASES = [
     ("unknown_object_type", _replace_first(text=_road_text(), old="<objects/>", new=_object(type="weirdThing")),
      [("unknown_value", "object.type")]),
     ("stopline_object", _replace_first(text=_road_text(), old="<objects/>", new=_object(type="stopline")),
-     [("coerced", "object.type")]),
+     [("translated", "object.type")]),
     ("unknown_object_orientation", _replace_first(text=_road_text(), old="<objects/>", new=_object(orientation="sideways")),
      [("unknown_value", "object.orientation")]),
     ("unknown_lane_type", xb.build_xodr(roads=[xb.RoadSpec(id="1", length=30.0, lane_sections=[

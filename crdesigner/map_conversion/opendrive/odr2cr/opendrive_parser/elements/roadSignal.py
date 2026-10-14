@@ -1,6 +1,8 @@
 import logging
 from typing import Union
 
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
+
 
 def _degraded(signal, attribute: str, value, replacement: str):
     """Record that a missing or unknown ``attribute`` value was replaced."""
@@ -135,6 +137,7 @@ class Signal:
 
     @dynamic.setter
     def dynamic(self, value):
+        value = translate("signal.dynamic", value, getattr(self, "_id", None))
         if value not in ["yes", "no"]:
             _degraded(self, "dynamic", value, "no")
             value = "no"
@@ -153,6 +156,7 @@ class Signal:
 
     @orientation.setter
     def orientation(self, value):
+        value = translate("signal.orientation", value, getattr(self, "_id", None))
         if value not in ["+", "-", "none"]:
             _degraded(self, "orientation", value, "none")
             value = "none"
@@ -170,6 +174,7 @@ class Signal:
 
     @country.setter
     def country(self, value):
+        value = translate("signal.country", value, getattr(self, "_id", None))
         self._country = None if value is None else str(value)
 
     @property
@@ -347,6 +352,7 @@ class SignalReference:
 
     @orientation.setter
     def orientation(self, value):
+        value = translate("signalReference.orientation", value, getattr(self, "_id", None))
         if value not in ["+", "-", "none"]:
             _degraded(self, "orientation", value, "none")
             value = "none"

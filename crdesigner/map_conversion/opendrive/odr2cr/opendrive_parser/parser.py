@@ -81,6 +81,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSi
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSignal import (
     SignalReference,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadtype import (
     RoadType,
 )
@@ -1017,7 +1018,7 @@ def parse_opendrive_junction(opendrive: OpenDrive, junction: etree.ElementTree):
         new_connection.incomingRoad = connection.get("incomingRoad")
         
         connecting_road = connection.get("connectingRoad")
-        contact_point = connection.get("contactPoint")
+        contact_point = translate("connection.contactPoint", connection.get("contactPoint"), new_junction.id)
         if contact_point not in ["start", "end"]:
             degradation_logger.warning(
                 "junction %s connection %s: contactPoint %r - connection skipped",

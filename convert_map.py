@@ -52,6 +52,7 @@ import conversion_report
 import map_quality
 import map_validation
 import traffic_controls
+import vocabulary
 from conversion_common import (
     MAP_SERVICE_MAX_OSM_MB,
     REFUSED_EXIT_CODE,
@@ -116,6 +117,8 @@ class MapConversionConfig:
             map outputs (exit code 4); the reports are still written.
         report: Which parts of the AutoCritic report (:mod:`autocritic_report`) are written, e.g.
             ``report.closeups=false``.
+        vocabulary: The vocabulary dictionary (:mod:`vocabulary`) that translates names the file uses into
+            names the converter understands; default ``<repo>/vocabularies/default.yaml``.
     """
 
     dir_path: Optional[str] = None
@@ -137,6 +140,7 @@ class MapConversionConfig:
     autofix: conversion_heuristics.AutoFixConfig = dataclasses.field(default_factory=conversion_heuristics.AutoFixConfig)
     autocritic: map_validation.AutoCriticConfig = dataclasses.field(default_factory=map_validation.AutoCriticConfig)
     report: autocritic_report.ReportConfig = dataclasses.field(default_factory=autocritic_report.ReportConfig)
+    vocabulary: str = vocabulary.DEFAULT_PATH
 
 
 @dataclasses.dataclass
@@ -545,7 +549,7 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
     Raises:
         ConfigError: neither or both of ``dir_path`` and ``xodr_path``, ``trim_radius`` without
             ``center``, a negative ``verifier_timeout_s``, an unknown ``autocritic.preset`` or
-            threshold, an unusable ``autofix.heuristics`` parameter, ``xodr_path`` not an existing ``.xodr`` file, or
+            threshold, an unusable ``autofix.heuristics`` parameter or ``vocabulary`` file, ``xodr_path`` not an existing ``.xodr`` file, or
             ``dir_path`` not holding exactly one ``.xodr``.
     """
     if (cfg.dir_path is None) == (cfg.xodr_path is None):
@@ -558,6 +562,7 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
     if unknown:
         raise ConfigError(f'verifier_formulas: unknown {", ".join(unknown)}')
     try:
+        vocabulary.load(path=cfg.vocabulary)
         map_validation.check_config(config=cfg.autocritic)
         conversion_heuristics.check_config(config=cfg.autofix.heuristics)
     except ValueError as exc:
@@ -657,6 +662,7 @@ def parse_xodr(
     opendrive_path: str,
     allow_zero_origin: bool = False,
     heuristics: Optional[conversion_heuristics.HeuristicsConfig] = None,
+    words: Optional[vocabulary.Vocabulary] = None,
 ) -> ParsedXodr:
     """Parse the OpenDRIVE file, build the Lanelet2 projector from its geo-reference, and apply the signal heuristics.
 
@@ -667,6 +673,7 @@ def parse_xodr(
     heuristics = heuristics or conversion_heuristics.HeuristicsConfig()
     logger.info(f'Using {opendrive_path} as input')
     location = map_name(xodr_path=opendrive_path)
+    vocabulary.install(vocabulary=words or vocabulary.load(path=vocabulary.DEFAULT_PATH))
     opendrive = parse_opendrive(Path(opendrive_path))
 
     # Construct Lanelet2 projector
@@ -1059,6 +1066,11 @@ def fitting_visualization_fov(*, verts: torch.Tensor, center: list[float]) -> fl
     return float(2.0 * offsets.max() * FOV_MARGIN) if offsets.numel() else DEFAULT_VISUALIZATION_FOV
 
 
+def _vocabulary_identity(*, path: str) -> dict[str, str]:
+    words = vocabulary.load(path=path)
+    return {"path": words.path, "sha256": words.sha256}
+
+
 def write_provenance(
     *,
     cfg: MapConversionConfig,
@@ -1087,6 +1099,7 @@ def write_provenance(
         "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "input": {"path": os.path.abspath(xodr_path), "sha256": sha256_file(path=xodr_path)},
         "config": OmegaConf.to_container(OmegaConf.structured(cfg)),
+        "vocabulary": _vocabulary_identity(path=cfg.vocabulary),
         "visualization_fov": visualization_fov,
         "traffic_side": traffic_side,
         "geo_reference": geo_reference_status,
@@ -1190,6 +1203,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         opendrive_path=opendrive_path,
         allow_zero_origin=cfg.allow_zero_origin,
         heuristics=conversion_heuristics.applied_heuristics(autofix=cfg.autofix),
+        words=vocabulary.load(path=cfg.vocabulary),
     )
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)

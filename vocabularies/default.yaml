@@ -1,0 +1,9 @@
+# The converter's default vocabulary dictionary (vocabulary.py): names an OpenDRIVE file may use, per element
+# attribute, translated into names the converter understands. Used unless convert_map.py gets vocabulary=<file>;
+# to extend it, copy this file, add entries and pass the copy. Every place a translation applies is recorded in
+# <map>_conversion_report.json (kind "translated").
+translations:
+  object.type:
+    "-1": none
+    parking: parkingSpace
+    stopline: roadMark

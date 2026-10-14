@@ -90,6 +90,7 @@ exit code 3 and write nothing.
 | `report.enabled` | `true` | Write the AutoCritic report (`<map>_autocritic.html` and `.json`); needs `autocritic.enabled`. |
 | `report.text` / `report.birdview` / `report.closeups` | `true` | The report's numbered lists, its whole-map image per section, its close-up images (24 per image). |
 | `report.max_closeups` | `240` | Most close-ups per section; further items are listed only. |
+| `vocabulary` | `<repo>/vocabularies/default.yaml` | The vocabulary dictionary: names the map uses, translated into names the converter understands (see "Vocabulary" below). |
 
 ## Output files
 
@@ -134,7 +135,7 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 | `unparseable_number` | `<width a="wide">` | Drops that record (width, border, elevation, lateral-profile or lane-offset record, speed, access); a road whose `<geometry>` numbers, own id or lane-section start do not parse, and a signal, object or junction whose own numbers do not, is dropped whole (a road's reference line cannot lose a record: every later record would shift along the road) |
 | `unknown_value` | lane `type="fastLane"`, object type, signal `country="GBR"`, road-mark `type="custom"`, connection `contactPoint="none"`, unknown geometry type | Lane and object type `none`; a country without a CommonRoad sign table uses the `ZAM` tables; marking unknown; connection skipped; a road with an unknown geometry type is dropped |
 | `missing_attribute` | signal without `dynamic`, speed without `unit` | `dynamic="no"`, orientation `none`; the speed is left unset |
-| `coerced` | object `type="stopline"` | Read as `roadMark` |
+| `translated` | object `type="parking"` | Read as the name the vocabulary dictionary gives (`parkingSpace`); see "Vocabulary" |
 | `degenerate_geometry` | `<spiral>` with equal start and end curvature | Read as an arc (a line at zero curvature) |
 | `unknown_reference` | signal `<validity>` naming a lane that does not exist | That lane is skipped |
 | `heuristic` | a light with no lane validity | Where a heuristic (`element` = its id) applies and what it does there, or, with `applied` false, would do; see "Heuristics" |
@@ -213,6 +214,26 @@ Each section numbers its items (element, position in the local frame, what happe
 of the whole map with every item circled and numbered, and a close-up of each (50 m wide, 24 per image). The
 `report.*` settings switch the parts off. The FSM heuristics H11-H13 are reported by `traffic_light_fsm.py` in
 `<map>_fsm_review.json`.
+
+### Vocabulary
+
+Exporters name things their own way: a road mark `custom`, an object orientation `undefined`, a sign country
+`OpenDRIVE`. The vocabulary dictionary is a YAML file that translates such names, per element attribute, into
+names the converter already understands, so a new dialect needs a dictionary entry rather than a code change:
+
+```yaml
+translations:
+  object.orientation: {undefined: none}
+  roadMark.type: {custom: solid}
+```
+
+The converter reads `vocabularies/default.yaml` (shipped with the repo) unless `vocabulary=/path/to/file.yaml` names
+another; to extend it, copy it and add entries. Translatable attributes: `lane.type`, `roadMark.type`, `object.type`,
+`object.orientation`, `signal.orientation`, `signalReference.orientation`, `signal.dynamic`, `signal.country`,
+`connection.contactPoint`. A dictionary can only map onto meanings the converter has (it cannot teach it a new
+one); a file naming another attribute, or translating into a name the converter does not understand, stops the run
+(exit code 3). Every place a translation applies is recorded in the conversion report (`kind="translated"`), and
+the provenance records which dictionary (path and sha256) was used.
 
 ### Heuristics
 

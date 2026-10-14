@@ -1,5 +1,62 @@
 import logging
 
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
+
+
+ROAD_OBJECT_TYPES = [
+    "barrier",
+    "bike",
+    "building",
+    "bus",
+    "car",
+    "crosswalk",
+    "ZebraCrossing",
+    "gantry",
+    "motorbike",
+    "none",
+    "obstacle",
+    "parkingSpace",
+    "patch",
+    "pedestrian",
+    "pole",
+    "RoadSignPole",
+    "railing",
+    "roadMark",
+    "roadmark",
+    "soundBarrier",
+    "streetLamp",
+    "Streetlamp",
+    "trafficIsland",
+    "trailer",
+    "train",
+    "tram",
+    "tree",
+    "van",
+    "vegetation",
+    "wind",
+    "Guidepost",
+    "Areas",
+    "portal",
+]
+
+CUSTOM_OBJECT_TYPES = [
+    "permanentDelineator",
+    "emergencyCallBox",
+    "tunnel",
+    "arrowStraight",
+    "arrowRight",
+    "arrowMergeLeft",
+    "arrowLeft",
+    "arrowLeftRight",
+    "arrowStraightLeft",
+    "arrowMergeRight",
+    "island",
+    "guidepost",
+    "roadpainting",
+    "IPGRoad Mount",
+    "fence"
+]
+
 
 class Object:
     """
@@ -52,72 +109,8 @@ class Object:
 
     @type.setter
     def type(self, value):
-        road_types = [
-            "barrier",
-            "bike",
-            "building",
-            "bus",
-            "car",
-            "crosswalk",
-            "ZebraCrossing",
-            "gantry",
-            "motorbike",
-            "none",
-            "obstacle",
-            "parkingSpace",
-            "patch",
-            "pedestrian",
-            "pole",
-            "RoadSignPole",
-            "railing",
-            "roadMark",
-            "roadmark",
-            "soundBarrier",
-            "streetLamp",
-            "Streetlamp",
-            "trafficIsland",
-            "trailer",
-            "train",
-            "tram",
-            "tree",
-            "van",
-            "vegetation",
-            "wind",
-            "Guidepost",
-            "Areas",
-            "portal",
-        ]
-        customs = [
-            "permanentDelineator",
-            "emergencyCallBox",
-            "tunnel",
-            "arrowStraight",
-            "arrowRight",
-            "arrowMergeLeft",
-            "arrowLeft",
-            "arrowLeftRight",
-            "arrowStraightLeft",
-            "arrowMergeRight",
-            "island",
-            "guidepost",
-            "roadpainting",
-            "IPGRoad Mount",
-            "fence"
-        ]
-        if value == "-1":
-            value = "none"
-        if value == 'parking':
-            value = "parkingSpace"
-        if value == "stopline":
-            # TODO: maybe we should treat them specially, and feed it through to how the output stoplines are made?
-            logging.getLogger("crdesigner.degradation").warning(
-                "object %s: type 'stopline' read as 'roadMark'",
-                self.id,
-                extra={"kind": "coerced", "element": "object.type", "id": self.id,
-                       "value": value, "action": "read_as_roadMark"},
-            )
-            value = "roadMark"
-        if value not in road_types and value not in customs:
+        value = translate("object.type", value, self.id)
+        if value not in ROAD_OBJECT_TYPES and value not in CUSTOM_OBJECT_TYPES:
             logging.getLogger("crdesigner.degradation").warning(
                 "object %s: type %r not supported - type none",
                 self.id,
@@ -263,6 +256,7 @@ class Object:
 
     @orientation.setter
     def orientation(self, value):
+        value = translate("object.orientation", value, self.id)
         if value not in ["+", "-", "none"]:
             logging.getLogger("crdesigner.degradation").warning(
                 "object %s: orientation %r - using 'none'",

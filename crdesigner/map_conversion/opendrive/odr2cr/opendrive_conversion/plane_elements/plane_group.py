@@ -25,6 +25,14 @@ def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
     """
     mark = LineMarking.UNKNOWN
 
+    if plane_line_marking.type in ("solid", "broken") and plane_line_marking.weight not in ("standard", "bold"):
+        logging.getLogger("crdesigner.degradation").warning(
+            "road mark weight %r has no CommonRoad line marking - unknown",
+            plane_line_marking.weight,
+            extra={"kind": "unknown_value", "element": "roadMark.weight", "id": None,
+                   "value": plane_line_marking.weight, "action": "unknown_marking"},
+        )
+
     if plane_line_marking.type == "solid":
         if plane_line_marking.weight == "standard":
             mark = LineMarking.SOLID

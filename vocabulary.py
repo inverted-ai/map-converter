@@ -52,6 +52,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.plane_eleme
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import parser as reader_parser
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary as reader_vocabulary
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLanes import Lane
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadtype import RoadType
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadObject import (
     CUSTOM_OBJECT_TYPES,
     ROAD_OBJECT_TYPES,
@@ -80,6 +81,7 @@ UNDERSTOOD: dict[str, Optional[tuple[str, ...]]] = {
         "solid", "broken", "solid solid", "broken broken", "curb", "none",
         "solid broken", "solid dashed", "broken solid", "dashed solid",
     ),
+    "roadMark.weight": ("standard", "bold"),
     "object.type": tuple(ROAD_OBJECT_TYPES + CUSTOM_OBJECT_TYPES),
     "object.orientation": ORIENTATIONS,
     "signal.orientation": ORIENTATIONS,
@@ -87,6 +89,9 @@ UNDERSTOOD: dict[str, Optional[tuple[str, ...]]] = {
     "signal.dynamic": ("yes", "no"),
     "signal.country": None,
     "connection.contactPoint": ("start", "end"),
+    "link.elementType": ("road", "junction"),
+    "link.contactPoint": ("start", "end"),
+    "road.type": tuple(RoadType.allowedTypes),
     "speed.unit": tuple(reader_parser.SPEED_UNIT_DIVISORS),
 }
 DEFAULT_KEYS = ("speed_unit",)

@@ -228,27 +228,73 @@ def parse_opendrive_road_link(new_road: Road, opendrive_road_link: etree.Element
     predecessor = opendrive_road_link.find("predecessor")
 
     if predecessor is not None:
-        new_road.link.predecessor = RoadLinkPredecessor(
-            predecessor.get("elementType"),
-            predecessor.get("elementId"),
-            predecessor.get("contactPoint"),
-        )
+        new_road.link.predecessor = _road_link(new_road.id, predecessor, RoadLinkPredecessor)
 
     successor = opendrive_road_link.find("successor")
 
     if successor is not None:
-        new_road.link.successor = RoadLinkSuccessor(
-            successor.get("elementType"),
-            successor.get("elementId"),
-            successor.get("contactPoint"),
-        )
+        new_road.link.successor = _road_link(new_road.id, successor, RoadLinkSuccessor)
 
     for neighbor in opendrive_road_link.findall("neighbor"):
+        values = (
+            ("neighbor.side", neighbor.get("side"), ("left", "right")),
+            ("neighbor.elementId", neighbor.get("elementId"), None),
+            ("neighbor.direction", neighbor.get("direction"), ("same", "opposite")),
+        )
+        if not _readable(new_road.id, "neighbor", values):
+            continue
         new_neighbor = RoadLinkNeighbor(
             neighbor.get("side"), neighbor.get("elementId"), neighbor.get("direction")
         )
 
         new_road.link.neighbors.append(new_neighbor)
+
+
+def _road_link(road_id, link: etree.ElementTree, link_class):
+    """
+    A road's predecessor or successor, or None when the reader cannot use it (recorded). (IAI)
+
+    :param road_id: ID of the road the link belongs to
+    :param link: XML predecessor or successor element
+    :param link_class: RoadLinkPredecessor or RoadLinkSuccessor
+    :return: The link, or None
+    """
+    element_type = translate("link.elementType", link.get("elementType"), road_id)
+    contact_point = translate("link.contactPoint", link.get("contactPoint"), road_id)
+    values = (
+        ("link.elementType", element_type, ("road", "junction")),
+        ("link.elementId", link.get("elementId"), None),
+        ("link.contactPoint", contact_point, ("start", "end", None)),
+    )
+    if not _readable(road_id, link.tag, values):
+        return None
+    return link_class(element_type, link.get("elementId"), contact_point)
+
+
+def _readable(road_id, tag: str, values) -> bool:
+    """
+    Whether every value is present and, where allowed values are given, one of them; the first that is not is
+    recorded and its element skipped. (IAI)
+
+    :param road_id: ID of the road the element belongs to
+    :param tag: Tag of the element, for the message
+    :param values: (element attribute, value, allowed values or None for any present value) triples
+    :return: True when the element can be read
+    """
+    for element, value, allowed in values:
+        if (allowed is None and value is None) or (allowed is not None and value not in allowed):
+            degradation_logger.warning(
+                "road %s %s: %s %r - %s skipped",
+                road_id,
+                tag,
+                element,
+                value,
+                tag,
+                extra={"kind": "unknown_value" if value is not None else "missing_attribute",
+                       "element": element, "id": road_id, "value": value, "action": "skipped"},
+            )
+            return False
+    return True
 
 
 def parse_opendrive_road_type(road: Road, opendrive_xml_road_type: etree.ElementTree):
@@ -260,17 +306,75 @@ def parse_opendrive_road_type(road: Road, opendrive_xml_road_type: etree.Element
     """
     speed = None
     if opendrive_xml_road_type.find("speed") is not None:
-        speed = RoadTypeSpeed(
-            max_speed=opendrive_xml_road_type.find("speed").get("max"),
-            unit=opendrive_xml_road_type.find("speed").get("unit"),
-        )
+        speed = _road_type_speed(road.id, opendrive_xml_road_type.find("speed"))
 
+    use_type = translate("road.type", opendrive_xml_road_type.get("type"), road.id)
+    if use_type not in RoadType.allowedTypes:
+        degradation_logger.warning(
+            "road %s: type %r - read as unknown",
+            road.id,
+            use_type,
+            extra={"kind": "unknown_value" if use_type is not None else "missing_attribute",
+                   "element": "road.type", "id": road.id, "value": use_type, "action": "read_as_unknown"},
+        )
+        use_type = "unknown"
     road_type = RoadType(
         s_pos=opendrive_xml_road_type.get("s"),
-        use_type=opendrive_xml_road_type.get("type"),
+        use_type=use_type,
         speed=speed,
     )
     road.types.append(road_type)
+
+
+def _road_type_speed(road_id, speed: etree.ElementTree) -> Optional[RoadTypeSpeed]:
+    """
+    The speed of a road type, or None when its maximum is not a number (recorded). A unit the reader does not know,
+    or none and no dictionary default, is read as m/s (recorded). (IAI)
+
+    :param road_id: ID of the road
+    :param speed: XML speed element of the road type
+    :return: The speed, or None
+    """
+    max_speed = speed.get("max")
+    if max_speed not in ["no limit", "undefined"]:
+        try:
+            parse_required_float(max_speed, "speed.max")
+        except UnparseableNumber as error:
+            _record_dropped("speed", road_id, error)
+            return None
+    unit = _speed_unit(road_id, "type", speed.get("unit"))
+    if unit not in SPEED_UNIT_DIVISORS:
+        degradation_logger.warning(
+            "road %s type: speed unit %r not recognised - read as m/s",
+            road_id,
+            unit,
+            extra={"kind": "unknown_value" if unit is not None else "missing_attribute",
+                   "element": "speed.unit", "id": road_id, "value": unit, "action": "read_as_m/s"},
+        )
+    return RoadTypeSpeed(max_speed=max_speed, unit=unit)
+
+
+def _speed_unit(road_id, where: str, unit: Optional[str]) -> Optional[str]:
+    """
+    The unit of a speed: the translated attribute, or the dictionary default when it names none (recorded). (IAI)
+
+    :param road_id: ID of the road
+    :param where: Element holding the speed, for the message
+    :param unit: Unit attribute as read from the file
+    :return: The unit, or None
+    """
+    unit = translate("speed.unit", unit, road_id)
+    if unit is None and DEFAULT_SPEED_UNIT is not None:
+        degradation_logger.warning(
+            "road %s %s: speed without unit read as %s (vocabulary)",
+            road_id,
+            where,
+            DEFAULT_SPEED_UNIT,
+            extra={"kind": "translated", "element": "speed.unit", "id": road_id, "value": None,
+                   "action": f"read_as_{DEFAULT_SPEED_UNIT}"},
+        )
+        unit = DEFAULT_SPEED_UNIT
+    return unit
 
 
 def defaultval(val: Optional[str], name: str, default: str = "0") -> str:
@@ -514,7 +618,18 @@ def parse_opendrive_road_lane_section(
     new_lane_section.idx = lane_section_id
 
     new_lane_section.sPos = parse_required_float(lane_section.get("s"), "laneSection.s")
-    new_lane_section.single_side = lane_section.get("singleSide")
+    single_side = lane_section.get("singleSide")
+    if single_side not in ["true", "false", None]:
+        degradation_logger.warning(
+            "road %s lane section %s: singleSide %r - read as false",
+            new_road.id,
+            lane_section_id,
+            single_side,
+            extra={"kind": "unknown_value", "element": "laneSection.singleSide", "id": new_road.id,
+                   "value": single_side, "action": "read_as_false"},
+        )
+        single_side = "false"
+    new_lane_section.single_side = single_side
 
     sides = dict(
         left=new_lane_section.left_lanes,
@@ -598,17 +713,7 @@ def parse_opendrive_road_lane_section(
             speed = lane.find("speed")
             if speed is not None:
                 # speed is always converted to m/s
-                unit = translate("speed.unit", speed.get("unit"), new_road.id)
-                if unit is None and DEFAULT_SPEED_UNIT is not None:
-                    degradation_logger.warning(
-                        "road %s lane %s: speed without unit read as %s (vocabulary)",
-                        new_road.id,
-                        new_lane.id,
-                        DEFAULT_SPEED_UNIT,
-                        extra={"kind": "translated", "element": "speed.unit", "id": new_road.id, "value": None,
-                               "action": f"read_as_{DEFAULT_SPEED_UNIT}"},
-                    )
-                    unit = DEFAULT_SPEED_UNIT
+                unit = _speed_unit(new_road.id, f"lane {new_lane.id}", speed.get("unit"))
                 divisor = SPEED_UNIT_DIVISORS.get(unit)
                 if divisor is None:
                     degradation_logger.warning(
@@ -659,7 +764,17 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
     new_signal.subtype = road_signal.get("subtype")
     new_signal.orientation = road_signal.get("orientation")
     new_signal.dynamic = road_signal.get("dynamic")
-    new_signal.signal_value = road_signal.get("value")
+    try:
+        new_signal.signal_value = road_signal.get("value")
+    except ValueError:
+        degradation_logger.warning(
+            "signal %s: value %r is not a number - value dropped",
+            new_signal.id,
+            road_signal.get("value"),
+            extra={"kind": "unparseable_number", "element": "signal.value", "id": new_signal.id,
+                   "value": road_signal.get("value"), "action": "value_dropped"},
+        )
+        new_signal.signal_value = None
     new_signal.unit = road_signal.get("unit")
     new_signal.text = road_signal.get("text")
     if (

@@ -636,7 +636,7 @@ class RoadMark:
                 "RoadMark::weight: Parser could not find value for road_mark.weight, standard is used per default."
             )
             value = "standard"
-        self._weight = str(value)
+        self._weight = str(translate("roadMark.weight", value))
 
     @property
     def color(self) -> str:

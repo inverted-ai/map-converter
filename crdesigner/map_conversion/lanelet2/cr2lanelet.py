@@ -1164,6 +1164,15 @@ class CR2LaneletConverter:
                         list(sign.traffic_sign_elements)[0].traffic_sign_element_id.name
                         == "MAX_SPEED"
                     ):
+                        if not sign.traffic_sign_elements[0].additional_values:
+                            logging.getLogger("crdesigner.degradation").warning(
+                                "speed sign %s has no value - no speed limit written",
+                                getattr(sign, "opendrive_id", None),
+                                extra={"kind": "missing_attribute", "element": "signal.value",
+                                       "id": getattr(sign, "opendrive_id", None), "value": None,
+                                       "action": "speed_limit_skipped"},
+                            )
+                            continue
                         # found a max speed sign, create a reg. element
                         speed_sign_id = self.id_count
                         speed_sign_ids.append(speed_sign_id)

@@ -76,6 +76,40 @@ CASES = [
     ("unmapped_road_mark", xb.build_xodr(roads=[xb.RoadSpec(id="1", length=30.0, lane_sections=[
         xb.LaneSectionSpec(s=0.0, lanes=xb.standard_lanes(n_left=1, n_right=1, road_mark="custom"))])]),
      [("unknown_value", "roadMark.type")]),
+    ("unknown_link_element_type", _replace_first(
+        text=_road_text(), old="<link></link>", new='<link><predecessor elementType="lane" elementId="2"/></link>'),
+     [("unknown_value", "link.elementType")]),
+    ("unknown_link_contact_point", _replace_first(
+        text=_road_text(), old="<link></link>",
+        new='<link><successor elementType="road" elementId="2" contactPoint="middle"/></link>'),
+     [("unknown_value", "link.contactPoint")]),
+    ("link_without_element_type", _replace_first(
+        text=_road_text(), old="<link></link>", new='<link><predecessor elementId="2"/></link>'),
+     [("missing_attribute", "link.elementType")]),
+    ("unknown_neighbor_side_and_direction", _replace_first(
+        text=_road_text(), old="<link></link>",
+        new='<link><neighbor side="up" elementId="2" direction="same"/>'
+            '<neighbor side="left" elementId="3" direction="sideways"/></link>'),
+     [("unknown_value", "neighbor.side"), ("unknown_value", "neighbor.direction")]),
+    ("unknown_road_type", _replace_first(text=_road_text(), old='type="town"', new='type="suburban"'),
+     [("unknown_value", "road.type")]),
+    ("road_type_without_type", _replace_first(text=_road_text(), old=' type="town"', new=""),
+     [("missing_attribute", "road.type")]),
+    ("unknown_single_side", _replace_first(
+        text=_road_text(), old='<laneSection s="0.0">', new='<laneSection s="0.0" singleSide="yes">'),
+     [("unknown_value", "laneSection.singleSide")]),
+    ("road_type_speed_not_a_number", _replace_first(
+        text=_road_text(), old='<type s="0.0" type="town"/>',
+        new='<type s="0.0" type="town"><speed max="fast" unit="km/h"/></type>'),
+     [("unparseable_number", "speed")]),
+    ("road_type_speed_without_unit", _replace_first(
+        text=_road_text(), old='<type s="0.0" type="town"/>', new='<type s="0.0" type="town"><speed max="50"/></type>'),
+     [("missing_attribute", "speed.unit")]),
+    ("sign_value_not_a_number", _road_text(
+        signals=[xb.SignalSpec(id="5", s=10.0, dynamic="no", type="274")]).replace('value="-1"', 'value="fast" unit="km/h"'),
+     [("unparseable_number", "signal.value")]),
+    ("unknown_road_mark_weight", _road_text().replace('weight="standard"', 'weight="heavy"'),
+     [("unknown_value", "roadMark.weight")]),
 ]
 
 
@@ -163,3 +197,49 @@ def test_user_data_is_summarised_by_element_and_code(tmp_path):
         user_data = json.load(f)["user_data"]
     assert [(u["element"], u["code"], u["count"]) for u in user_data] == [("signal", "vectorSignal", 2), ("road", "vectorRoad", 1)]
     assert sorted(user_data[0]["ids"]) == ["1", "2"]
+
+
+
+def test_a_bad_road_link_is_skipped_and_the_road_kept(tmp_path):
+    text = _replace_first(
+        text=_road_text(), old="<link></link>", new='<link><predecessor elementType="lane" elementId="2"/></link>'
+    )
+    opendrive = parse_opendrive(Path(xb.write_xodr(map_dir=tmp_path, name="case", text=text)))
+    assert [road.id for road in opendrive.roads] == [1]
+    assert opendrive.roads[0].link.predecessor is None
+
+
+def test_an_unknown_road_type_is_read_as_unknown_and_keeps_its_speed(tmp_path):
+    text = _replace_first(
+        text=_road_text(), old='<type s="0.0" type="town"/>',
+        new='<type s="0.0" type="suburban"><speed max="50" unit="km/h"/></type>',
+    )
+    road_type = parse_opendrive(Path(xb.write_xodr(map_dir=tmp_path, name="case", text=text))).roads[0].types[0]
+    assert (road_type.use_type, road_type.speed.max) == ("unknown", "50")
+
+
+def test_link_and_road_type_names_are_translatable(tmp_path):
+    text = _replace_first(
+        text=_road_text(), old="<link></link>",
+        new='<link><successor elementType="Road" elementId="2" contactPoint="End"/></link>',
+    ).replace('type="town"', 'type="urban"')
+    words = tmp_path / "w.yaml"
+    words.write_text(
+        "translations:\n  link.elementType: {Road: road}\n  link.contactPoint: {End: end}\n  road.type: {urban: town}\n"
+    )
+    xb.write_xodr(map_dir=tmp_path / "map", name="case", text=text)
+    assert xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary=str(words)).returncode == 0
+    report = json.loads((tmp_path / "map" / "case_conversion_report.json").read_text())
+    assert {(r["element"], str(r["value"])) for r in report["records"] if r["kind"] == "translated"} >= {
+        ("link.elementType", "Road"), ("link.contactPoint", "End"), ("road.type", "urban")
+    }
+    assert not [r for r in report["records"] if r["kind"] != "translated" and r["element"].startswith(("link.", "road.type"))]
+
+
+def test_a_speed_sign_without_a_value_converts_without_a_speed_limit(tmp_path):
+    text = _road_text(signals=[xb.SignalSpec(id="5", s=10.0, dynamic="no", type="274")]).replace(' value="-1"', "")
+    xb.write_xodr(map_dir=tmp_path, name="case", text=text)
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    report = json.loads((tmp_path / "case_conversion_report.json").read_text())
+    assert ("missing_attribute", "signal.value") in {(r["kind"], r["element"]) for r in report["records"]}

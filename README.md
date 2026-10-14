@@ -232,9 +232,9 @@ translations:
 ```
 
 The converter reads `vocabularies/default.yaml` (shipped with the repo) unless `vocabulary=/path/to/file.yaml` names
-another; to extend it, copy it and add entries. Translatable attributes: `lane.type`, `roadMark.type`, `object.type`,
+another; to extend it, copy it and add entries. Translatable attributes: `lane.type`, `roadMark.type`, `roadMark.weight`, `object.type`,
 `object.orientation`, `signal.orientation`, `signalReference.orientation`, `signal.dynamic`, `signal.country`,
-`connection.contactPoint`, `speed.unit`. A dictionary can only map onto meanings the converter has (it cannot teach it a new
+`connection.contactPoint`, `link.elementType`, `link.contactPoint`, `road.type`, `speed.unit`. A dictionary can only map onto meanings the converter has (it cannot teach it a new
 one); a file naming another attribute, or translating into a name the converter does not understand, stops the run
 (exit code 3). Every place a translation applies is recorded in the conversion report (`kind="translated"`), and
 the provenance records which dictionaries (paths and sha256) were used.

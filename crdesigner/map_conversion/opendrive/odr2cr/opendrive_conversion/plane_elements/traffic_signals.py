@@ -64,8 +64,7 @@ def extract_traffic_element_id(
         element_id = traffic_sign_enum(signal_type)
     elif signal_type + "-" + signal_subtype in set(item.value for item in traffic_sign_enum):
         element_id = traffic_sign_enum(signal_type + "-" + str(signal_subtype))
-    elif signal_type in _replacements(traffic_sign_enum):
-        replacement = _replacements(traffic_sign_enum)[signal_type]
+    elif (replacement := _replacements(traffic_sign_enum).get(signal_type)) is not None:
         logging.getLogger("crdesigner.degradation").warning(
             "signal.type %s read as %s (vocabulary)",
             signal_type,

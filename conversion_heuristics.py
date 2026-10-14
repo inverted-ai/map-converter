@@ -38,7 +38,7 @@ import inspect
 import logging
 from typing import Callable, Optional, Sequence
 
-from conversion_report import DEGRADATION_LOGGER
+from conversion_report import DEGRADATION_LOGGER, record_location
 
 
 
@@ -277,7 +277,7 @@ def record(
             "value": name,
             "action": action,
             "applied": applied,
-            "location": None if location is None else [round(float(v), 2) for v in location[:2]],
+            "location": record_location(location=location),
         },
     )
     return applied

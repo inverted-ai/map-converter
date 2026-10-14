@@ -94,6 +94,9 @@ degradation_logger = logging.getLogger("crdesigner.degradation")
 
 # Lane speed units (ASAM OpenDRIVE e_unitSpeed) and what divides a value into m/s
 SPEED_UNIT_DIVISORS = {"m/s": 1.0, "km/h": 3.6, "mph": 2.237}
+# The link and connection values the reader understands (IAI; the vocabulary dictionary checks translations against them).
+LINK_ELEMENT_TYPES = ("road", "junction")
+CONTACT_POINTS = ("start", "end")
 # The unit of a lane speed that names none; None leaves such a speed unset (IAI; set from the vocabulary dictionary).
 DEFAULT_SPEED_UNIT = None
 # A number written with a decimal comma, e.g. length="29,7078"
@@ -262,9 +265,9 @@ def _road_link(road_id, link: etree.ElementTree, link_class):
     element_type = translate("link.elementType", link.get("elementType"), road_id)
     contact_point = translate("link.contactPoint", link.get("contactPoint"), road_id)
     values = (
-        ("link.elementType", element_type, ("road", "junction")),
+        ("link.elementType", element_type, LINK_ELEMENT_TYPES),
         ("link.elementId", link.get("elementId"), None),
-        ("link.contactPoint", contact_point, ("start", "end", None)),
+        ("link.contactPoint", contact_point, CONTACT_POINTS + (None,)),
     )
     if not _readable(road_id, link.tag, values):
         return None
@@ -1146,7 +1149,7 @@ def parse_opendrive_junction(opendrive: OpenDrive, junction: etree.ElementTree):
         
         connecting_road = connection.get("connectingRoad")
         contact_point = translate("connection.contactPoint", connection.get("contactPoint"), new_junction.id)
-        if contact_point not in ["start", "end"]:
+        if contact_point not in CONTACT_POINTS:
             degradation_logger.warning(
                 "junction %s connection %s: contactPoint %r - connection skipped",
                 new_junction.id,

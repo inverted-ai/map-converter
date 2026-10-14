@@ -680,7 +680,7 @@ def parse_xodr(
     opendrive_path: str,
     allow_zero_origin: bool = False,
     heuristics: Optional[conversion_heuristics.HeuristicsConfig] = None,
-    words: Optional[list[vocabulary.Vocabulary]] = None,
+    dictionaries: list[vocabulary.Vocabulary],
 ) -> ParsedXodr:
     """Parse the OpenDRIVE file, build the Lanelet2 projector from its geo-reference, and apply the signal heuristics.
 
@@ -691,7 +691,7 @@ def parse_xodr(
     heuristics = heuristics or conversion_heuristics.HeuristicsConfig()
     logger.info(f'Using {opendrive_path} as input')
     location = map_name(xodr_path=opendrive_path)
-    words = vocabulary.combine(vocabularies=words or [vocabulary.load(path=vocabulary.DEFAULT_PATH)])
+    words = vocabulary.combine(vocabularies=dictionaries)
     vocabulary.install(vocabulary=words)
     opendrive = parse_opendrive(Path(opendrive_path))
 
@@ -1022,6 +1022,8 @@ def render_and_finish(
     opendrive_path: str,
     traffic_side: Optional[str],
     geo_reference_status: str,
+    words: vocabulary.Vocabulary,
+    opendrive_version: Optional[str],
 ) -> None:
     """Pick the map centre, write ``metadata.json``, render ``visualization.png``, record provenance."""
     if cfg.center is None:
@@ -1079,6 +1081,8 @@ def render_and_finish(
         visualization_fov=fov,
         traffic_side=traffic_side,
         geo_reference_status=geo_reference_status,
+        words=words,
+        opendrive_version=opendrive_version,
     )
 
 
@@ -1095,21 +1099,11 @@ def _vocabularies(*, cfg: MapConversionConfig, xodr_path: str) -> list[vocabular
     return [vocabulary.load(path=cfg.vocabulary), *vocabulary.matching(vendors=vendors, header=header)]
 
 
-def _opendrive_version(*, xodr_path: str) -> Optional[str]:
-    """``revMajor.revMinor`` from the file header, or None when the header gives neither."""
-    header = vocabulary.read_header(xodr_path=xodr_path)
-    if header["revMajor"] is None and header["revMinor"] is None:
+def _opendrive_version(*, header) -> Optional[str]:
+    """``revMajor.revMinor`` from the parsed file header, or None when the header gives neither."""
+    if header is None or (header.revMajor is None and header.revMinor is None):
         return None
-    return f"{header['revMajor']}.{header['revMinor']}"
-
-
-def _vocabulary_identity(*, cfg: MapConversionConfig, xodr_path: str) -> dict:
-    base, *vendors = _vocabularies(cfg=cfg, xodr_path=xodr_path)
-    return {
-        "path": base.path,
-        "sha256": base.sha256,
-        "vendors": [{"path": v.path, "sha256": v.sha256} for v in vendors],
-    }
+    return f"{header.revMajor}.{header.revMinor}"
 
 
 def write_provenance(
@@ -1120,6 +1114,8 @@ def write_provenance(
     visualization_fov: float,
     traffic_side: Optional[str],
     geo_reference_status: str,
+    words: vocabulary.Vocabulary,
+    opendrive_version: Optional[str],
 ) -> str:
     """Write ``<map>_provenance.json``: what was converted, with which converter and settings.
 
@@ -1140,8 +1136,8 @@ def write_provenance(
         "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "input": {"path": os.path.abspath(xodr_path), "sha256": sha256_file(path=xodr_path)},
         "config": OmegaConf.to_container(OmegaConf.structured(cfg)),
-        "vocabulary": _vocabulary_identity(cfg=cfg, xodr_path=xodr_path),
-        "opendrive_version": _opendrive_version(xodr_path=xodr_path),
+        "vocabulary": {"path": words.path, "sha256": words.sha256, "vendors": [dict(v) for v in words.vendors]},
+        "opendrive_version": opendrive_version,
         "visualization_fov": visualization_fov,
         "traffic_side": traffic_side,
         "geo_reference": geo_reference_status,
@@ -1245,7 +1241,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         opendrive_path=opendrive_path,
         allow_zero_origin=cfg.allow_zero_origin,
         heuristics=conversion_heuristics.applied_heuristics(autofix=cfg.autofix),
-        words=_vocabularies(cfg=cfg, xodr_path=opendrive_path),
+        dictionaries=_vocabularies(cfg=cfg, xodr_path=opendrive_path),
     )
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
@@ -1272,6 +1268,8 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         opendrive_path=opendrive_path,
         traffic_side=parsed.traffic_side,
         geo_reference_status=parsed.geo_reference_status,
+        words=parsed.words,
+        opendrive_version=_opendrive_version(header=parsed.opendrive.header),
     )
     if not cfg.autocritic.enabled:
         return os.path.abspath(exported.osm_path), None

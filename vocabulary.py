@@ -45,6 +45,8 @@ from typing import Any, Optional, Sequence
 import yaml
 from lxml import etree
 
+from conversion_report import DEGRADATION_LOGGER, record_location
+
 from commonroad.scenario.traffic_sign import TrafficSignIDCountries
 
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion import network as reader_network
@@ -74,7 +76,6 @@ SIGNAL_KEYS = (
 )
 MARKING_KEYS = ("stop_stencils", "yield_stencils", "painted_stop_lines")
 PAINTED_KEYS = ("names", "object_types", "signal_types")
-DEGRADATION_LOGGER = "crdesigner.degradation"
 ORIENTATIONS = ("+", "-", "none")
 # Per translatable element attribute, the names the converter understands (None: any name, e.g. a country).
 UNDERSTOOD: dict[str, Optional[tuple[str, ...]]] = {
@@ -91,9 +92,9 @@ UNDERSTOOD: dict[str, Optional[tuple[str, ...]]] = {
     "signalReference.orientation": ORIENTATIONS,
     "signal.dynamic": ("yes", "no"),
     "signal.country": None,
-    "connection.contactPoint": ("start", "end"),
-    "link.elementType": ("road", "junction"),
-    "link.contactPoint": ("start", "end"),
+    "connection.contactPoint": reader_parser.CONTACT_POINTS,
+    "link.elementType": reader_parser.LINK_ELEMENT_TYPES,
+    "link.contactPoint": reader_parser.CONTACT_POINTS,
     "road.type": tuple(RoadType.allowedTypes),
     "speed.unit": tuple(reader_parser.SPEED_UNIT_DIVISORS),
 }
@@ -113,6 +114,7 @@ class Vocabulary:
         signals: The ``signals`` section, only the keys the file gives (see the module docstring).
         markings: The ``markings`` section, only the keys the file gives.
         defaults: The ``defaults`` section, only the keys the file gives.
+        vendors: ``{path, sha256}`` of each vendor dictionary :func:`combine` applied on top of this one.
     """
 
     path: str
@@ -122,6 +124,7 @@ class Vocabulary:
     signals: dict[str, Any] = dataclasses.field(default_factory=dict)
     markings: dict[str, Any] = dataclasses.field(default_factory=dict)
     defaults: dict[str, Any] = dataclasses.field(default_factory=dict)
+    vendors: tuple[dict[str, str], ...] = ()
 
 
 def load(*, path: str, vendor: bool = False) -> Vocabulary:
@@ -141,9 +144,7 @@ def load(*, path: str, vendor: bool = False) -> Vocabulary:
     except yaml.YAMLError as exc:
         raise ValueError(f"vocabulary {path} is not YAML: {exc}") from exc
     keys = {"translations", "signals", "markings", "defaults"} | ({"match"} if vendor else set())
-    unknown = sorted(set(content) - keys)
-    if unknown:
-        raise ValueError(f"vocabulary {path}: unknown key(s) {', '.join(map(str, unknown))}; expected: {', '.join(sorted(keys))}")
+    _check_keys(path=path, where="", section=content, known=sorted(keys))
     match = {str(k): str(v) for k, v in (content.get("match") or {}).items()}
     if vendor and (not match or set(match) - set(HEADER_FIELDS)):
         raise ValueError(f"vocabulary {path}: a vendor dictionary needs a match on {', '.join(HEADER_FIELDS)}")
@@ -173,10 +174,25 @@ def load(*, path: str, vendor: bool = False) -> Vocabulary:
     )
 
 
-def _defaults(*, path: str, section: dict) -> dict[str, Any]:
-    unknown = sorted(set(section) - set(DEFAULT_KEYS))
+def _check_keys(*, path: str, where: str, section: dict, known: Sequence[str]) -> None:
+    unknown = sorted(map(str, set(section) - set(known)))
     if unknown:
-        raise ValueError(f"vocabulary {path}: defaults: unknown key(s) {', '.join(unknown)}; known: {', '.join(DEFAULT_KEYS)}")
+        raise ValueError(f"vocabulary {path}: {where}unknown key(s) {', '.join(unknown)}; known: {', '.join(known)}")
+
+
+def _patterns(*, path: str, where: str, values) -> tuple[str, ...]:
+    """``values`` as strings, each checked to be a regular expression."""
+    patterns = tuple(str(p) for p in values or [])
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"vocabulary {path}: {where} {pattern!r} is not a regular expression: {exc}") from exc
+    return patterns
+
+
+def _defaults(*, path: str, section: dict) -> dict[str, Any]:
+    _check_keys(path=path, where="defaults: ", section=section, known=DEFAULT_KEYS)
     defaults: dict[str, Any] = {}
     if section.get("speed_unit") is not None:
         unit = str(section["speed_unit"])
@@ -189,25 +205,16 @@ def _defaults(*, path: str, section: dict) -> dict[str, Any]:
 
 
 def _markings(*, path: str, section: dict) -> dict[str, Any]:
-    unknown = sorted(set(section) - set(MARKING_KEYS))
-    if unknown:
-        raise ValueError(f"vocabulary {path}: markings: unknown key(s) {', '.join(unknown)}; known: {', '.join(MARKING_KEYS)}")
+    _check_keys(path=path, where="markings: ", section=section, known=MARKING_KEYS)
     markings: dict[str, Any] = {}
     for key in ("stop_stencils", "yield_stencils"):
         if key in section:
             markings[key] = tuple(str(name) for name in section[key] or [])
     if "painted_stop_lines" in section:
         painted = section["painted_stop_lines"] or {}
-        unknown = sorted(set(painted) - set(PAINTED_KEYS))
-        if unknown:
-            raise ValueError(f"vocabulary {path}: painted_stop_lines: unknown key(s) {', '.join(unknown)}")
-        for pattern in painted.get("names") or []:
-            try:
-                re.compile(str(pattern))
-            except re.error as exc:
-                raise ValueError(f"vocabulary {path}: painted_stop_lines name {pattern!r} is not a regular expression: {exc}") from exc
+        _check_keys(path=path, where="painted_stop_lines: ", section=painted, known=PAINTED_KEYS)
         markings["painted_stop_lines"] = {
-            "names": tuple(str(p) for p in painted.get("names") or []),
+            "names": _patterns(path=path, where="painted_stop_lines name", values=painted.get("names")),
             "object_types": tuple(str(t).lower() for t in painted.get("object_types") or []),
             "signal_types": tuple(str(t) for t in painted.get("signal_types") or []),
         }
@@ -215,18 +222,14 @@ def _markings(*, path: str, section: dict) -> dict[str, Any]:
 
 
 def _signals(*, path: str, section: dict) -> dict[str, Any]:
-    unknown = sorted(set(section) - set(SIGNAL_KEYS))
-    if unknown:
-        raise ValueError(f"vocabulary {path}: signals: unknown key(s) {', '.join(unknown)}; known: {', '.join(SIGNAL_KEYS)}")
+    _check_keys(path=path, where="signals: ", section=section, known=SIGNAL_KEYS)
     signals: dict[str, Any] = {}
     if "traffic_light_types" in section:
-        patterns = [str(p) for p in section["traffic_light_types"] or []]
-        for pattern in patterns:
-            try:
-                re.compile(pattern)
-            except re.error as exc:
-                raise ValueError(f"vocabulary {path}: traffic_light_types {pattern!r} is not a regular expression: {exc}") from exc
-        signals["traffic_light_types"] = tuple(patterns)
+        signals["traffic_light_types"] = _patterns(
+            path=path,
+            where="traffic_light_types",
+            values=section["traffic_light_types"],
+        )
     if "non_vehicle_light_types" in section:
         signals["non_vehicle_light_types"] = tuple(str(code) for code in section["non_vehicle_light_types"] or [])
     if "countries_by_code" in section:
@@ -299,6 +302,7 @@ def combine(*, vocabularies: Sequence[Vocabulary]) -> Vocabulary:
         signals=signals,
         markings=markings,
         defaults=defaults,
+        vendors=tuple({"path": v.path, "sha256": v.sha256} for v in vocabularies[1:]),
     )
 
 
@@ -362,6 +366,6 @@ def record(*, element: str, element_id: object, value: object, meaning: object, 
             "id": element_id,
             "value": value,
             "action": f"read_as_{meaning}",
-            "location": None if location is None else [round(float(v), 2) for v in location[:2]],
+            "location": record_location(location=location),
         },
     )

@@ -23,7 +23,7 @@ import dataclasses
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from lxml import etree
 
@@ -53,6 +53,11 @@ COUNTED_TAGS = (
     "junction",
     "connection",
 )
+
+
+def record_location(*, location: Optional[Sequence[float]]) -> Optional[list[float]]:
+    """A record's ``location``: x, y in the local frame, rounded to 1 cm, or None."""
+    return None if location is None else [round(float(v), 2) for v in location[:2]]
 
 
 def heuristic_number(key: str) -> int:

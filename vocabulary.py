@@ -27,7 +27,8 @@ A key left out reads the file literally (every dynamic signal is a light; no cou
 ``signals`` also holds ``unknown_country_table`` (the sign table for a country that has none, default ``ZAM``) and
 ``sign_type_replacements`` (per country, sign types read as another, e.g. German 252 as 260). A ``markings``
 section names the stop/yield stencil objects and the painted stop lines (by name pattern, object type, signal type);
-left out, none are recognised.
+left out, none are recognised. A ``defaults`` section gives ``speed_unit``: the unit of a lane speed that names none
+(left out, such a speed stays unset).
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion import netw
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.plane_elements import (
     traffic_signals as reader_signals,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import parser as reader_parser
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary as reader_vocabulary
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLanes import Lane
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadObject import (
@@ -85,7 +87,9 @@ UNDERSTOOD: dict[str, Optional[tuple[str, ...]]] = {
     "signal.dynamic": ("yes", "no"),
     "signal.country": None,
     "connection.contactPoint": ("start", "end"),
+    "speed.unit": tuple(reader_parser.SPEED_UNIT_DIVISORS),
 }
+DEFAULT_KEYS = ("speed_unit",)
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -100,6 +104,7 @@ class Vocabulary:
             ``revMajor``, ``revMinor``); empty for the base dictionary.
         signals: The ``signals`` section, only the keys the file gives (see the module docstring).
         markings: The ``markings`` section, only the keys the file gives.
+        defaults: The ``defaults`` section, only the keys the file gives.
     """
 
     path: str
@@ -108,6 +113,7 @@ class Vocabulary:
     match: dict[str, str] = dataclasses.field(default_factory=dict)
     signals: dict[str, Any] = dataclasses.field(default_factory=dict)
     markings: dict[str, Any] = dataclasses.field(default_factory=dict)
+    defaults: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 def load(*, path: str, vendor: bool = False) -> Vocabulary:
@@ -126,7 +132,7 @@ def load(*, path: str, vendor: bool = False) -> Vocabulary:
         content = yaml.safe_load(raw) or {}
     except yaml.YAMLError as exc:
         raise ValueError(f"vocabulary {path} is not YAML: {exc}") from exc
-    keys = {"translations", "signals", "markings", "match"} if vendor else {"translations", "signals", "markings"}
+    keys = {"translations", "signals", "markings", "defaults"} | ({"match"} if vendor else set())
     unknown = sorted(set(content) - keys)
     if unknown:
         raise ValueError(f"vocabulary {path}: unknown key(s) {', '.join(map(str, unknown))}; expected: {', '.join(sorted(keys))}")
@@ -155,7 +161,23 @@ def load(*, path: str, vendor: bool = False) -> Vocabulary:
         match=match,
         signals=_signals(path=path, section=content.get("signals") or {}),
         markings=_markings(path=path, section=content.get("markings") or {}),
+        defaults=_defaults(path=path, section=content.get("defaults") or {}),
     )
+
+
+def _defaults(*, path: str, section: dict) -> dict[str, Any]:
+    unknown = sorted(set(section) - set(DEFAULT_KEYS))
+    if unknown:
+        raise ValueError(f"vocabulary {path}: defaults: unknown key(s) {', '.join(unknown)}; known: {', '.join(DEFAULT_KEYS)}")
+    defaults: dict[str, Any] = {}
+    if section.get("speed_unit") is not None:
+        unit = str(section["speed_unit"])
+        if unit not in reader_parser.SPEED_UNIT_DIVISORS:
+            raise ValueError(
+                f"vocabulary {path}: defaults: speed_unit {unit} is not one of {', '.join(reader_parser.SPEED_UNIT_DIVISORS)}"
+            )
+        defaults["speed_unit"] = unit
+    return defaults
 
 
 def _markings(*, path: str, section: dict) -> dict[str, Any]:
@@ -252,14 +274,21 @@ def combine(*, vocabularies: Sequence[Vocabulary]) -> Vocabulary:
     translations: dict[str, dict[str, str]] = {}
     signals: dict[str, Any] = {}
     markings: dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
     for words in vocabularies:
         for element, table in words.translations.items():
             translations[element] = {**translations.get(element, {}), **table}
         signals.update(words.signals)
         markings.update(words.markings)
+        defaults.update(words.defaults)
     first = vocabularies[0]
     return Vocabulary(
-        path=first.path, sha256=first.sha256, translations=translations, signals=signals, markings=markings
+        path=first.path,
+        sha256=first.sha256,
+        translations=translations,
+        signals=signals,
+        markings=markings,
+        defaults=defaults,
     )
 
 
@@ -269,6 +298,7 @@ def install(*, vocabulary: Vocabulary) -> None:
     reader_network.STOP_STENCIL_NAMES = list(vocabulary.markings.get("stop_stencils", ()))
     reader_network.YIELD_STENCIL_NAMES = list(vocabulary.markings.get("yield_stencils", ()))
     reader_signals.UNKNOWN_COUNTRY_TABLE = vocabulary.signals.get("unknown_country_table", "ZAM")
+    reader_parser.DEFAULT_SPEED_UNIT = vocabulary.defaults.get("speed_unit")
     reader_signals.SIGN_TYPE_REPLACEMENTS = {
         country: dict(table) for country, table in vocabulary.signals.get("sign_type_replacements", {}).items()
     }

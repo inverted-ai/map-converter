@@ -103,7 +103,7 @@ exit code 3 and write nothing.
 | `metadata.json` | `MapConfig`: `name`, `center`, `lanelet_map_origin` (lat, lon), `left_handed_coordinates`, the three file names above, `traffic_light_controller_path`, `iai_location_name` | `torchdrivesim.map.load_map_config` |
 | `visualization.png` | 2048×2048 top-down render centred on `center`, `visualization_fov` metres wide | People |
 | `<map>_signal_groups.json` | Traffic-light structure the OpenDRIVE file declares: junction per signal id (`membership`, with the source it came from), `<controller>` groups and `sequence`, conflicts, non-integer ids | `traffic_light_fsm.py` |
-| `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), the visualization FOV used, the traffic side of the roads (`RHT`, `LHT` or `mixed`), Python and package versions, UTC time | People, `map_report.py` |
+| `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), the visualization FOV used, the traffic side of the roads (`RHT`, `LHT` or `mixed`), the OpenDRIVE version (`revMajor.revMinor`), the vocabulary dictionaries used (paths and sha256), Python and package versions, UTC time | People, `map_report.py` |
 | `<map>_conversion_report.json` | Everything in the input the converter could not use as written, and what it did instead (see below). Written even when the conversion fails, once the input file is known | People |
 | `<map>_autocritic.html`, `<map>_autocritic.json` | The AutoCritic report (see "AutoCritic report" below); also written when a preset rejects the map | People; scripts (JSON) |
 
@@ -125,7 +125,9 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 4. `heuristics`: per heuristic that changed the conversion (see "Heuristics" below), its `name`, how often
    it acted (`count`) and the element ids where (up to 20). `heuristics_not_applied` lists the same for the
    places where a switched-off heuristic would have acted.
-5. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
+5. `user_data`: the `<userData>` blocks the file carries, per parent element and `code`, with their count and the first
+   20 parent ids (the converter reads none of them except the signals' `vectorSignal` ids).
+6. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
    dropped, else `<tag>.<attribute>`), `id` (road, signal, object or junction), `value`, `action` and the
    message; `heuristic` records also have `applied` and `location` (`[x, y]` in the local frame of the
    outputs). Each record is also printed as a warning, once per `kind`, `element` and `value`.
@@ -232,7 +234,7 @@ translations:
 The converter reads `vocabularies/default.yaml` (shipped with the repo) unless `vocabulary=/path/to/file.yaml` names
 another; to extend it, copy it and add entries. Translatable attributes: `lane.type`, `roadMark.type`, `object.type`,
 `object.orientation`, `signal.orientation`, `signalReference.orientation`, `signal.dynamic`, `signal.country`,
-`connection.contactPoint`. A dictionary can only map onto meanings the converter has (it cannot teach it a new
+`connection.contactPoint`, `speed.unit`. A dictionary can only map onto meanings the converter has (it cannot teach it a new
 one); a file naming another attribute, or translating into a name the converter does not understand, stops the run
 (exit code 3). Every place a translation applies is recorded in the conversion report (`kind="translated"`), and
 the provenance records which dictionaries (paths and sha256) were used.
@@ -252,7 +254,9 @@ table for a country CommonRoad has none for; default `ZAM`) and `sign_type_repla
 read as another type, e.g. German `252` as `260`). A `markings` section names the objects read as stop and yield
 stencils (`stop_stencils`, `yield_stencils`; each becomes a stopline) and the painted stop lines
 (`painted_stop_lines`: `names` as regular expressions, `object_types`, `signal_types`; listed, never converted).
-Left out, none are recognised; the default dictionary holds the CARLA names and the corpus encodings.
+Left out, none are recognised; the default dictionary holds the CARLA names and the corpus encodings. A `defaults`
+section gives `speed_unit` (`m/s`, `km/h` or `mph`), the unit of a lane speed that names none; left out (as in the
+default dictionary, until the standard's default is confirmed), such a speed stays unset and is recorded.
 
 A vendor dictionary is a file in `vocabularies/vendors/` (or the folder `vocabulary_vendors=` names) with a `match` on
 the file header (`vendor`, `name`, `revMajor`, `revMinor`), e.g. `match: {vendor: "DeepMap, Inc."}`. Every vendor

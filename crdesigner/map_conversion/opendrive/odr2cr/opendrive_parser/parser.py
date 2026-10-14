@@ -94,6 +94,8 @@ degradation_logger = logging.getLogger("crdesigner.degradation")
 
 # Lane speed units (ASAM OpenDRIVE e_unitSpeed) and what divides a value into m/s
 SPEED_UNIT_DIVISORS = {"m/s": 1.0, "km/h": 3.6, "mph": 2.237}
+# The unit of a lane speed that names none; None leaves such a speed unset (IAI; set from the vocabulary dictionary).
+DEFAULT_SPEED_UNIT = None
 # A number written with a decimal comma, e.g. length="29,7078"
 DECIMAL_COMMA = re.compile(r"^\s*[+-]?\d+,\d+(?:[eE][+-]?\d+)?\s*$")
 # Attributes that hold ids, names or enums, never a number to re-read with a decimal point
@@ -596,7 +598,17 @@ def parse_opendrive_road_lane_section(
             speed = lane.find("speed")
             if speed is not None:
                 # speed is always converted to m/s
-                unit = speed.get("unit")
+                unit = translate("speed.unit", speed.get("unit"), new_road.id)
+                if unit is None and DEFAULT_SPEED_UNIT is not None:
+                    degradation_logger.warning(
+                        "road %s lane %s: speed without unit read as %s (vocabulary)",
+                        new_road.id,
+                        new_lane.id,
+                        DEFAULT_SPEED_UNIT,
+                        extra={"kind": "translated", "element": "speed.unit", "id": new_road.id, "value": None,
+                               "action": f"read_as_{DEFAULT_SPEED_UNIT}"},
+                    )
+                    unit = DEFAULT_SPEED_UNIT
                 divisor = SPEED_UNIT_DIVISORS.get(unit)
                 if divisor is None:
                     degradation_logger.warning(

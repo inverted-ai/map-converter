@@ -148,3 +148,18 @@ def test_handler_collects_records_and_detaches():
     summary = handler.summary(elements_seen={"lane": 4})
     assert summary["elements"]["lane"] == {"seen": 4, "converted": 4, "degraded": 1, "dropped": 0}
     assert summary["unrecognised_tokens"] == [{"element": "lane.type", "value": "x", "count": 1, "ids": [3]}]
+
+
+
+def test_user_data_is_summarised_by_element_and_code(tmp_path):
+    signals = [xb.SignalSpec(id=str(i), s=5.0 + i, dynamic="no", type="206") for i in (1, 2)]
+    text = _road_text(signals=signals)
+    block = '<userData code="vectorSignal" value="x"/></signal>'
+    text = text.replace("></signal>", ">" + block, 2)
+    text = _replace_first(text=text, old="</road>", new='<userData code="vectorRoad"/></road>')
+    xb.write_xodr(map_dir=tmp_path, name="case", text=text)
+    assert xb.run_convert_map(map_dir=str(tmp_path)).returncode == 0
+    with open(tmp_path / "case_conversion_report.json") as f:
+        user_data = json.load(f)["user_data"]
+    assert [(u["element"], u["code"], u["count"]) for u in user_data] == [("signal", "vectorSignal", 2), ("road", "vectorRoad", 1)]
+    assert sorted(user_data[0]["ids"]) == ["1", "2"]

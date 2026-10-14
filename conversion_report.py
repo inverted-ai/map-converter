@@ -19,6 +19,7 @@ Vendored code reports every input it cannot use as written through
 from __future__ import annotations
 
 import collections
+import dataclasses
 import json
 import logging
 import os
@@ -150,12 +151,14 @@ class ConversionReport(logging.Handler):
         Returns:
             Absolute path of the written file.
         """
+        scanned = scan_input(xodr_path=xodr_path)
         report = {
             "input": os.path.abspath(xodr_path),
             "outcome": "ok" if error is None else "rejected" if isinstance(error, MapRejected) else "failed",
             "error": None if error is None else {"type": type(error).__name__, "message": str(error)},
             "validation": validation,
-            **self.summary(elements_seen=count_elements(xodr_path=xodr_path)),
+            **self.summary(elements_seen=scanned.counts),
+            "user_data": scanned.user_data,
             "records": self.records,
         }
         path = os.path.abspath(path)
@@ -179,19 +182,48 @@ class FirstOccurrenceFilter(logging.Filter):
         return True
 
 
-def count_elements(*, xodr_path: str) -> dict[str, int]:
-    """How many of each :data:`COUNTED_TAGS` element the file holds (namespaces ignored)."""
+@dataclasses.dataclass(slots=True)
+class InputScan:
+    """What one pass over the input finds.
+
+    Attributes:
+        counts: How many of each :data:`COUNTED_TAGS` element the file holds.
+        user_data: Per (parent element, ``code``) of its ``<userData>`` blocks: ``element``, ``code``, ``count``
+            and the first :data:`MAX_IDS_PER_TOKEN` parent ids, most frequent first. The converter reads none of
+            them except the signal ``vectorSignal`` ids; this lists what a source carries.
+    """
+
+    counts: dict[str, int]
+    user_data: list[dict[str, Any]]
+
+
+def scan_input(*, xodr_path: str) -> InputScan:
+    """Count the :data:`COUNTED_TAGS` elements and summarise the ``<userData>`` blocks (namespaces ignored)."""
     counts: collections.Counter = collections.Counter()
+    user_data: dict[tuple[str, Optional[str]], dict[str, Any]] = {}
     try:
         for _, elem in etree.iterparse(xodr_path, events=("end",), huge_tree=True):
             tag = etree.QName(elem).localname if isinstance(elem.tag, str) else None
             if tag in COUNTED_TAGS:
                 counts[tag] += 1
+            if tag == "userData":
+                parent = elem.getparent()
+                parent_tag = etree.QName(parent).localname if parent is not None else None
+                entry = user_data.setdefault(
+                    (parent_tag, elem.get("code")), {"element": parent_tag, "code": elem.get("code"), "count": 0, "ids": []}
+                )
+                entry["count"] += 1
+                parent_id = None if parent is None else parent.get("id")
+                if parent_id is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
+                    entry["ids"].append(parent_id)
             if tag == "road":
                 elem.clear()  # roads hold almost every counted element; keep memory flat
     except etree.XMLSyntaxError:
-        return {}
-    return {tag: counts[tag] for tag in COUNTED_TAGS if counts[tag]}
+        return InputScan(counts={}, user_data=[])
+    return InputScan(
+        counts={tag: counts[tag] for tag in COUNTED_TAGS if counts[tag]},
+        user_data=sorted(user_data.values(), key=lambda u: (-u["count"], str(u["element"]), str(u["code"]))),
+    )
 
 
 def attach() -> ConversionReport:

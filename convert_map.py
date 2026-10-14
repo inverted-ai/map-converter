@@ -1086,6 +1086,14 @@ def _vocabularies(*, cfg: MapConversionConfig, xodr_path: str) -> list[vocabular
     return [vocabulary.load(path=cfg.vocabulary), *vocabulary.matching(vendors=vendors, header=header)]
 
 
+def _opendrive_version(*, xodr_path: str) -> Optional[str]:
+    """``revMajor.revMinor`` from the file header, or None when the header gives neither."""
+    header = vocabulary.read_header(xodr_path=xodr_path)
+    if header["revMajor"] is None and header["revMinor"] is None:
+        return None
+    return f"{header['revMajor']}.{header['revMinor']}"
+
+
 def _vocabulary_identity(*, cfg: MapConversionConfig, xodr_path: str) -> dict:
     base, *vendors = _vocabularies(cfg=cfg, xodr_path=xodr_path)
     return {
@@ -1124,6 +1132,7 @@ def write_provenance(
         "input": {"path": os.path.abspath(xodr_path), "sha256": sha256_file(path=xodr_path)},
         "config": OmegaConf.to_container(OmegaConf.structured(cfg)),
         "vocabulary": _vocabulary_identity(cfg=cfg, xodr_path=xodr_path),
+        "opendrive_version": _opendrive_version(xodr_path=xodr_path),
         "visualization_fov": visualization_fov,
         "traffic_side": traffic_side,
         "geo_reference": geo_reference_status,

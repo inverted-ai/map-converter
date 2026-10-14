@@ -234,3 +234,43 @@ def test_a_replaced_sign_type_is_recorded(tmp_path):
     assert [(r["value"], r["action"]) for r in _records(report=report, kind="translated", element="signal.type")] == [
         ("252", "read_as_260")
     ]
+
+
+
+def _lane_speed_map(*, map_dir, unit: str = "") -> None:
+    unit_attr = f' unit="{unit}"' if unit else ""
+    text = xb.build_xodr(roads=[xb.straight_road(id="1", length=50.0)])
+    text = text.replace("</lane>", f'<speed sOffset="0.0" max="50.0"{unit_attr}/></lane>', 1)
+    xb.write_xodr(map_dir=map_dir, name="case", text=text)
+
+
+@pytest.mark.parametrize(
+    "unit, words, translated",
+    [("", "defaults: {speed_unit: km/h}\n", [None]), ("kmh", "translations: {speed.unit: {kmh: km/h}}\n", ["kmh"])],
+)
+def test_speed_units_come_from_the_dictionary(tmp_path, unit, words, translated):
+    _lane_speed_map(map_dir=tmp_path / "map", unit=unit)
+    result = xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary=_dictionary(path=tmp_path / "w.yaml", text=words))
+    assert result.returncode == 0, result.stderr
+    report = json.loads((tmp_path / "map" / "case_conversion_report.json").read_text())
+    assert [r["value"] for r in _records(report=report, kind="translated", element="speed.unit")] == translated
+    assert not [r for r in report["records"] if r["element"] == "speed.unit" and r["kind"] != "translated"]
+
+
+def test_without_a_speed_default_a_speed_without_unit_stays_unset(tmp_path):
+    _lane_speed_map(map_dir=tmp_path)
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    report = json.loads((tmp_path / "case_conversion_report.json").read_text())
+    assert _records(report=report, kind="missing_attribute", element="speed.unit")
+
+
+def test_a_speed_default_must_be_a_unit_the_converter_reads(tmp_path):
+    with pytest.raises(ValueError, match="furlongs"):
+        vocabulary.load(path=_dictionary(path=tmp_path / "w.yaml", text="defaults: {speed_unit: furlongs}\n"))
+
+
+def test_provenance_records_the_opendrive_version(tmp_path):
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=50.0)], rev_minor="6"))
+    assert xb.run_convert_map(map_dir=str(tmp_path)).returncode == 0
+    assert json.loads((tmp_path / "case_provenance.json").read_text())["opendrive_version"] == "1.6"

@@ -38,7 +38,9 @@ def _dictionary(*, path, text: str) -> str:
 def test_the_default_dictionary_is_an_absolute_file_shipped_with_the_converter():
     path = cm.MapConversionConfig().vocabulary
     assert os.path.isabs(path) and os.path.isfile(path)
-    assert vocabulary.load(path=path).translations["object.type"] == {"-1": "none", "parking": "parkingSpace", "stopline": "roadMark"}
+    words = vocabulary.load(path=path)
+    assert words.translations["object.type"] == {"-1": "none", "parking": "parkingSpace", "stopline": "roadMark", "Pole": "pole"}
+    assert words.translations["signal.country"] == {"OpenDRIVE": "DEU"}
 
 
 def test_default_dictionary_translations_are_recorded(tmp_path):

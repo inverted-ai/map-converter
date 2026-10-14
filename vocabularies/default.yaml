@@ -7,6 +7,10 @@ translations:
     "-1": none
     parking: parkingSpace
     stopline: roadMark
+    Pole: pole
+  signal.country:
+    # ASAM OpenDRIVE's own sign catalogue (built on the German one); 1948 corpus signals from five exporters.
+    OpenDRIVE: DEU
 
 signals:
   # A signal marked dynamic is a traffic light only if its type matches one of these codes (in full); others are

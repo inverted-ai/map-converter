@@ -91,6 +91,7 @@ exit code 3 and write nothing.
 | `report.text` / `report.birdview` / `report.closeups` | `true` | The report's numbered lists, its whole-map image per section, its close-up images (24 per image). |
 | `report.max_closeups` | `240` | Most close-ups per section; further items are listed only. |
 | `vocabulary` | `<repo>/vocabularies/default.yaml` | The vocabulary dictionary: names the map uses, translated into names the converter understands (see "Vocabulary" below). |
+| `vocabulary_vendors` | `<repo>/vocabularies/vendors` | Folder of vendor dictionaries; every one whose `match` fits the file header applies on top of `vocabulary`. |
 
 ## Output files
 
@@ -191,7 +192,7 @@ L5 and L6 count, inside `trim_radius` when it is set, every control the converte
 lists those with no stopline by OpenDRIVE id:
 
 1. A traffic light needs a stopline row naming its id. A light's rows cross the lanes its `<validity>` (on the
-   signal or on a `<signalReference>` with its id) names, where each lane enters; H2-H4 and H7 below decide
+   signal or on a `<signalReference>` with its id) names, where each lane enters; the dictionary's lane-0 reading and H3, H4 and H7 below decide
    the rest. A light H7 finds on a road without drivable lanes is not counted.
 2. A stop or yield sign needs a stopline. A sign can be a signal that the country's sign table reads as stop or
    yield (`206`/`205` in Germany, `R1-1` in the USA, for example; CommonRoad's US table has no yield sign), or a `Stencil_STOP`,
@@ -208,7 +209,8 @@ items for scripts. After a summary (AutoFix on or off, preset, verdict) it has o
 
 1. heuristic that changed the conversion against BasicConversion (AutoFix);
 2. heuristic that was off and would have acted (with AutoFix off, every heuristic; `autocritic.would_have_fixed`);
-3. check that failed, or that lists places (L10-L13).
+3. element attribute the vocabulary dictionary translated (every place, see "Vocabulary");
+4. check that failed, or that lists places (L10-L13).
 
 Each section numbers its items (element, position in the local frame, what happened) and draws them: a birdview
 of the whole map with every item circled and numbered, and a close-up of each (50 m wide, 24 per image). The
@@ -233,7 +235,24 @@ another; to extend it, copy it and add entries. Translatable attributes: `lane.t
 `connection.contactPoint`. A dictionary can only map onto meanings the converter has (it cannot teach it a new
 one); a file naming another attribute, or translating into a name the converter does not understand, stops the run
 (exit code 3). Every place a translation applies is recorded in the conversion report (`kind="translated"`), and
-the provenance records which dictionary (path and sha256) was used.
+the provenance records which dictionaries (paths and sha256) were used.
+
+A `signals` section reads codes rather than single names (a key left out reads the file literally):
+
+```yaml
+signals:
+  traffic_light_types: ["100\\d{4}"]   # a signal marked dynamic is a traffic light only with one of these codes
+  countries_by_code: {USA: [R1-1]}      # a sign with no country and one of these codes uses that country's table
+  lane_zero_validity_means_none: true   # a <validity> naming only lane 0 names no lane
+```
+
+These three were heuristics (H1, H8, H2) and are part of the default dictionary, so they apply with AutoFix off too;
+to read the codes literally, pass a dictionary without them.
+
+A vendor dictionary is a file in `vocabularies/vendors/` (or the folder `vocabulary_vendors=` names) with a `match` on
+the file header (`vendor`, `name`, `revMajor`, `revMinor`), e.g. `match: {vendor: "DeepMap, Inc."}`. Every vendor
+dictionary whose match fits applies on top of the base one, in every mode. The repo ships one for DeepMap (object
+orientation `undefined` read as `none`); dictionaries for customer dialects belong outside the repo.
 
 ### Heuristics
 
@@ -246,14 +265,11 @@ switched-off one would have acted (`applied` false), with its position.
 
 | Id | Name | Default | Decides |
 |---|---|---|---|
-| H1 | `light_type_code` | on, `pattern="100\d{4}"` | A `dynamic="yes"` signal is a traffic light only if its `type` matches `pattern` in full; others are read as static signs |
-| H2 | `centre_line_validity` | on | A `<validity>` naming only lane 0 names no lane |
 | H3 | `facing_lanes` | on | A light (or, with H6, a sign) no validity binds covers the drivable lanes its `orientation` faces, on its references' roads or else its own |
 | H4 | `stop_at_signal_s` | on | Outside a junction a stopline sits at the signal's (or reference's) s; on a junction's connecting road it sits where the lane enters |
 | H5 | `sign_stencil_match` | on, `max_distance_m=10` | A stop/yield stencil of the same kind within the distance of a sign (or, with H6, inside a lane the sign binds, within the distance of its row) is that sign's stopline |
 | H6 | `sign_signal_stoplines` | on, `max_junction_distance_m=30`, `stencil_lane_distance_m=10` | The converter creates stopline rows for stop/yield sign signals (where H5 finds no stencil): lanes read in the lane section at the sign's (or reference's) s, on a junction road where the lane enters it, one row per lane; only on lanes that enter a junction within `max_junction_distance_m` of the sign, and not where a same-kind stencil lies within `stencil_lane_distance_m` along the lane |
 | H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
-| H8 | `us_sign_codes` | on | A sign with no country and a US (MUTCD) code such as `r1`/`1` is read with the US table |
 | H10 | `seam_tolerance` | on, `max_gap_m=1.0` | Linked lanelets whose ends lie up to `max_gap_m` apart share their end nodes, so routing crosses the seam; without it only ends within 1 cm do |
 | H11 | `fsm_distance_clusters` | on, `max_distance_m=50` | `traffic_light_fsm.py`: lights this close are one intersection (two declared junctions never merge); without it each junction, and each light no junction claims, is its own |
 | H12 | `fsm_axis_split` | on, `min_angle_rad=0.5` | `traffic_light_fsm.py`: an intersection's phases are split by stopline direction; without it they are the declared controllers, in sequence order, and one phase per light no controller names |
@@ -589,7 +605,7 @@ options:
   types are dropped. A `bidirectional` lane is tagged `one_way=no` (plus the per-user `one_way:vehicle...`
   tags) and is never concatenated with its neighbours; links to it are kept only where the lanes meet, and a
   connector retracing it in reverse is dropped.
-- Traffic lights come from dynamic `<signal>` elements with a light type code (H1); stop and yield stoplines
+- Traffic lights come from dynamic `<signal>` elements with a traffic-light type code (the vocabulary dictionary); stop and yield stoplines
   from `<object>` elements with CARLA's stencil names and from sign signals (H6) on lanes that enter a junction
   within 30 m. Other vendors' encodings may produce no sign stoplines.
 - Geo-references: `+proj=tmerc` (origin `lat_0`/`lon_0`; with an `x_0`/`y_0` false easting/northing, origin

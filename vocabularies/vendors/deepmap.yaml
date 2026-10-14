@@ -1,0 +1,7 @@
+# Vendor dictionary for DeepMap exports (vocabulary.py): applies to every file whose header vendor matches, on top
+# of the base dictionary. DeepMap writes object orientation "undefined" for objects valid in both directions.
+match:
+  vendor: "DeepMap, Inc."
+translations:
+  object.orientation:
+    undefined: none

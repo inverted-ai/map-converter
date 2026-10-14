@@ -86,4 +86,90 @@ def test_provenance_records_the_dictionary_used(tmp_path):
     assert result.returncode == 0, result.stderr
     provenance = json.loads((tmp_path / "case_provenance.json").read_text())
     path = cm.MapConversionConfig().vocabulary
-    assert provenance["vocabulary"] == {"path": path, "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest()}
+    assert provenance["vocabulary"] == {
+        "path": path,
+        "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest(),
+        "vendors": [],
+    }
+
+
+def _vendor_dictionary(*, folder, vendor: str) -> str:
+    folder.mkdir()
+    (folder / "acme.yaml").write_text(
+        f"match: {{vendor: '{vendor}'}}\ntranslations:\n  object.orientation: {{sideways: none}}\n"
+    )
+    return str(folder)
+
+
+def _sideways_object_map(*, map_dir, vendor: str) -> None:
+    road = _road(objects=[xb.ObjectSpec(id="93", s=30.0, orientation="sideways")])
+    xb.write_xodr(map_dir=map_dir, name="case", text=xb.build_xodr(roads=[road], vendor=vendor))
+
+
+@pytest.mark.parametrize("vendor, applies", [("Acme", True), ("Other", False)])
+def test_a_vendors_dictionary_applies_to_that_vendors_files_only(tmp_path, vendor, applies):
+    vendors = _vendor_dictionary(folder=tmp_path / "vendors", vendor="Acme")
+    _sideways_object_map(map_dir=tmp_path / "map", vendor=vendor)
+    result = xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary_vendors=vendors)
+    assert result.returncode == 0, result.stderr
+    report = json.loads((tmp_path / "map" / "case_conversion_report.json").read_text())
+    assert bool(_records(report=report, kind="translated", element="object.orientation")) is applies
+    assert bool(_records(report=report, kind="unknown_value", element="object.orientation")) is not applies
+    provenance = json.loads((tmp_path / "map" / "case_provenance.json").read_text())
+    expected = ["acme.yaml"] if applies else []
+    assert [os.path.basename(v["path"]) for v in provenance["vocabulary"]["vendors"]] == expected
+
+
+def test_a_vendor_dictionary_without_a_match_is_refused(tmp_path):
+    (tmp_path / "vendors").mkdir()
+    (tmp_path / "vendors" / "acme.yaml").write_text("translations:\n  object.orientation: {sideways: none}\n")
+    _sideways_object_map(map_dir=tmp_path / "map", vendor="Acme")
+    result = xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary_vendors=str(tmp_path / "vendors"))
+    assert result.returncode == conversion_common.REFUSED_EXIT_CODE
+    assert "match" in result.stderr
+
+
+def test_the_shipped_vendor_dictionaries_load_and_deepmap_matches_its_header():
+    vendors = vocabulary.load_vendors(folder=cm.MapConversionConfig().vocabulary_vendors)
+    deepmap = {"vendor": "DeepMap, Inc.", "name": "x", "revMajor": "1", "revMinor": "4"}
+    assert [v.translations for v in vocabulary.matching(vendors=vendors, header=deepmap)] == [
+        {"object.orientation": {"undefined": "none"}}
+    ]
+    assert vocabulary.matching(vendors=vendors, header={"vendor": "VectorZero"}) == []
+
+
+
+def test_the_default_dictionary_reads_light_codes_us_codes_and_lane_zero():
+    words = vocabulary.load(path=cm.MapConversionConfig().vocabulary)
+    assert vocabulary.is_traffic_light(signal_type="1000001", vocabulary=words)
+    assert not vocabulary.is_traffic_light(signal_type="r1", vocabulary=words)
+    assert vocabulary.country_for_code(country="", signal_type="r1", subtype="1", vocabulary=words) == ("USA", "R1", "1")
+    assert vocabulary.country_for_code(country="DEU", signal_type="r1", subtype="1", vocabulary=words) is None
+    assert vocabulary.names_no_lane(validity_from="0", validity_to="0", vocabulary=words)
+
+
+def test_a_dictionary_without_signals_reads_codes_literally(tmp_path):
+    words = vocabulary.load(path=_dictionary(path=tmp_path / "literal.yaml", text="translations: {}\n"))
+    assert vocabulary.is_traffic_light(signal_type="r1", vocabulary=words)
+    assert vocabulary.country_for_code(country="", signal_type="r1", subtype="1", vocabulary=words) is None
+    assert not vocabulary.names_no_lane(validity_from="0", validity_to="0", vocabulary=words)
+
+
+def test_a_vendor_dictionary_overrides_the_signals_it_names(tmp_path):
+    base = vocabulary.load(path=cm.MapConversionConfig().vocabulary)
+    vendor = vocabulary.load(
+        path=_dictionary(path=tmp_path / "v.yaml", text="match: {vendor: A}\nsignals: {lane_zero_validity_means_none: false}\n"),
+        vendor=True,
+    )
+    combined = vocabulary.combine(vocabularies=[base, vendor])
+    assert not combined.signals["lane_zero_validity_means_none"]
+    assert combined.signals["countries_by_code"] == {"USA": ("R1-1",)}
+
+
+@pytest.mark.parametrize("text, named", [
+    ("signals: {colour_codes: []}\n", "colour_codes"),
+    ("signals: {traffic_light_types: ['100(']}\n", "regular expression"),
+])
+def test_a_bad_signals_section_is_refused(tmp_path, text, named):
+    with pytest.raises(ValueError, match=named):
+        vocabulary.load(path=_dictionary(path=tmp_path / "bad.yaml", text=text))

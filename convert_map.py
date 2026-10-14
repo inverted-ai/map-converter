@@ -119,6 +119,8 @@ class MapConversionConfig:
             ``report.closeups=false``.
         vocabulary: The vocabulary dictionary (:mod:`vocabulary`) that translates names the file uses into
             names the converter understands; default ``<repo>/vocabularies/default.yaml``.
+        vocabulary_vendors: Folder of vendor dictionaries; each whose ``match`` fits the file header applies on
+            top of ``vocabulary``. Default ``<repo>/vocabularies/vendors``.
     """
 
     dir_path: Optional[str] = None
@@ -140,6 +142,8 @@ class MapConversionConfig:
     autofix: conversion_heuristics.AutoFixConfig = dataclasses.field(default_factory=conversion_heuristics.AutoFixConfig)
     autocritic: map_validation.AutoCriticConfig = dataclasses.field(default_factory=map_validation.AutoCriticConfig)
     report: autocritic_report.ReportConfig = dataclasses.field(default_factory=autocritic_report.ReportConfig)
+    # vocabulary_vendors first: the field named vocabulary shadows the module in this class body
+    vocabulary_vendors: str = vocabulary.VENDORS_DIR
     vocabulary: str = vocabulary.DEFAULT_PATH
 
 
@@ -480,6 +484,7 @@ class ParsedXodr:
     geo_reference: GeoReference
     projector: object
     frame: CustomTransfomer
+    words: vocabulary.Vocabulary  # the dictionary in use: base, then matching vendor dictionaries, combined
     traffic_side: Optional[str]  # "RHT", "LHT" or "mixed"
     geo_reference_status: str  # "declared", "absent" or "unusable_zero_origin_allowed"
     dropped_signals: list[dict] = dataclasses.field(default_factory=list)  # H14 drops: {id, location, detail}
@@ -563,6 +568,7 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError(f'verifier_formulas: unknown {", ".join(unknown)}')
     try:
         vocabulary.load(path=cfg.vocabulary)
+        vocabulary.load_vendors(folder=cfg.vocabulary_vendors)
         map_validation.check_config(config=cfg.autocritic)
         conversion_heuristics.check_config(config=cfg.autofix.heuristics)
     except ValueError as exc:
@@ -600,33 +606,36 @@ def _signal_position(*, road, signal, frame: CustomTransfomer) -> tuple[float, f
 
 
 def signal_corrections(
-    *, opendrive, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
+    *, opendrive, words: vocabulary.Vocabulary, frame: CustomTransfomer
 ) -> list[tuple[object, dict]]:
-    """The signal attributes H1 (light type code) and H8 (US sign codes) change: ``(signal, {attribute: value})``."""
+    """The signal attributes the dictionary's ``signals`` section changes: ``(signal, {attribute: value})``.
+
+    A signal marked dynamic whose type is no traffic-light code becomes a static sign; a sign with no
+    country whose code the dictionary lists is read with that country's table. Each is recorded.
+    """
     corrections = []
     for road in opendrive.roads:
         for signal in road.signals:
             changes = {}
-            if (
-                signal.dynamic == 'yes'
-                and not conversion_heuristics.is_traffic_light(signal_type=signal.type, config=heuristics)
-                and conversion_heuristics.record(
-                    heuristic_id='H1', element_id=signal.id, action='read_as_static_sign',
-                    message=f'signal {signal.id}: dynamic but type {signal.type!r} is no light code - a static sign',
-                    config=heuristics, location=_signal_position(road=road, signal=signal, frame=frame),
-                )
-            ):
+            if signal.dynamic == 'yes' and not vocabulary.is_traffic_light(signal_type=signal.type, vocabulary=words):
                 changes['dynamic'] = 'no'
-            if changes.get('dynamic', signal.dynamic) != 'yes':
-                code = conversion_heuristics.us_sign_code(
-                    country=signal.country, signal_type=signal.type, subtype=signal.subtype, config=heuristics
+                vocabulary.record(
+                    element='signal.dynamic', element_id=signal.id, value='yes', meaning='no',
+                    message=f'type {signal.type!r} is no traffic-light code - a static sign',
+                    location=_signal_position(road=road, signal=signal, frame=frame),
                 )
-                if code is not None and conversion_heuristics.record(
-                    heuristic_id='H8', element_id=signal.id, action='read_with_us_table',
-                    message=f'signal {signal.id}: no country, type {signal.type!r} - read as US sign {code[0]}-{code[1]}',
-                    config=heuristics, location=_signal_position(road=road, signal=signal, frame=frame),
-                ):
-                    changes.update(country='USA', type=code[0], subtype=code[1])
+            if changes.get('dynamic', signal.dynamic) != 'yes':
+                read_as = vocabulary.country_for_code(
+                    country=signal.country, signal_type=signal.type, subtype=signal.subtype, vocabulary=words
+                )
+                if read_as is not None:
+                    country, code_type, code_subtype = read_as
+                    changes.update(country=country, type=code_type, subtype=code_subtype)
+                    vocabulary.record(
+                        element='signal.country', element_id=signal.id, value=signal.country or '', meaning=country,
+                        message=f'no country, code {signal.type!r} - read as {country} sign {code_type}-{code_subtype}',
+                        location=_signal_position(road=road, signal=signal, frame=frame),
+                    )
             if changes:
                 corrections.append((signal, changes))
     return corrections
@@ -662,7 +671,7 @@ def parse_xodr(
     opendrive_path: str,
     allow_zero_origin: bool = False,
     heuristics: Optional[conversion_heuristics.HeuristicsConfig] = None,
-    words: Optional[vocabulary.Vocabulary] = None,
+    words: Optional[list[vocabulary.Vocabulary]] = None,
 ) -> ParsedXodr:
     """Parse the OpenDRIVE file, build the Lanelet2 projector from its geo-reference, and apply the signal heuristics.
 
@@ -673,7 +682,8 @@ def parse_xodr(
     heuristics = heuristics or conversion_heuristics.HeuristicsConfig()
     logger.info(f'Using {opendrive_path} as input')
     location = map_name(xodr_path=opendrive_path)
-    vocabulary.install(vocabulary=words or vocabulary.load(path=vocabulary.DEFAULT_PATH))
+    words = vocabulary.combine(vocabularies=words or [vocabulary.load(path=vocabulary.DEFAULT_PATH)])
+    vocabulary.install(vocabulary=words)
     opendrive = parse_opendrive(Path(opendrive_path))
 
     # Construct Lanelet2 projector
@@ -725,7 +735,7 @@ def parse_xodr(
         projector = lanelet2.projection.UtmProjector(geo_reference.lanelet2_origin)
         frame = CustomTransfomer(projector)
 
-    for signal, changes in signal_corrections(opendrive=opendrive, heuristics=heuristics, frame=frame):
+    for signal, changes in signal_corrections(opendrive=opendrive, words=words, frame=frame):
         for attribute, value in changes.items():
             setattr(signal, attribute, value)
     past_end = signals_past_road_end(opendrive=opendrive, heuristics=heuristics, frame=frame)
@@ -750,6 +760,7 @@ def parse_xodr(
         else:
             signal.s = s
     return ParsedXodr(
+        words=words,
         dropped_signals=dropped_signals,
         location=location,
         opendrive=opendrive,
@@ -945,6 +956,7 @@ def extract_stoplines(
     lanelet_network: LaneletNetwork,
     road_network: Network,
     frame: CustomTransfomer,
+    words: vocabulary.Vocabulary,
 ) -> ExtractedStoplines:
     """Write traffic-light, stop-sign and yield-sign stoplines to ``<map>_stoplines.json``.
 
@@ -960,6 +972,7 @@ def extract_stoplines(
         within=lambda *, x, y, z=None: _within_trim(cfg=cfg, x=x, y=y, z=z),
         drivable_types=frozenset(CONVERTED_LANE_TYPES),
         config=heuristics,
+        words=words,
     )
     painted = traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame)
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
@@ -1066,9 +1079,20 @@ def fitting_visualization_fov(*, verts: torch.Tensor, center: list[float]) -> fl
     return float(2.0 * offsets.max() * FOV_MARGIN) if offsets.numel() else DEFAULT_VISUALIZATION_FOV
 
 
-def _vocabulary_identity(*, path: str) -> dict[str, str]:
-    words = vocabulary.load(path=path)
-    return {"path": words.path, "sha256": words.sha256}
+def _vocabularies(*, cfg: MapConversionConfig, xodr_path: str) -> list[vocabulary.Vocabulary]:
+    """The base dictionary, then every vendor dictionary matching the file's header."""
+    vendors = vocabulary.load_vendors(folder=cfg.vocabulary_vendors)
+    header = vocabulary.read_header(xodr_path=xodr_path)
+    return [vocabulary.load(path=cfg.vocabulary), *vocabulary.matching(vendors=vendors, header=header)]
+
+
+def _vocabulary_identity(*, cfg: MapConversionConfig, xodr_path: str) -> dict:
+    base, *vendors = _vocabularies(cfg=cfg, xodr_path=xodr_path)
+    return {
+        "path": base.path,
+        "sha256": base.sha256,
+        "vendors": [{"path": v.path, "sha256": v.sha256} for v in vendors],
+    }
 
 
 def write_provenance(
@@ -1099,7 +1123,7 @@ def write_provenance(
         "created_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "input": {"path": os.path.abspath(xodr_path), "sha256": sha256_file(path=xodr_path)},
         "config": OmegaConf.to_container(OmegaConf.structured(cfg)),
-        "vocabulary": _vocabulary_identity(path=cfg.vocabulary),
+        "vocabulary": _vocabulary_identity(cfg=cfg, xodr_path=xodr_path),
         "visualization_fov": visualization_fov,
         "traffic_side": traffic_side,
         "geo_reference": geo_reference_status,
@@ -1203,7 +1227,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         opendrive_path=opendrive_path,
         allow_zero_origin=cfg.allow_zero_origin,
         heuristics=conversion_heuristics.applied_heuristics(autofix=cfg.autofix),
-        words=vocabulary.load(path=cfg.vocabulary),
+        words=_vocabularies(cfg=cfg, xodr_path=opendrive_path),
     )
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)
@@ -1214,6 +1238,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         lanelet_network=exported.lanelet_network,
         road_network=exported.road_network,
         frame=parsed.frame,
+        words=parsed.words,
     )
     write_signal_groups(
         xodr_path=opendrive_path, out_path=os.path.join(cfg.dir_path, f"{parsed.location}_signal_groups.json")

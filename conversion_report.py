@@ -78,6 +78,8 @@ class ConversionReport(logging.Handler):
         if entry["kind"] == "heuristic":
             entry["applied"] = getattr(record, "applied", True)
             entry["location"] = getattr(record, "location", None)
+        elif entry["kind"] == "translated" and getattr(record, "location", None) is not None:
+            entry["location"] = record.location
         self.records.append(entry)
 
     def summary(self, *, elements_seen: dict[str, int]) -> dict[str, Any]:

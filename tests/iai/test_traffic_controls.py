@@ -54,6 +54,17 @@ def _heuristic_ids(*, out: dict, heuristic_id: str) -> list[str]:
     return [str(i) for i in out["heuristics"].get(heuristic_id, {}).get("ids", [])]
 
 
+def _translated_ids(*, out: dict, element: str) -> list[str]:
+    return [str(r["id"]) for r in out["report"]["records"] if r["kind"] == "translated" and r["element"] == element]
+
+
+def _literal_dictionary(*, tmp_path) -> dict[str, str]:
+    """A vocabulary dictionary with no ``signals`` section: codes and validities are read literally."""
+    path = tmp_path / "literal.yaml"
+    path.write_text("translations: {}\n")
+    return {"vocabulary": str(path)}
+
+
 def test_junction_road_lights_stop_where_their_lane_enters(tmp_path):
     # The connecting-road placement every CARLA map uses: unchanged by any heuristic.
     roads, junctions, controllers = xb.junction_map()
@@ -87,13 +98,14 @@ def test_centre_line_validity_binds_the_lanes_the_light_faces(tmp_path):
     light = xb.SignalSpec(id="31", s=40.0, orientation="-", validity=(0, 0))
     out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])])
     assert _rows(out=out) == [("31", 40.0, LANE_LEFT_Y, round(-math.pi, 3))]
-    assert _heuristic_ids(out=out, heuristic_id="H2") == ["31"]
+    assert _translated_ids(out=out, element="signal.validity") == ["31"]
     assert _heuristic_ids(out=out, heuristic_id="H3") == ["31"]
 
 
-def test_centre_line_validity_binds_nothing_without_the_heuristic(tmp_path):
+def test_centre_line_validity_binds_nothing_read_literally(tmp_path):
     light = xb.SignalSpec(id="31", s=40.0, orientation="-", validity=(0, 0))
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[light])], **{"autofix.heuristics.centre_line_validity.enabled": "false"})
+    (tmp_path / "map").mkdir()
+    out = _convert(tmp_path=tmp_path / "map", roads=[_plain_road(signals=[light])], **_literal_dictionary(tmp_path=tmp_path))
     assert _rows(out=out) == []
     assert out["controls"]["lights_without_stopline"] == ["31"]
 
@@ -155,24 +167,25 @@ def test_dynamic_signal_without_a_light_type_is_a_sign(tmp_path):
     stop = xb.SignalSpec(id="71", s=40.0, type="r1", subtype="1", country="", validity=(-1, -1))
     out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])])
     assert out["controls"]["lights"] == 0
-    assert _heuristic_ids(out=out, heuristic_id="H1") == ["71"]
+    assert _translated_ids(out=out, element="signal.dynamic") == ["71"]
     # Read with the US sign table it is a STOP sign (no stopline: its lane reaches no junction within H6's 30 m).
-    assert _heuristic_ids(out=out, heuristic_id="H8") == ["71"]
+    assert _translated_ids(out=out, element="signal.country") == ["71"]
     assert (out["controls"]["stop_yield_signs"], out["controls"]["signs_without_stopline"]) == (1, ["signal 71"])
 
 
-def test_dynamic_signal_without_a_light_type_stays_a_light_without_the_heuristic(tmp_path):
+def test_dynamic_signal_without_a_light_type_stays_a_light_read_literally(tmp_path):
     stop = xb.SignalSpec(id="71", s=40.0, type="r1", subtype="1", country="", validity=(-1, -1))
-    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[stop])], **{"autofix.heuristics.light_type_code.enabled": "false"})
+    (tmp_path / "map").mkdir()
+    out = _convert(tmp_path=tmp_path / "map", roads=[_plain_road(signals=[stop])], **_literal_dictionary(tmp_path=tmp_path))
     assert out["controls"]["lights"] == 1
-    assert "H1" not in out["heuristics"]
+    assert _translated_ids(out=out, element="signal.dynamic") == []
 
 
 def test_us_codes_other_than_stop_and_yield_are_read_as_before(tmp_path):
     # MUTCD R2-1 is a speed limit; read with the US table its value -1 became a -1 m/s limit.
     speed = xb.SignalSpec(id="72", s=40.0, dynamic="no", type="r2", subtype="1", country="", validity=(-1, -1))
     out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=[speed])])
-    assert "H8" not in out["heuristics"]
+    assert _translated_ids(out=out, element="signal.country") == []
     with open(tmp_path / "case.osm") as f:
         assert 'v="-1.0"' not in f.read()
 
@@ -325,8 +338,8 @@ def test_autofix_off_leaves_the_heuristic_settings_but_disables_them():
     autofix = ch.AutoFixConfig(enabled=False)
     applied = ch.applied_heuristics(autofix=autofix)
     assert not any(getattr(applied, f.name).enabled for f in ch.dataclasses.fields(applied))
-    assert applied.light_type_code.pattern == autofix.heuristics.light_type_code.pattern
-    assert autofix.heuristics.light_type_code.enabled
+    assert applied.sign_stencil_match.max_distance_m == autofix.heuristics.sign_stencil_match.max_distance_m
+    assert autofix.heuristics.sign_stencil_match.enabled
     assert ch.applied_heuristics(autofix=ch.AutoFixConfig()) == ch.HeuristicsConfig()
 
 
@@ -398,7 +411,7 @@ def test_partly_scoped_sign_records_its_centre_line_validity(tmp_path):
     roads[1].signal_references.append(xb.SignalReferenceSpec(id="88", s=0.0, validity=(-1, -1)))
     out = _convert(tmp_path=tmp_path, roads=roads, junctions=junctions)
     assert _rows(out=out, agent_type="stop_sign") == [("88", 50.0, LANE_RIGHT_Y, 0.0)]
-    assert _heuristic_ids(out=out, heuristic_id="H2") == ["88"]
+    assert _translated_ids(out=out, element="signal.validity") == ["88"]
 
 
 def test_stencil_covering_some_of_a_signs_lanes_is_recorded(tmp_path):

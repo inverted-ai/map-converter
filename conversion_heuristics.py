@@ -18,6 +18,10 @@ BasicConversion (the conversion with every heuristic off) and what a disabled he
 changed. A detection is made where the conversion reaches the heuristic's decision: with one
 heuristic off, those that would have acted on its result are not reached.
 
+Readings of names and codes (which type codes mean a traffic light, which codes without a country belong to which
+sign table, a validity naming only lane 0) are not heuristics: they live in the vocabulary dictionary
+(:mod:`vocabulary`, ``vocabularies/default.yaml``), which a user can edit.
+
 Guesses that are not configurable here yet:
 
 - ``crdesigner/.../opendrive_conversion/network.py`` ``Network._stop_lines_from_road``: the object
@@ -35,14 +39,10 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import logging
-import re
 from typing import Callable, Optional, Sequence
-
-from commonroad.scenario.traffic_sign import TrafficSignIDUsa
 
 from conversion_report import DEGRADATION_LOGGER
 
-US_STOP_YIELD_CODES = frozenset(item.value.upper() for item in TrafficSignIDUsa if item.name in ("STOP", "YIELD"))
 
 
 @dataclasses.dataclass(slots=True)
@@ -50,19 +50,6 @@ class Switch:
     """A heuristic with no parameter: whether it is applied."""
 
     enabled: bool = True
-
-
-@dataclasses.dataclass(slots=True)
-class LightTypeCodeConfig:
-    """H1.
-
-    Attributes:
-        enabled: Whether it is applied.
-        pattern: Regular expression a traffic light's ``type`` must match in full.
-    """
-
-    enabled: bool = True
-    pattern: str = r"100\d{4}"
 
 
 @dataclasses.dataclass(slots=True)
@@ -170,14 +157,11 @@ class FsmTopologyRefinementConfig:
 class HeuristicsConfig:
     """Settings of the :data:`HEURISTICS`, one entry per heuristic, named after it."""
 
-    light_type_code: LightTypeCodeConfig = dataclasses.field(default_factory=LightTypeCodeConfig)
-    centre_line_validity: Switch = dataclasses.field(default_factory=Switch)
     facing_lanes: Switch = dataclasses.field(default_factory=Switch)
     stop_at_signal_s: Switch = dataclasses.field(default_factory=Switch)
     sign_stencil_match: SignStencilMatchConfig = dataclasses.field(default_factory=SignStencilMatchConfig)
     sign_signal_stoplines: SignSignalStoplinesConfig = dataclasses.field(default_factory=SignSignalStoplinesConfig)
     non_vehicle_light: Switch = dataclasses.field(default_factory=Switch)
-    us_sign_codes: Switch = dataclasses.field(default_factory=Switch)
     seam_tolerance: SeamToleranceConfig = dataclasses.field(default_factory=SeamToleranceConfig)
     fsm_distance_clusters: FsmDistanceClustersConfig = dataclasses.field(default_factory=FsmDistanceClustersConfig)
     fsm_axis_split: FsmAxisSplitConfig = dataclasses.field(default_factory=FsmAxisSplitConfig)
@@ -252,10 +236,6 @@ def check_config(*, config: HeuristicsConfig) -> None:
             numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
             if numeric and not value >= 0:
                 raise ValueError(f"{prefix}.{entry.name}.{setting.name} must be >= 0, got {value}")
-    try:
-        re.compile(config.light_type_code.pattern)
-    except re.error as exc:
-        raise ValueError(f"{prefix}.light_type_code.pattern is not a regular expression: {exc}") from exc
 
 
 def applies(*, heuristic_id: str, config: HeuristicsConfig) -> bool:
@@ -304,45 +284,6 @@ def record(
         },
     )
     return applied
-
-
-@_heuristic(id="H1", name="light_type_code")
-def is_traffic_light(*, signal_type: Optional[str], config: HeuristicsConfig) -> bool:
-    """A ``dynamic="yes"`` signal is a traffic light only if its ``type`` is a ``100xxxx`` light code.
-
-    Assumes: exporters mark some static signs ``dynamic="yes"``; the type code is more reliable
-    than the flag. A dynamic signal with another type is converted as a static sign.
-
-    Evidence: in the corpus every real light (about 1,500 across 22 maps, named ``*Light*`` or
-    ``Signal_*``) has a type 1000001-1002101. The only dynamic signals with other types are one
-    exporter's 537 static signs (US sign codes such as ``r1`` STOP, ``r2`` YIELD, or ``-1``).
-
-    Breaks when: a source codes its traffic lights outside ``light_type_code.pattern``. Its lights would
-    disappear from the stoplines and be listed under H1 in the conversion report; widen the
-    pattern or switch the heuristic off.
-    """
-    return re.fullmatch(config.light_type_code.pattern, signal_type or "") is not None
-
-
-@_heuristic(id="H2", name="centre_line_validity")
-def names_only_the_centre_line(*, validity_from: object, validity_to: object) -> bool:
-    """A ``<validity>`` naming only lane 0 names no lane.
-
-    Assumes: lane 0 is the reference line, not a lane; an exporter that writes
-    ``fromLane="0" toLane="0"`` gives no lane scope, so the signal is treated as having no
-    validity (H3 then decides its lanes).
-
-    Evidence: 546 corpus signals have only this validity (one exporter's 530 static signs and 16
-    lights of one map); none has another usable lane scope.
-
-    Breaks when: a source means lane 0 as "the lanes next to the centre line" on a road with lanes
-    on both sides and the signal facing both ways; H3 would then bind the lanes its orientation
-    faces, not both inner lanes.
-    """
-    try:
-        return float(validity_from) == 0.0 and float(validity_to) == 0.0
-    except (TypeError, ValueError):
-        return False
 
 
 @_heuristic(id="H3", name="facing_lanes")
@@ -440,35 +381,6 @@ def is_vehicle_light(*, has_drivable_lane: bool) -> bool:
     names them only through a reference that failed to parse; it is not counted as missing.
     """
     return has_drivable_lane
-
-
-@_heuristic(id="H8", name="us_sign_codes")
-def us_sign_code(
-    *, country: Optional[str], signal_type: Optional[str], subtype: Optional[str], config: HeuristicsConfig
-) -> Optional[tuple[str, str]]:
-    """A sign with no country whose type is the US (MUTCD) code of a stop or yield sign is read with the US table.
-
-    Assumes: ``type="r1" subtype="1"`` with an empty country is MUTCD R1-1 (STOP); the code
-    letters are case-insensitive. Only codes the US table reads as STOP or YIELD are taken; every
-    other sign is read as before. Returns the upper-cased ``(type, subtype)`` to read, or ``None``
-    when the rule does not apply.
-
-    Evidence: one exporter writes US sign codes (``r1``, ``r2``, ``r6``, ``w11``...) with
-    ``country=""``; the default ZAM table does not know R1-1. Reading all its codes with the US
-    table turned 15 valueless R2-1 signs into -1 m/s speed limits and broke routing, hence the
-    restriction to stop and yield.
-
-    Breaks when: a source with no country uses a non-US code that spells R1-1; it becomes a STOP
-    sign. CommonRoad's US table has no YIELD (R1-2), so US yield signs are not recognised.
-    """
-    if (country or "").strip() or not signal_type:
-        return None
-    code_type, code_subtype = signal_type.upper(), (subtype or "").upper()
-    for code in (f"{code_type}-{code_subtype}", code_type):
-        if code in US_STOP_YIELD_CODES:
-            return code_type, code_subtype
-    return None
-
 
 
 READER_S_TOLERANCE_M = 0.01

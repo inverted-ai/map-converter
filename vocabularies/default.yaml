@@ -1,9 +1,23 @@
 # The converter's default vocabulary dictionary (vocabulary.py): names an OpenDRIVE file may use, per element
 # attribute, translated into names the converter understands. Used unless convert_map.py gets vocabulary=<file>;
 # to extend it, copy this file, add entries and pass the copy. Every place a translation applies is recorded in
-# <map>_conversion_report.json (kind "translated").
+# <map>_conversion_report.json (kind "translated") and shown in the AutoCritic report.
 translations:
   object.type:
     "-1": none
     parking: parkingSpace
     stopline: roadMark
+
+signals:
+  # A signal marked dynamic is a traffic light only if its type matches one of these codes (in full); others are
+  # read as static signs. In the corpus every real light has a type 1000001-1002101; one exporter marks 537 static
+  # signs (US codes r1, r2 or -1) dynamic.
+  traffic_light_types: ["100\\d{4}"]
+  # A sign with no country whose code (TYPE-SUBTYPE or TYPE, any case) is listed is read with that country's sign
+  # table. MUTCD R1-1 is STOP; CommonRoad's US table has no YIELD, and other US codes (R2-1 speed limits without a
+  # value) broke routing when read with the US table, so only R1-1 is listed.
+  countries_by_code:
+    USA: ["R1-1"]
+  # A <validity> naming only lane 0 (fromLane="0" toLane="0") names no lane: lane 0 is the reference line. 546
+  # corpus signals have only this validity.
+  lane_zero_validity_means_none: true

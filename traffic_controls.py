@@ -25,6 +25,7 @@ import conversion_heuristics as heuristics
 import conversion_report
 import map_quality
 import map_validation
+import vocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +74,10 @@ class _Index:
     signals: dict[str, tuple[object, object]]  # signal id -> (road, signal)
     references: dict[str, list[tuple[object, object]]]  # signal id -> [(road, signalReference)]
     bound: dict[str, list[tuple[object, int]]]  # signal id -> [(road, lane id)], first lane section, in parse order
+    words: vocabulary.Vocabulary  # how names and codes are read (H2's lane-0 reading among them)
 
 
-def _index(*, opendrive, road_network) -> _Index:
+def _index(*, opendrive, road_network, words: vocabulary.Vocabulary) -> _Index:
     planes = {plane.id_: plane for plane in road_network._planes}
     signals, references, bound = {}, collections.defaultdict(list), collections.defaultdict(list)
     for road in opendrive.roads:
@@ -90,7 +92,7 @@ def _index(*, opendrive, road_network) -> _Index:
             for signal_id in getattr(lane, "signal_references", []):
                 if f"{road.id}.{first.idx}.{lane.id}.-1" in planes:
                     bound[str(signal_id)].append((road, lane.id))
-    return _Index(planes=planes, signals=signals, references=references, bound=dict(bound))
+    return _Index(planes=planes, signals=signals, references=references, bound=dict(bound), words=words)
 
 
 def _plane(*, index: _Index, road, section, lane_id: int):
@@ -202,10 +204,20 @@ def _has_validity(*, element) -> bool:
     return getattr(element, "validity_from", None) is not None
 
 
-def _names_only_the_centre_line(*, element) -> bool:
-    """H2's detection on a signal or reference (which may lack a validity)."""
-    return heuristics.names_only_the_centre_line(
-        validity_from=getattr(element, "validity_from", None), validity_to=getattr(element, "validity_to", None)
+def _names_no_lane(*, index: _Index, element) -> bool:
+    """Whether the dictionary reads this signal's or reference's validity (lane 0 only) as naming no lane."""
+    return vocabulary.names_no_lane(
+        validity_from=getattr(element, "validity_from", None),
+        validity_to=getattr(element, "validity_to", None),
+        vocabulary=index.words,
+    )
+
+
+def _record_no_lane(*, index: _Index, signal_id: str, frame) -> None:
+    vocabulary.record(
+        element="signal.validity", element_id=signal_id, value="0..0", meaning="none",
+        message=f"signal {signal_id}: validity names only lane 0 - read as no validity",
+        location=_location(index=index, signal_id=signal_id, frame=frame),
     )
 
 
@@ -215,16 +227,12 @@ def _targets(*, index: _Index, signal_id: str, config: heuristics.HeuristicsConf
     references = index.references.get(signal_id, [])
     centre_only = False
     for _, element in elements + references:
-        if _names_only_the_centre_line(element=element):
+        if _names_no_lane(index=index, element=element):
             centre_only = True
         elif _has_validity(element=element):
             return None
-    if centre_only and not heuristics.record(
-        heuristic_id="H2", element_id=signal_id, action="no_lane_scope",
-        message=f"signal {signal_id}: validity names only lane 0 - treated as no validity",
-        config=config, location=_location(index=index, signal_id=signal_id, frame=frame),
-    ):
-        return None
+    if centre_only:
+        _record_no_lane(index=index, signal_id=signal_id, frame=frame)
     chosen = references or elements
     return [Target(road=road, s=float(element.s), orientation=element.orientation) for road, element in chosen]
 
@@ -304,16 +312,11 @@ def _sign_stops(
     scoped = [
         (road, element)
         for road, element in elements
-        if _has_validity(element=element)
-        and not (_names_only_the_centre_line(element=element) and heuristics.applies(heuristic_id="H2", config=config))
+        if _has_validity(element=element) and not _names_no_lane(index=index, element=element)
     ]
     location = _location(index=index, signal_id=signal_id, frame=frame)
-    if scoped and any(_names_only_the_centre_line(element=element) for _, element in elements):
-        heuristics.record(
-            heuristic_id="H2", element_id=signal_id, action="no_lane_scope",
-            message=f"sign {signal_id}: a validity names only lane 0 - that element is treated as having no validity",
-            config=config, location=location,
-        )
+    if scoped and any(_names_no_lane(index=index, element=element) for _, element in elements):
+        _record_no_lane(index=index, signal_id=signal_id, frame=frame)
     if not scoped:
         stops, _ = _unscoped_stops(
             index=index, signal_id=signal_id, drivable_types=drivable_types, config=config, frame=frame
@@ -461,6 +464,7 @@ def control_stoplines(
     within: Callable[..., bool],
     drivable_types: frozenset[str],
     config: heuristics.HeuristicsConfig,
+    words: vocabulary.Vocabulary,
 ) -> ControlStoplines:
     """Every stopline row and the coverage of lights and stop/yield signs.
 
@@ -473,11 +477,12 @@ def control_stoplines(
             the vertical limits).
         drivable_types: OpenDRIVE lane types converted to lanelets.
         config: The heuristics settings.
+        words: The vocabulary dictionary in use (how validities naming only lane 0 are read).
 
     Returns:
         The rows (lights, then stop/yield stencils, then sign signals) and the coverage.
     """
-    index = _index(opendrive=opendrive, road_network=road_network)
+    index = _index(opendrive=opendrive, road_network=road_network, words=words)
 
     def local(position) -> np.ndarray:
         return np.array(frame.to_local(position[0], position[1]))

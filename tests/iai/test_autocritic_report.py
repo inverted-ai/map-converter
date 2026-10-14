@@ -58,6 +58,15 @@ def test_items_are_numbered_per_section():
     assert report["summary"] == {"autofix": True, "preset": "perfect", "status": "fail"}
 
 
+def test_dictionary_translations_get_their_own_section():
+    translated = {"kind": "translated", "element": "signal.dynamic", "id": 71, "value": "yes",
+                  "action": "read_as_no", "message": "signal.dynamic 71: no light code (vocabulary)", "location": [40.0, -5.0]}
+    report = ar.build(records=[*RECORDS, translated], verdict=None, autofix_enabled=True, would_have_fixed=True)
+    (section,) = [s for s in report["sections"] if s["kind"] == "vocabulary"]
+    assert (section["key"], [i["element"] for i in section["items"]]) == ("signal.dynamic", ["71"])
+    assert section["items"][0]["location"] == [40.0, -5.0]
+
+
 def test_would_have_fixed_can_be_left_out():
     report = ar.build(records=RECORDS, verdict=VERDICT, autofix_enabled=True, would_have_fixed=False)
     assert all(s["kind"] != "would_have_fixed" for s in report["sections"])

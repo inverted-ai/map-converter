@@ -4,6 +4,7 @@ Three kinds of section, each with its own numbered items:
 
 - ``autofix``: per heuristic, every place it changed the conversion against BasicConversion;
 - ``would_have_fixed``: per heuristic that was off (or with AutoFix off), every place it would have acted;
+- ``vocabulary``: per element attribute, every place the vocabulary dictionary translated a name or code;
 - ``metric``: per validation check that failed, or that lists places (L10-L13), every place it found.
 
 The HTML gives each section a numbered text list, a birdview of the whole map with the items circled and
@@ -106,6 +107,21 @@ def build(
                     "items": _items(entries=entries),
                 }
             )
+    by_element: dict[str, list[dict[str, Any]]] = {}
+    for r in records:
+        if r.get("kind") == "translated":
+            by_element.setdefault(r["element"], []).append(
+                {"element": str(r["id"]), "location": r.get("location"), "detail": r["message"]}
+            )
+    for element in sorted(by_element):
+        sections.append(
+            {
+                "kind": "vocabulary",
+                "key": element,
+                "title": f"{element}: {len(by_element[element])} translated",
+                "items": _items(entries=by_element[element]),
+            }
+        )
     for check in (verdict or {}).get("checks", []):
         if check["passed"] and not check.get("locations"):
             continue
@@ -255,7 +271,12 @@ h1{font-size:22px}h2{font-size:18px;border-top:1px solid var(--line);padding-top
 ol{padding-left:2.2em}li{overflow-wrap:anywhere}
 """
 
-SECTION_HEADINGS = {"autofix": "AutoFix", "would_have_fixed": "Would have fixed", "metric": "AutoCritic metrics"}
+SECTION_HEADINGS = {
+    "autofix": "AutoFix",
+    "would_have_fixed": "Would have fixed",
+    "vocabulary": "Vocabulary",
+    "metric": "AutoCritic metrics",
+}
 
 
 def render_html(*, report: dict[str, Any], polylines: list[np.ndarray], config: ReportConfig, title: str) -> str:

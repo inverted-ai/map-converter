@@ -21,3 +21,21 @@ signals:
   # A <validity> naming only lane 0 (fromLane="0" toLane="0") names no lane: lane 0 is the reference line. 546
   # corpus signals have only this validity.
   lane_zero_validity_means_none: true
+  # A sign whose country has no CommonRoad sign table is read with this one (ZAM: CommonRoad's generic table).
+  unknown_country_table: ZAM
+  # Sign types read as another type of the same country's table (German 252 as 260).
+  sign_type_replacements:
+    DEU: {"252": "260"}
+    ZAM: {"252": "260"}
+
+markings:
+  # Objects with these names are painted STOP / yield markings: each becomes a stop or yield stopline (CARLA names).
+  stop_stencils: [Stencil_STOP]
+  yield_stencils: [Stencil_GiveWay, Stencil_Yield_Triangles]
+  # Painted stop lines: listed in the reports, never converted. Names are regular expressions (full match, any
+  # case); object types compare in lower case. Corpus encodings: objects named StopLine (CARLA, one other
+  # exporter), objects of type stopline (one map, 222), signals named StopLine (one exporter, 114), signal type 294.
+  painted_stop_lines:
+    names: ["stop_?line"]
+    object_types: [stopline]
+    signal_types: ["294"]

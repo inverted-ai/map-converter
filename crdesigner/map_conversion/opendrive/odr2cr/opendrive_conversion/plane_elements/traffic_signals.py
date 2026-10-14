@@ -28,6 +28,19 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSi
 )
 
 
+# The sign table for a country that has none, and sign types read as another type, per country (IAI; set from the
+# vocabulary dictionary).
+UNKNOWN_COUNTRY_TABLE = "ZAM"
+SIGN_TYPE_REPLACEMENTS = {"DEU": {"252": "260"}, "ZAM": {"252": "260"}}
+
+
+def _replacements(traffic_sign_enum) -> Dict[str, str]:
+    """The sign-type replacements for the country whose sign table is ``traffic_sign_enum``."""
+    for country, table in TrafficSignIDCountries.items():
+        if table is traffic_sign_enum:
+            return SIGN_TYPE_REPLACEMENTS.get(country, {})
+    return {}
+
 def extract_traffic_element_id(
     signal_type: str, signal_subtype: str, traffic_sign_enum: enum
 ) -> Union[
@@ -49,10 +62,16 @@ def extract_traffic_element_id(
         element_id = traffic_sign_enum(signal_type)
     elif signal_type + "-" + signal_subtype in set(item.value for item in traffic_sign_enum):
         element_id = traffic_sign_enum(signal_type + "-" + str(signal_subtype))
-    elif (
-        traffic_sign_enum is TrafficSignIDGermany or traffic_sign_enum is TrafficSignIDZamunda
-    ) and signal_type == "252":  # traffic sign ID 252 is replaced by 260
-        element_id = traffic_sign_enum("260")
+    elif signal_type in _replacements(traffic_sign_enum):
+        replacement = _replacements(traffic_sign_enum)[signal_type]
+        logging.getLogger("crdesigner.degradation").warning(
+            "signal.type %s read as %s (vocabulary)",
+            signal_type,
+            replacement,
+            extra={"kind": "translated", "element": "signal.type", "id": None, "value": signal_type,
+                   "action": f"read_as_{replacement}"},
+        )
+        element_id = traffic_sign_enum(replacement)
     else:
         logging.warning(
             "OpenDRIVE/traffic_signals.py: Unknown {} of ID {} of subtype {}!".format(
@@ -120,14 +139,15 @@ def assign_traffic_signals_to_road(
                 signal_country == "ZAM" and raw_country.upper() != "ZAM"
             ):
                 logging.getLogger("crdesigner.degradation").warning(
-                    "signal %s: no sign table for country %r - using ZAM",
+                    "signal %s: no sign table for country %r - using %s",
                     signal.id,
                     signal.country,
+                    UNKNOWN_COUNTRY_TABLE,
                     extra={"kind": "unknown_value" if signal.country else "missing_attribute",
                            "element": "signal.country", "id": signal.id,
                            "value": signal.country, "action": "defaulted"},
                 )
-                signal_country = "ZAM"
+                signal_country = UNKNOWN_COUNTRY_TABLE
 
             if (
                 (signal_country == "DEU" or signal_country not in TrafficSignIDCountries.keys())

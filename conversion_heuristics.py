@@ -22,14 +22,11 @@ Readings of names and codes (which type codes mean a traffic light, which codes 
 sign table, a validity naming only lane 0) are not heuristics: they live in the vocabulary dictionary
 (:mod:`vocabulary`, ``vocabularies/default.yaml``), which a user can edit.
 
-Guesses that are not configurable here yet:
+The stencil and painted stop-line names, the sign table for an unknown country and sign-type replacements are
+dictionary entries too. Guesses that are not configurable yet:
 
-- ``crdesigner/.../opendrive_conversion/network.py`` ``Network._stop_lines_from_road``: the object
-  names read as painted stop markings (``Stencil_STOP``) and yield markings (``Stencil_GiveWay``,
-  ``Stencil_Yield_Triangles``).
-- ``crdesigner/.../plane_elements/traffic_signals.py`` ``assign_traffic_signals_to_road``: a sign
-  whose country has no sign table is read with the ``ZAM`` table; dynamic types ``1000002`` and
-  static ``1000003``/``1000004`` are skipped; German type ``252`` is read as ``260``.
+- ``crdesigner/.../plane_elements/traffic_signals.py`` ``assign_traffic_signals_to_road``: dynamic types
+  ``1000002`` and static ``1000003``/``1000004`` are skipped (with the precedence defects of decision 104).
 - ``traffic_light_fsm.py`` ``FsmConfig`` (its own command-line flags): how lights are grouped into
   intersections and phases.
 """

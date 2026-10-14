@@ -247,7 +247,12 @@ signals:
 ```
 
 These three were heuristics (H1, H8, H2) and are part of the default dictionary, so they apply with AutoFix off too;
-to read the codes literally, pass a dictionary without them.
+to read the codes literally, pass a dictionary without them. `signals` also sets `unknown_country_table` (the sign
+table for a country CommonRoad has none for; default `ZAM`) and `sign_type_replacements` (per country, sign types
+read as another type, e.g. German `252` as `260`). A `markings` section names the objects read as stop and yield
+stencils (`stop_stencils`, `yield_stencils`; each becomes a stopline) and the painted stop lines
+(`painted_stop_lines`: `names` as regular expressions, `object_types`, `signal_types`; listed, never converted).
+Left out, none are recognised; the default dictionary holds the CARLA names and the corpus encodings.
 
 A vendor dictionary is a file in `vocabularies/vendors/` (or the folder `vocabulary_vendors=` names) with a `match` on
 the file header (`vendor`, `name`, `revMajor`, `revMinor`), e.g. `match: {vendor: "DeepMap, Inc."}`. Every vendor

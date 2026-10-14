@@ -974,7 +974,7 @@ def extract_stoplines(
         config=heuristics,
         words=words,
     )
-    painted = traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame)
+    painted = traffic_controls.report_painted_stop_lines(opendrive=opendrive, frame=frame, words=words)
     stoplines_path = os.path.join(cfg.dir_path, f"{location}_stoplines.json")
     with open(stoplines_path, 'w') as f:
         logger.info(f'Writing extracted stoplines to {stoplines_path}')

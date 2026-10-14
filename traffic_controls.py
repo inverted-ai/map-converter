@@ -30,7 +30,6 @@ import vocabulary
 logger = logging.getLogger(__name__)
 
 SIGN_AGENT_TYPES = {"STOP": "stop_sign", "YIELD": "yield_sign"}  # sign-table element names -> stopline agent_type
-STOP_LINE_NAME = re.compile(r"stop_?line", re.IGNORECASE)
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -662,22 +661,24 @@ def _signal_row_distances(*, index: _Index, rows: list[dict], frame) -> list[dic
     return distances
 
 
-def is_painted_stop_line(*, tag: str, name: Optional[str], element_type: Optional[str]) -> bool:
-    """An object of type ``stopLine`` or named ``StopLine``, or a signal of type 294 or named ``StopLine``.
+def is_painted_stop_line(
+    *, tag: str, name: Optional[str], element_type: Optional[str], words: vocabulary.Vocabulary
+) -> bool:
+    """Whether an object or signal is a painted stop line, by the dictionary's ``markings.painted_stop_lines``.
 
     Painted stop lines never become, move or invent a stopline (a stop line with no control is an
     unsigned stop, and the painted position differs from where CARLA's lights stop); AutoCritic
-    lists them as not converted. Corpus encodings: objects named ``StopLine`` (CARLA, one other
-    exporter), objects of type ``stopline`` (one map, 222), signals named ``StopLine`` (one exporter, 114).
+    lists them as not converted.
     """
-    if tag == "signal" and element_type == "294":
+    painted = words.markings.get("painted_stop_lines", {})
+    if tag == "signal" and element_type in painted.get("signal_types", ()):
         return True
-    if tag == "object" and (element_type or "").lower() == "stopline":
+    if tag == "object" and (element_type or "").lower() in painted.get("object_types", ()):
         return True
-    return STOP_LINE_NAME.fullmatch(name or "") is not None
+    return any(re.fullmatch(pattern, name or "", re.IGNORECASE) for pattern in painted.get("names", ()))
 
 
-def report_painted_stop_lines(*, opendrive, frame) -> list[dict[str, Any]]:
+def report_painted_stop_lines(*, opendrive, frame, words: vocabulary.Vocabulary) -> list[dict[str, Any]]:
     """List every painted stop line in the conversion report; none becomes a stopline row.
 
     Returns:
@@ -688,7 +689,7 @@ def report_painted_stop_lines(*, opendrive, frame) -> list[dict[str, Any]]:
     for road in opendrive.roads:
         elements = [("object", obj, obj.type) for obj in road.objects] + [("signal", sig, sig.type) for sig in road.signals]
         for tag, element, element_type in elements:
-            if not is_painted_stop_line(tag=tag, name=element.name, element_type=element_type):
+            if not is_painted_stop_line(tag=tag, name=element.name, element_type=element_type, words=words):
                 continue
             position = element_position(road=road, s=float(element.s), t=float(element.t), frame=frame)
             x, y = (round(v, 2) for v in position)

@@ -181,6 +181,11 @@ def convert_to_base_lanelet_network(lanelet_network: ConversionLaneletNetwork) -
     return network
 
 
+# Object names read as painted stop / yield stencils (IAI; set from the vocabulary dictionary).
+STOP_STENCIL_NAMES = ["Stencil_STOP"]
+YIELD_STENCIL_NAMES = ["Stencil_GiveWay", "Stencil_Yield_Triangles"]
+
+
 class Network:
     """Represents a network of parametric lanes, with a LinkIndex
     which stores the neighbor relations between the parametric lanes.
@@ -380,13 +385,8 @@ class Network:
                 stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
                 self._stop_lines.append(stop_line)
 
-            stop_sign_names = [
-                'Stencil_STOP',
-            ]
-            yield_sign_names = [
-                'Stencil_GiveWay',
-                'Stencil_Yield_Triangles',
-            ]
+            stop_sign_names = STOP_STENCIL_NAMES
+            yield_sign_names = YIELD_STENCIL_NAMES
 
             if road_object.name in stop_sign_names + yield_sign_names:
                 xy, orientation, _, _ = road.plan_view.calc(road_object.s, compute_curvature=False)

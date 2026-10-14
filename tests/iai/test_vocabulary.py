@@ -173,3 +173,62 @@ def test_a_vendor_dictionary_overrides_the_signals_it_names(tmp_path):
 def test_a_bad_signals_section_is_refused(tmp_path, text, named):
     with pytest.raises(ValueError, match=named):
         vocabulary.load(path=_dictionary(path=tmp_path / "bad.yaml", text=text))
+
+
+
+def _stoplines(*, map_dir) -> list[dict]:
+    return json.loads((map_dir / "case_stoplines.json").read_text())
+
+
+@pytest.mark.parametrize("words, rows", [("markings: {stop_stencils: [MyStop]}\n", ["94"]), ("translations: {}\n", [])])
+def test_stencil_names_come_from_the_dictionary(tmp_path, words, rows):
+    road = _road(objects=[xb.ObjectSpec(id="94", s=30.0, name="MyStop")])
+    result, _ = _convert(tmp_path=tmp_path / "map", road=road, vocabulary=_dictionary(path=tmp_path / "w.yaml", text=words))
+    assert result.returncode == 0, result.stderr
+    assert [str(r["actor_id"]) for r in _stoplines(map_dir=tmp_path / "map") if r["agent_type"] == "stop_sign"] == rows
+
+
+def test_without_stencil_entries_a_stencil_object_is_only_an_object(tmp_path):
+    road = _road(objects=[xb.ObjectSpec(id="95", s=30.0)])  # named Stencil_STOP
+    words = _dictionary(path=tmp_path / "w.yaml", text="translations: {}\n")
+    result, _ = _convert(tmp_path=tmp_path / "map", road=road, vocabulary=words)
+    assert result.returncode == 0, result.stderr
+    assert _stoplines(map_dir=tmp_path / "map") == []
+
+
+def test_painted_stop_line_names_come_from_the_dictionary(tmp_path):
+    road = _road(objects=[xb.ObjectSpec(id="96", s=30.0, name="Haltlinie", type="roadMark")])
+    words = _dictionary(path=tmp_path / "w.yaml", text="markings: {painted_stop_lines: {names: [haltlinie]}}\n")
+    result, report = _convert(tmp_path=tmp_path / "map", road=road, vocabulary=words)
+    assert result.returncode == 0, result.stderr
+    assert [r["id"] for r in report["records"] if r["kind"] == "not_converted"] == ["96"]
+
+
+def test_the_default_dictionary_holds_the_built_in_readings():
+    words = vocabulary.load(path=cm.MapConversionConfig().vocabulary)
+    assert words.markings["stop_stencils"] == ("Stencil_STOP",)
+    assert words.markings["yield_stencils"] == ("Stencil_GiveWay", "Stencil_Yield_Triangles")
+    assert words.signals["unknown_country_table"] == "ZAM"
+    assert words.signals["sign_type_replacements"] == {"DEU": {"252": "260"}, "ZAM": {"252": "260"}}
+
+
+@pytest.mark.parametrize("text, named", [
+    ("signals: {unknown_country_table: XYZ}\n", "XYZ"),
+    ("signals: {sign_type_replacements: {DEU: {'252': '99999'}}}\n", "99999"),
+    ("markings: {kerbs: []}\n", "kerbs"),
+])
+def test_bad_readings_are_refused(tmp_path, text, named):
+    with pytest.raises(ValueError, match=named):
+        vocabulary.load(path=_dictionary(path=tmp_path / "bad.yaml", text=text))
+
+
+def test_a_replaced_sign_type_is_recorded(tmp_path):
+    sign = xb.SignalSpec(id="97", s=30.0, dynamic="no", type="252", subtype="-1", validity=(-1, -1))
+    road = xb.straight_road(id="1", length=50.0, signals=[sign])
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[road]))
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    report = json.loads((tmp_path / "case_conversion_report.json").read_text())
+    assert [(r["value"], r["action"]) for r in _records(report=report, kind="translated", element="signal.type")] == [
+        ("252", "read_as_260")
+    ]

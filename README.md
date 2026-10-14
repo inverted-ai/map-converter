@@ -244,11 +244,14 @@ A `signals` section reads codes rather than single names (a key left out reads t
 ```yaml
 signals:
   traffic_light_types: ["100\\d{4}"]   # a signal marked dynamic is a traffic light only with one of these codes
+  non_vehicle_light_types: ["1000002", "1000007", "1000013"]  # lights that make no vehicle stoplines
   countries_by_code: {USA: [R1-1]}      # a sign with no country and one of these codes uses that country's table
   lane_zero_validity_means_none: true   # a <validity> naming only lane 0 names no lane
 ```
 
-These three were heuristics (H1, H8, H2) and are part of the default dictionary, so they apply with AutoFix off too;
+`non_vehicle_light_types` lists the pedestrian and bicycle lights (each skipped light is recorded with its location);
+a dictionary with an empty list converts every light as a vehicle light. `traffic_light_types`, `countries_by_code`
+and `lane_zero_validity_means_none` were heuristics (H1, H8, H2); all four are part of the default dictionary, so they apply with AutoFix off too;
 to read the codes literally, pass a dictionary without them. `signals` also sets `unknown_country_table` (the sign
 table for a country CommonRoad has none for; default `ZAM`) and `sign_type_replacements` (per country, sign types
 read as another type, e.g. German `252` as `260`). A `markings` section names the objects read as stop and yield

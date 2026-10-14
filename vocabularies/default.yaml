@@ -17,6 +17,9 @@ signals:
   # read as static signs. In the corpus every real light has a type 1000001-1002101; one exporter marks 537 static
   # signs (US codes r1, r2 or -1) dynamic.
   traffic_light_types: ["100\\d{4}"]
+  # Lights with these types make no vehicle stoplines: pedestrian (1000002), bicycle (1000007) and pedestrian and
+  # bicycle (1000013) lights. An empty list converts every light.
+  non_vehicle_light_types: ["1000002", "1000007", "1000013"]
   # A sign with no country whose code (TYPE-SUBTYPE or TYPE, any case) is listed is read with that country's sign
   # table. MUTCD R1-1 is STOP; CommonRoad's US table has no YIELD, and other US codes (R2-1 speed limits without a
   # value) broke routing when read with the US table, so only R1-1 is listed.

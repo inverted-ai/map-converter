@@ -611,7 +611,8 @@ def signal_corrections(
     """The signal attributes the dictionary's ``signals`` section changes: ``(signal, {attribute: value})``.
 
     A signal marked dynamic whose type is no traffic-light code becomes a static sign; a sign with no
-    country whose code the dictionary lists is read with that country's table. Each is recorded.
+    country whose code the dictionary lists is read with that country's table. Each is recorded, and so is
+    each light the reader skips as no vehicle light (``non_vehicle_light_types``).
     """
     corrections = []
     for road in opendrive.roads:
@@ -622,6 +623,14 @@ def signal_corrections(
                 vocabulary.record(
                     element='signal.dynamic', element_id=signal.id, value='yes', meaning='no',
                     message=f'type {signal.type!r} is no traffic-light code - a static sign',
+                    location=_signal_position(road=road, signal=signal, frame=frame),
+                )
+            if changes.get('dynamic', signal.dynamic) == 'yes' and signal.type in words.signals.get(
+                'non_vehicle_light_types', ()
+            ):
+                vocabulary.record(
+                    element='signal.type', element_id=signal.id, value=signal.type, meaning='not_a_vehicle_light',
+                    message=f'light type {signal.type!r} is no vehicle light - no stoplines',
                     location=_signal_position(road=road, signal=signal, frame=frame),
                 )
             if changes.get('dynamic', signal.dynamic) != 'yes':

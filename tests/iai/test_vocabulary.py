@@ -274,3 +274,38 @@ def test_provenance_records_the_opendrive_version(tmp_path):
     xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=50.0)], rev_minor="6"))
     assert xb.run_convert_map(map_dir=str(tmp_path)).returncode == 0
     assert json.loads((tmp_path / "case_provenance.json").read_text())["opendrive_version"] == "1.6"
+
+
+
+def _light_map(*, map_dir, light_type: str) -> None:
+    roads, junctions, controllers = xb.junction_map()
+    text = xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers)
+    xb.write_xodr(map_dir=map_dir, name="case", text=text.replace('type="1000001"', f'type="{light_type}"'))
+
+
+def _light_rows(*, map_dir) -> list[dict]:
+    return [row for row in _stoplines(map_dir=map_dir) if row["agent_type"] == "traffic_light"]
+
+
+def test_the_default_dictionary_makes_no_car_stop_lines_for_bicycle_lights(tmp_path):
+    _light_map(map_dir=tmp_path, light_type="1000007")
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert _light_rows(map_dir=tmp_path) == []
+    report = json.loads((tmp_path / "case_conversion_report.json").read_text())
+    skipped = _records(report=report, kind="translated", element="signal.type")
+    assert sorted(str(r["id"]) for r in skipped) == ["11", "12"]
+    assert all(r["location"] for r in skipped)
+
+
+@pytest.mark.parametrize("light_type", ["1000001", "1000007"])
+def test_a_dictionary_with_an_empty_list_converts_every_light(tmp_path, light_type):
+    _light_map(map_dir=tmp_path / "map", light_type=light_type)
+    words = _dictionary(path=tmp_path / "w.yaml", text="signals: {non_vehicle_light_types: []}\n")
+    assert xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary=words).returncode == 0
+    assert len(_light_rows(map_dir=tmp_path / "map")) == 2
+
+
+def test_the_default_dictionary_lists_pedestrian_and_bicycle_lights():
+    words = vocabulary.load(path=cm.MapConversionConfig().vocabulary)
+    assert words.signals["non_vehicle_light_types"] == ("1000002", "1000007", "1000013")

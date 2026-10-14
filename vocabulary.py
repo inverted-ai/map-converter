@@ -20,10 +20,12 @@ A ``signals`` section reads codes rather than single names::
 
     signals:
       traffic_light_types: ["100\\d{4}"]   # a signal marked dynamic is a traffic light only with one of these codes
+      non_vehicle_light_types: ["1000002"]  # lights with these codes (pedestrian, bicycle) make no vehicle stoplines
       countries_by_code: {USA: [R1-1]}      # a sign with no country and one of these codes uses that country's table
       lane_zero_validity_means_none: true   # a <validity> naming only lane 0 names no lane
 
-A key left out reads the file literally (every dynamic signal is a light; no country is added; lane 0 is a lane).
+A key left out reads the file literally (every dynamic signal is a vehicle light; no country is added; lane 0 is a
+lane).
 ``signals`` also holds ``unknown_country_table`` (the sign table for a country that has none, default ``ZAM``) and
 ``sign_type_replacements`` (per country, sign types read as another, e.g. German 252 as 260). A ``markings``
 section names the stop/yield stencil objects and the painted stop lines (by name pattern, object type, signal type);
@@ -64,6 +66,7 @@ VENDORS_DIR = os.path.join(REPO_ROOT, "vocabularies", "vendors")
 HEADER_FIELDS = ("vendor", "name", "revMajor", "revMinor")
 SIGNAL_KEYS = (
     "traffic_light_types",
+    "non_vehicle_light_types",
     "countries_by_code",
     "lane_zero_validity_means_none",
     "unknown_country_table",
@@ -224,6 +227,8 @@ def _signals(*, path: str, section: dict) -> dict[str, Any]:
             except re.error as exc:
                 raise ValueError(f"vocabulary {path}: traffic_light_types {pattern!r} is not a regular expression: {exc}") from exc
         signals["traffic_light_types"] = tuple(patterns)
+    if "non_vehicle_light_types" in section:
+        signals["non_vehicle_light_types"] = tuple(str(code) for code in section["non_vehicle_light_types"] or [])
     if "countries_by_code" in section:
         signals["countries_by_code"] = {
             str(country): tuple(str(code).upper() for code in codes or [])
@@ -303,6 +308,7 @@ def install(*, vocabulary: Vocabulary) -> None:
     reader_network.STOP_STENCIL_NAMES = list(vocabulary.markings.get("stop_stencils", ()))
     reader_network.YIELD_STENCIL_NAMES = list(vocabulary.markings.get("yield_stencils", ()))
     reader_signals.UNKNOWN_COUNTRY_TABLE = vocabulary.signals.get("unknown_country_table", "ZAM")
+    reader_signals.NON_VEHICLE_LIGHT_TYPES = vocabulary.signals.get("non_vehicle_light_types", ())
     reader_parser.DEFAULT_SPEED_UNIT = vocabulary.defaults.get("speed_unit")
     reader_signals.SIGN_TYPE_REPLACEMENTS = {
         country: dict(table) for country, table in vocabulary.signals.get("sign_type_replacements", {}).items()

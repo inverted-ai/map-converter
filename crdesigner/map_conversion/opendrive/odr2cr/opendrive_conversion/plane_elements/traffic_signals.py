@@ -32,6 +32,8 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSi
 # vocabulary dictionary).
 UNKNOWN_COUNTRY_TABLE = "ZAM"
 SIGN_TYPE_REPLACEMENTS = {"DEU": {"252": "260"}, "ZAM": {"252": "260"}}
+# Dynamic signal types that are no vehicle light (pedestrian and bicycle lights); IAI, set from the vocabulary dictionary.
+NON_VEHICLE_LIGHT_TYPES = ("1000002", "1000007", "1000013")
 
 
 def _replacements(traffic_sign_enum) -> Dict[str, str]:
@@ -151,8 +153,7 @@ def assign_traffic_signals_to_road(
 
             if (
                 (signal_country == "DEU" or signal_country not in TrafficSignIDCountries.keys())
-                and signal.type == "1000003"
-                or signal.type == "1000004"
+                and signal.type in ("1000003", "1000004")
             ):
                 continue
             element_id = extract_traffic_element_id(
@@ -211,7 +212,7 @@ def assign_traffic_signals_to_road(
                 if traffic_light_lanes.get(signal.signal_id) is None
                 else traffic_light_lanes[signal.signal_id]
             )
-            if signal.type != ("1000002" or "1000007" or "1000013"):
+            if signal.type not in NON_VEHICLE_LIGHT_TYPES:
                 traffic_light = TrafficLight(
                     traffic_light_id=generate_unique_id(),
                     position=position,

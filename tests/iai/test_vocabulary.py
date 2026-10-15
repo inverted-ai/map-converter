@@ -131,13 +131,12 @@ def test_a_vendor_dictionary_without_a_match_is_refused(tmp_path):
     assert "match" in result.stderr
 
 
-def test_the_shipped_vendor_dictionaries_load_and_deepmap_matches_its_header():
-    vendors = vocabulary.load_vendors(folder=cm.MapConversionConfig().vocabulary_vendors)
-    deepmap = {"vendor": "DeepMap, Inc.", "name": "x", "revMajor": "1", "revMinor": "4"}
-    assert [v.translations for v in vocabulary.matching(vendors=vendors, header=deepmap)] == [
-        {"object.orientation": {"undefined": "none"}}
-    ]
-    assert vocabulary.matching(vendors=vendors, header={"vendor": "VectorZero"}) == []
+def test_the_repo_ships_no_vendor_dictionaries():
+    assert vocabulary.load_vendors(folder=cm.MapConversionConfig().vocabulary_vendors) == []
+
+
+def test_an_absent_vendor_folder_means_no_vendor_dictionaries(tmp_path):
+    assert vocabulary.load_vendors(folder=str(tmp_path / "absent")) == []
 
 
 

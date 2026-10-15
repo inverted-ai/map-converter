@@ -10,7 +10,7 @@ already understands, so a new dialect needs a new dictionary, not a code change:
 
 ``convert_map.py`` reads ``vocabularies/default.yaml`` unless ``vocabulary=`` names another file; edit a copy to
 extend it. A vendor dictionary (a file in ``vocabularies/vendors/``, or in the folder ``vocabulary_vendors=``
-names) adds a ``match`` on the file header, e.g. ``match: {vendor: "DeepMap, Inc."}``; every vendor dictionary
+names) adds a ``match`` on the file header, e.g. ``match: {vendor: "Example Maps Ltd"}``; every vendor dictionary
 whose match fits the header applies on top, whatever the mode. Every place a translation applies is recorded
 (``kind="translated"``) in the conversion report.
 A dictionary can only map onto meanings the converter has; it cannot teach it new ones, and it is refused when it

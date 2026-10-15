@@ -262,9 +262,9 @@ section gives `speed_unit` (`m/s`, `km/h` or `mph`), the unit of a lane speed th
 default dictionary, until the standard's default is confirmed), such a speed stays unset and is recorded.
 
 A vendor dictionary is a file in `vocabularies/vendors/` (or the folder `vocabulary_vendors=` names) with a `match` on
-the file header (`vendor`, `name`, `revMajor`, `revMinor`), e.g. `match: {vendor: "DeepMap, Inc."}`. Every vendor
-dictionary whose match fits applies on top of the base one, in every mode. The repo ships one for DeepMap (object
-orientation `undefined` read as `none`); dictionaries for customer dialects belong outside the repo.
+the file header (`vendor`, `name`, `revMajor`, `revMinor`), e.g. `match: {vendor: "Example Maps Ltd"}`. Every vendor
+dictionary whose match fits applies on top of the base one, in every mode. The repo ships none: keep dictionaries for a
+particular source in your own folder and point `vocabulary_vendors=` at it.
 
 ### Heuristics
 

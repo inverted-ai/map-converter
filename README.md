@@ -92,6 +92,7 @@ exit code 3 and write nothing.
 | `report.max_closeups` | `240` | Most close-ups per section; further items are listed only. |
 | `vocabulary` | `<repo>/vocabularies/default.yaml` | The vocabulary dictionary: names the map uses, translated into names the converter understands (see "Vocabulary" below). |
 | `vocabulary_vendors` | `<repo>/vocabularies/vendors` | Folder of vendor dictionaries; every one whose `match` fits the file header applies on top of `vocabulary`. |
+| `speed_unit` | `m/s` | The unit of the map's speeds (lane and road-type `<speed>`) that name none: `m/s`, `km/h`, `mph`, or a number that converts the map's unit to m/s (e.g. `speed_unit=0.3048` for feet per second). Each such speed is recorded in the conversion report. Speeds that name their unit are converted by it; every speed reaches the map in m/s. |
 
 ## Output files
 
@@ -257,9 +258,8 @@ table for a country CommonRoad has none for; default `ZAM`) and `sign_type_repla
 read as another type, e.g. German `252` as `260`). A `markings` section names the objects read as stop and yield
 stencils (`stop_stencils`, `yield_stencils`; each becomes a stopline) and the painted stop lines
 (`painted_stop_lines`: `names` as regular expressions, `object_types`, `signal_types`; listed, never converted).
-Left out, none are recognised; the default dictionary holds the CARLA names and the corpus encodings. A `defaults`
-section gives `speed_unit` (`m/s`, `km/h` or `mph`), the unit of a lane speed that names none; left out (as in the
-default dictionary, until the standard's default is confirmed), such a speed stays unset and is recorded.
+Left out, none are recognised; the default dictionary holds the CARLA names and the corpus encodings. The unit of
+speeds that name none is the `speed_unit=` setting, not a dictionary entry.
 
 A vendor dictionary is a file in `vocabularies/vendors/` (or the folder `vocabulary_vendors=` names) with a `match` on
 the file header (`vendor`, `name`, `revMajor`, `revMinor`), e.g. `match: {vendor: "Example Maps Ltd"}`. Every vendor

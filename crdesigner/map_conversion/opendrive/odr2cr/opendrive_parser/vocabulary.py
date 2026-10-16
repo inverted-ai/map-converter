@@ -1,4 +1,5 @@
 import logging
+import math
 
 # IAI: the reader's tables, in one place. The repo-root vocabulary.py sets them from the vocabulary dictionary; the
 # values here are what the reader uses without one.
@@ -15,10 +16,11 @@ UNKNOWN_COUNTRY_TABLE = "ZAM"
 SIGN_TYPE_REPLACEMENTS = {"DEU": {"252": "260"}, "ZAM": {"252": "260"}}
 # Dynamic signal types that are no vehicle light (pedestrian and bicycle lights).
 NON_VEHICLE_LIGHT_TYPES = ("1000002", "1000007", "1000013")
-# The unit of a lane speed that names none; None leaves such a speed unset.
-DEFAULT_SPEED_UNIT = None
 # Speed units (ASAM OpenDRIVE e_unitSpeed) and what divides a value into m/s.
 SPEED_UNIT_DIVISORS = {"m/s": 1.0, "km/h": 3.6, "mph": 2.237}
+# The unit of a speed that names none: a SPEED_UNIT_DIVISORS name, or a number that converts it to m/s. None leaves a
+# lane speed without unit unset and reads a road-type one as m/s.
+UNITLESS_SPEED_UNIT = None
 
 ORIENTATIONS = ("+", "-", "none")
 CONTACT_POINTS = ("start", "end")
@@ -39,6 +41,34 @@ ALLOWED = {
     "roadMark.weight": ("standard", "bold"),
     "speed.unit": tuple(SPEED_UNIT_DIVISORS),
 }
+
+
+def speed_factor(unit):
+    """
+    The factor to m/s that ``unit`` gives as a number (finite and positive), or None.
+
+    :param unit: A speed unit setting, e.g. ``"0.3048"`` for feet per second.
+    :return: The factor, or None when ``unit`` is no such number.
+    """
+    try:
+        factor = float(unit)
+    except (TypeError, ValueError):
+        return None
+    return factor if math.isfinite(factor) and factor > 0 else None
+
+
+def to_metres_per_second(value: float, unit):
+    """
+    ``value`` in m/s.
+
+    :param value: A speed.
+    :param unit: A SPEED_UNIT_DIVISORS name, or a number that converts the unit to m/s.
+    :return: The speed in m/s, or None when ``unit`` is neither.
+    """
+    if unit in SPEED_UNIT_DIVISORS:
+        return value / SPEED_UNIT_DIVISORS[unit]
+    factor = speed_factor(unit)
+    return None if factor is None else value * factor
 
 
 def record(kind: str, element: str, element_id, value, action, message: str, *args):

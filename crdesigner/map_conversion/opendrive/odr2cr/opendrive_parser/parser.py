@@ -306,8 +306,9 @@ def parse_opendrive_road_type(road: Road, opendrive_xml_road_type: etree.Element
 
 def _road_type_speed(road_id, speed: etree.ElementTree) -> Optional[RoadTypeSpeed]:
     """
-    The speed of a road type, or None when its maximum is not a number (recorded). A unit the reader does not know,
-    or none and no dictionary default, is read as m/s (recorded). (IAI)
+    The speed of a road type, or None when its maximum is not a number (recorded). Without a unit it is read in
+    vocabulary.UNITLESS_SPEED_UNIT (a factor converts it to m/s here); a unit the reader does not know, or none and
+    no setting, is read as m/s (recorded). (IAI)
 
     :param road_id: ID of the road
     :param speed: XML speed element of the road type
@@ -321,7 +322,11 @@ def _road_type_speed(road_id, speed: etree.ElementTree) -> Optional[RoadTypeSpee
             _record_dropped("speed", road_id, error)
             return None
     unit = _speed_unit(road_id, "type", speed.get("unit"))
-    if unit not in vocabulary.SPEED_UNIT_DIVISORS:
+    if unit == vocabulary.UNITLESS_SPEED_UNIT and unit not in vocabulary.SPEED_UNIT_DIVISORS:
+        if max_speed not in ["no limit", "undefined"]:
+            max_speed = str(vocabulary.to_metres_per_second(float(max_speed), unit))
+        unit = "m/s"
+    elif unit not in vocabulary.SPEED_UNIT_DIVISORS:
         record(
             "unknown_value" if unit is not None else "missing_attribute", "speed.unit", road_id, unit, "read_as_m/s",
             "road %s type: speed unit %r not recognised - read as m/s", road_id, unit,
@@ -331,7 +336,8 @@ def _road_type_speed(road_id, speed: etree.ElementTree) -> Optional[RoadTypeSpee
 
 def _speed_unit(road_id, where: str, unit: Optional[str]) -> Optional[str]:
     """
-    The unit of a speed: the translated attribute, or the dictionary default when it names none (recorded). (IAI)
+    The unit of a speed: the translated attribute, or vocabulary.UNITLESS_SPEED_UNIT (the speed_unit setting) when it
+    names none (recorded). (IAI)
 
     :param road_id: ID of the road
     :param where: Element holding the speed, for the message
@@ -339,12 +345,12 @@ def _speed_unit(road_id, where: str, unit: Optional[str]) -> Optional[str]:
     :return: The unit, or None
     """
     unit = translate("speed.unit", unit, road_id)
-    if unit is None and vocabulary.DEFAULT_SPEED_UNIT is not None:
+    if unit is None and vocabulary.UNITLESS_SPEED_UNIT is not None:
         record(
-            "translated", "speed.unit", road_id, None, f"read_as_{vocabulary.DEFAULT_SPEED_UNIT}",
-            "road %s %s: speed without unit read as %s (vocabulary)", road_id, where, vocabulary.DEFAULT_SPEED_UNIT,
+            "missing_attribute", "speed.unit", road_id, None, f"read_as_{vocabulary.UNITLESS_SPEED_UNIT}",
+            "road %s %s: speed without unit read as %s (speed_unit)", road_id, where, vocabulary.UNITLESS_SPEED_UNIT,
         )
-        unit = vocabulary.DEFAULT_SPEED_UNIT
+        unit = vocabulary.UNITLESS_SPEED_UNIT
     return unit
 
 
@@ -678,8 +684,7 @@ def parse_opendrive_road_lane_section(
             if speed is not None:
                 # speed is always converted to m/s
                 unit = _speed_unit(new_road.id, f"lane {new_lane.id}", speed.get("unit"))
-                divisor = vocabulary.SPEED_UNIT_DIVISORS.get(unit)
-                if divisor is None:
+                if unit not in vocabulary.SPEED_UNIT_DIVISORS and unit != vocabulary.UNITLESS_SPEED_UNIT:
                     record(
                         "unknown_value" if unit is not None else "missing_attribute",
                         "speed.unit",
@@ -693,7 +698,9 @@ def parse_opendrive_road_lane_section(
                     )
                 else:
                     with _dropped_on_error("speed", new_road.id):
-                        new_lane.speed = parse_required_float(speed.get("max"), "speed.max") / divisor
+                        new_lane.speed = vocabulary.to_metres_per_second(
+                            parse_required_float(speed.get("max"), "speed.max"), unit
+                        )
 
             # Access
             for _access in lane.findall("access"):

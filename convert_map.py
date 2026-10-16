@@ -121,6 +121,8 @@ class MapConversionConfig:
             names the converter understands; default ``<repo>/vocabularies/default.yaml``.
         vocabulary_vendors: Folder of vendor dictionaries; each whose ``match`` fits the file header applies on
             top of ``vocabulary``. Default ``<repo>/vocabularies/vendors``.
+        speed_unit: The unit of the map's speeds that name none: ``m/s`` (the default), ``km/h``, ``mph``, or a
+            number that converts the map's unit to m/s (``0.3048`` for feet per second). Speeds reach the map in m/s.
     """
 
     dir_path: Optional[str] = None
@@ -145,6 +147,7 @@ class MapConversionConfig:
     # vocabulary_vendors first: the field named vocabulary shadows the module in this class body
     vocabulary_vendors: str = vocabulary.VENDORS_DIR
     vocabulary: str = vocabulary.DEFAULT_PATH
+    speed_unit: str = "m/s"
 
 
 @dataclasses.dataclass
@@ -561,6 +564,10 @@ def validate_config(*, cfg: MapConversionConfig) -> str:
         raise ConfigError('give exactly one of dir_path and xodr_path')
     if cfg.trim_radius is not None and cfg.center is None:
         raise ConfigError('trim_radius requires center')
+    if not vocabulary.speed_unit_ok(speed_unit=str(cfg.speed_unit)):
+        raise ConfigError(
+            f'speed_unit {cfg.speed_unit!r} is neither m/s, km/h, mph nor a positive number (the factor to m/s)'
+        )
     if cfg.verifier_timeout_s < 0:
         raise ConfigError('verifier_timeout_s must be 0 (skip the verifier) or positive')
     unknown = sorted(set(cfg.verifier_formulas) - set(map_validation.verifier_formula_names()))
@@ -679,6 +686,7 @@ def parse_xodr(
     allow_zero_origin: bool = False,
     heuristics: Optional[conversion_heuristics.HeuristicsConfig] = None,
     dictionaries: list[vocabulary.Vocabulary],
+    speed_unit: str = "m/s",
 ) -> ParsedXodr:
     """Parse the OpenDRIVE file, build the Lanelet2 projector from its geo-reference, and apply the signal heuristics.
 
@@ -690,7 +698,7 @@ def parse_xodr(
     logger.info(f'Using {opendrive_path} as input')
     location = map_name(xodr_path=opendrive_path)
     words = vocabulary.combine(vocabularies=dictionaries)
-    vocabulary.install(vocabulary=words)
+    vocabulary.install(vocabulary=words, speed_unit=speed_unit)
     opendrive = parse_opendrive(Path(opendrive_path))
 
     # Construct Lanelet2 projector
@@ -1240,6 +1248,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         allow_zero_origin=cfg.allow_zero_origin,
         heuristics=conversion_heuristics.applied_heuristics(autofix=cfg.autofix),
         dictionaries=_vocabularies(cfg=cfg, xodr_path=opendrive_path),
+        speed_unit=str(cfg.speed_unit),
     )
     exported = export_osm(cfg=cfg, parsed=parsed)
     trim(cfg=cfg, osm_path=exported.osm_path, projector=parsed.projector)

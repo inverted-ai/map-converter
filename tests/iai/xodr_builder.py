@@ -62,6 +62,8 @@ class SignalSpec:
     country: Optional[str] = "DEU"
     name: str = ""
     validity: Optional[tuple[Optional[int], Optional[int]]] = None  # (fromLane, toLane)
+    value: str = "-1"
+    unit: Optional[str] = None
 
 
 @dataclasses.dataclass(slots=True)
@@ -237,7 +239,8 @@ def _signal(*, signal: SignalSpec) -> str:
         country=signal.country,
         type=signal.type,
         subtype=signal.subtype,
-        value="-1",
+        value=signal.value,
+        unit=signal.unit,
         height="1.0",
         width="0.5",
     )

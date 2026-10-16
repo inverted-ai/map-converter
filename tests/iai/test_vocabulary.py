@@ -241,37 +241,16 @@ def test_a_replaced_sign_type_is_recorded(tmp_path):
 
 
 
-def _lane_speed_map(*, map_dir, unit: str = "") -> None:
-    unit_attr = f' unit="{unit}"' if unit else ""
+def test_a_dictionary_translates_speed_unit_names(tmp_path):
     text = xb.build_xodr(roads=[xb.straight_road(id="1", length=50.0)])
-    text = text.replace("</lane>", f'<speed sOffset="0.0" max="50.0"{unit_attr}/></lane>', 1)
-    xb.write_xodr(map_dir=map_dir, name="case", text=text)
-
-
-@pytest.mark.parametrize(
-    "unit, words, translated",
-    [("", "defaults: {speed_unit: km/h}\n", [None]), ("kmh", "translations: {speed.unit: {kmh: km/h}}\n", ["kmh"])],
-)
-def test_speed_units_come_from_the_dictionary(tmp_path, unit, words, translated):
-    _lane_speed_map(map_dir=tmp_path / "map", unit=unit)
-    result = xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary=_dictionary(path=tmp_path / "w.yaml", text=words))
+    text = text.replace("</lane>", '<speed sOffset="0.0" max="50.0" unit="kmh"/></lane>', 1)
+    xb.write_xodr(map_dir=tmp_path / "map", name="case", text=text)
+    words = _dictionary(path=tmp_path / "w.yaml", text="translations: {speed.unit: {kmh: km/h}}\n")
+    result = xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary=words)
     assert result.returncode == 0, result.stderr
     report = json.loads((tmp_path / "map" / "case_conversion_report.json").read_text())
-    assert [r["value"] for r in _records(report=report, kind="translated", element="speed.unit")] == translated
+    assert [r["value"] for r in _records(report=report, kind="translated", element="speed.unit")] == ["kmh"]
     assert not [r for r in report["records"] if r["element"] == "speed.unit" and r["kind"] != "translated"]
-
-
-def test_without_a_speed_default_a_speed_without_unit_stays_unset(tmp_path):
-    _lane_speed_map(map_dir=tmp_path)
-    result = xb.run_convert_map(map_dir=str(tmp_path))
-    assert result.returncode == 0, result.stderr
-    report = json.loads((tmp_path / "case_conversion_report.json").read_text())
-    assert _records(report=report, kind="missing_attribute", element="speed.unit")
-
-
-def test_a_speed_default_must_be_a_unit_the_converter_reads(tmp_path):
-    with pytest.raises(ValueError, match="furlongs"):
-        vocabulary.load(path=_dictionary(path=tmp_path / "w.yaml", text="defaults: {speed_unit: furlongs}\n"))
 
 
 def test_provenance_records_the_opendrive_version(tmp_path):

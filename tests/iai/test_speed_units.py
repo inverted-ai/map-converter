@@ -1,6 +1,7 @@
 """Speeds reach the map in m/s: speed_unit= says what a speed with no unit is in; signs convert by their unit."""
 
 import json
+import math
 import re
 
 import pytest
@@ -72,3 +73,18 @@ def test_a_dictionary_can_no_longer_set_the_speed_unit(tmp_path):
     result = xb.run_convert_map(map_dir=str(tmp_path / "map"), vocabulary=str(words))
     assert result.returncode == conversion_common.REFUSED_EXIT_CODE
     assert "defaults" in result.stderr
+
+
+def _speed_sign(*, value: str, unit: str) -> xb.SignalSpec:
+    return xb.SignalSpec(id="5", s=10.0, dynamic="no", type="274", subtype="-1", validity=(-1, -1), unit=unit, value=value)
+
+
+@pytest.mark.parametrize("unit, written", [("mph", 30 / 2.237), ("km/h", 30 / 3.6), ("m/s", 30.0)])
+def test_a_speed_sign_is_written_in_metres_per_second(tmp_path, unit, written):
+    _convert(map_dir=tmp_path, text=_road_text(signals=[_speed_sign(value="30", unit=unit)]))
+    assert any(math.isclose(v, written, rel_tol=1e-9) for v in _speed_limits(map_dir=tmp_path))
+
+
+def test_a_speed_sign_without_unit_keeps_its_number(tmp_path):
+    _convert(map_dir=tmp_path, text=_road_text(signals=[_speed_sign(value="30", unit=None)]), speed_unit="km/h")
+    assert 30.0 in _speed_limits(map_dir=tmp_path)

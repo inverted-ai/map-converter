@@ -112,8 +112,10 @@ def assign_traffic_signals_to_road(
             ):
                 additional_values = []
             else:
-                if signal.unit == "km/h":
-                    additional_values = [str(float(signal.signal_value) / 3.6)]
+                if signal.unit in vocabulary.SPEED_UNIT_DIVISORS:
+                    additional_values = [
+                        str(vocabulary.to_metres_per_second(float(signal.signal_value), signal.unit))
+                    ]
                 else:
                     additional_values = [str(signal.signal_value)]
 

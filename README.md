@@ -92,7 +92,7 @@ exit code 3 and write nothing.
 | `report.max_closeups` | `240` | Most close-ups per section; further items are listed only. |
 | `vocabulary` | `<repo>/vocabularies/default.yaml` | The vocabulary dictionary: names the map uses, translated into names the converter understands (see "Vocabulary" below). |
 | `vocabulary_vendors` | `<repo>/vocabularies/vendors` | Folder of vendor dictionaries; every one whose `match` fits the file header applies on top of `vocabulary`. |
-| `speed_unit` | `m/s` | The unit of the map's speeds (lane and road-type `<speed>`) that name none: `m/s`, `km/h`, `mph`, or a number that converts the map's unit to m/s (e.g. `speed_unit=0.3048` for feet per second). Each such speed is recorded in the conversion report. Speeds that name their unit are converted by it; every speed reaches the map in m/s. |
+| `speed_unit` | `m/s` | The unit of the map's speeds (lane and road-type `<speed>`) that name none: `m/s`, `km/h`, `mph`, or a number that converts the map's unit to m/s (e.g. `speed_unit=0.3048` for feet per second). Each such speed is recorded in the conversion report. Speeds that name their unit, and speed-limit signs whose `unit` is `m/s`, `km/h` or `mph`, are converted by it; every speed reaches the map in m/s (a sign without a unit keeps its number). |
 
 ## Output files
 

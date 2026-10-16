@@ -63,6 +63,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.opendr
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.road import (
     Road,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary
 
 
 def get_all_adjacent_lanelets(lanelet_network, incoming_lanelet_id):
@@ -179,11 +180,6 @@ def convert_to_base_lanelet_network(lanelet_network: ConversionLaneletNetwork) -
             )
         )
     return network
-
-
-# Object names read as painted stop / yield stencils (IAI; set from the vocabulary dictionary).
-STOP_STENCIL_NAMES = ["Stencil_STOP"]
-YIELD_STENCIL_NAMES = ["Stencil_GiveWay", "Stencil_Yield_Triangles"]
 
 
 class Network:
@@ -385,18 +381,15 @@ class Network:
                 stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
                 self._stop_lines.append(stop_line)
 
-            stop_sign_names = STOP_STENCIL_NAMES
-            yield_sign_names = YIELD_STENCIL_NAMES
-
-            if road_object.name in stop_sign_names + yield_sign_names:
+            if road_object.name in vocabulary.STOP_STENCIL_NAMES + vocabulary.YIELD_STENCIL_NAMES:
                 xy, orientation, _, _ = road.plan_view.calc(road_object.s, compute_curvature=False)
                 xy = xy + road_object.t * np.array([- np.sin(orientation), np.cos(orientation)])
                 if road_object.orientation == "+":
                     orientation = orientation + np.pi
                 stopline = (xy, orientation, road_object.validLength, road_object.width, road_object.id)
-                if road_object.name in stop_sign_names:
+                if road_object.name in vocabulary.STOP_STENCIL_NAMES:
                     self._iai_stop_signs.append(stopline)
-                elif road_object.name in yield_sign_names:
+                elif road_object.name in vocabulary.YIELD_STENCIL_NAMES:
                     self._iai_yield_signs.append(stopline)
                 else:
                     assert False

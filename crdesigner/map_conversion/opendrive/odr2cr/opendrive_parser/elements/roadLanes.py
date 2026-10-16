@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, List, Optional, Union
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.road_record import (
     RoadRecord,
 )
-from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record, translate
 
 if TYPE_CHECKING:
     from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import Road
@@ -237,13 +237,12 @@ class Lane:
         value = translate("lane.type", value, getattr(self._parent_road, "id", None))
         if value not in self.laneTypes:
             road_id = getattr(self._parent_road, "id", None)
-            logging.getLogger("crdesigner.degradation").warning(
+            record(
+                "unknown_value" if value is not None else "missing_attribute", "lane.type", road_id, value, "defaulted",
                 "road %s lane %s: lane type %r not recognised - lane type none",
                 road_id,
                 getattr(self, "_id", None),
                 value,
-                extra={"kind": "unknown_value" if value is not None else "missing_attribute",
-                       "element": "lane.type", "id": road_id, "value": value, "action": "defaulted"},
             )
             value = "none"
 

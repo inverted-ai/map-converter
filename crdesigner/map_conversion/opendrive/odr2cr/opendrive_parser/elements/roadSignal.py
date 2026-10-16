@@ -1,7 +1,7 @@
 import logging
 from typing import Union
 
-from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record, translate
 
 
 def _degraded(signal, attribute: str, value, replacement: str):
@@ -9,15 +9,9 @@ def _degraded(signal, attribute: str, value, replacement: str):
     name = type(signal).__name__
     tag = name[0].lower() + name[1:]  # the OpenDRIVE element: signal / signalReference
     signal_id = getattr(signal, "_id", None)
-    logging.getLogger("crdesigner.degradation").warning(
-        "%s %s: %s %r - using %r",
-        tag,
-        signal_id,
-        attribute,
-        value,
-        replacement,
-        extra={"kind": "missing_attribute" if value is None else "unknown_value",
-               "element": f"{tag}.{attribute}", "id": signal_id, "value": value, "action": "defaulted"},
+    record(
+        "missing_attribute" if value is None else "unknown_value", f"{tag}.{attribute}", signal_id, value, "defaulted",
+        "%s %s: %s %r - using %r", tag, signal_id, attribute, value, replacement,
     )
 
 

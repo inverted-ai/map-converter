@@ -5,10 +5,15 @@ import json
 import os
 
 import pytest
+from commonroad.scenario.lanelet import LineMarking
 
 import conversion_common
 import convert_map as cm
 import vocabulary
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.plane_elements.plane_group import (
+    convert_line_marking,
+)
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLanes import RoadMark
 from tests.iai import xodr_builder as xb
 
 
@@ -163,8 +168,8 @@ def test_a_vendor_dictionary_overrides_the_signals_it_names(tmp_path):
         vendor=True,
     )
     combined = vocabulary.combine(vocabularies=[base, vendor])
-    assert not combined.signals["lane_zero_validity_means_none"]
-    assert combined.signals["countries_by_code"] == {"USA": ("R1-1",)}
+    assert not combined.signals.lane_zero_validity_means_none
+    assert combined.signals.countries_by_code == {"USA": ("R1-1",)}
 
 
 @pytest.mark.parametrize("text, named", [
@@ -207,10 +212,10 @@ def test_painted_stop_line_names_come_from_the_dictionary(tmp_path):
 
 def test_the_default_dictionary_holds_the_built_in_readings():
     words = vocabulary.load(path=cm.MapConversionConfig().vocabulary)
-    assert words.markings["stop_stencils"] == ("Stencil_STOP",)
-    assert words.markings["yield_stencils"] == ("Stencil_GiveWay", "Stencil_Yield_Triangles")
-    assert words.signals["unknown_country_table"] == "ZAM"
-    assert words.signals["sign_type_replacements"] == {"DEU": {"252": "260"}, "ZAM": {"252": "260"}}
+    assert words.markings.stop_stencils == ("Stencil_STOP",)
+    assert words.markings.yield_stencils == ("Stencil_GiveWay", "Stencil_Yield_Triangles")
+    assert words.signals.unknown_country_table == "ZAM"
+    assert words.signals.sign_type_replacements == {"DEU": {"252": "260"}, "ZAM": {"252": "260"}}
 
 
 @pytest.mark.parametrize("text, named", [
@@ -307,4 +312,12 @@ def test_a_dictionary_with_an_empty_list_converts_every_light(tmp_path, light_ty
 
 def test_the_default_dictionary_lists_pedestrian_and_bicycle_lights():
     words = vocabulary.load(path=cm.MapConversionConfig().vocabulary)
-    assert words.signals["non_vehicle_light_types"] == ("1000002", "1000007", "1000013")
+    assert words.signals.non_vehicle_light_types == ("1000002", "1000007", "1000013")
+
+
+@pytest.mark.parametrize("mark_type", vocabulary.UNDERSTOOD["roadMark.type"])
+def test_every_road_mark_type_a_dictionary_may_name_converts_to_a_marking(mark_type):
+    mark = RoadMark()
+    mark.type = mark_type
+    mark.weight = "standard"
+    assert convert_line_marking(mark) != LineMarking.UNKNOWN

@@ -23,6 +23,7 @@ from crdesigner.map_conversion.lanelet2.lanelet2 import (
     Way,
     WayRelation,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record
 
 
 # Metres two linked lanelets' boundary end points may be apart and still share a node.
@@ -1165,12 +1166,14 @@ class CR2LaneletConverter:
                         == "MAX_SPEED"
                     ):
                         if not sign.traffic_sign_elements[0].additional_values:
-                            logging.getLogger("crdesigner.degradation").warning(
+                            record(
+                                "missing_attribute",
+                                "signal.value",
+                                getattr(sign, "opendrive_id", None),
+                                None,
+                                "speed_limit_skipped",
                                 "speed sign %s has no value - no speed limit written",
                                 getattr(sign, "opendrive_id", None),
-                                extra={"kind": "missing_attribute", "element": "signal.value",
-                                       "id": getattr(sign, "opendrive_id", None), "value": None,
-                                       "action": "speed_limit_skipped"},
                             )
                             continue
                         # found a max speed sign, create a reg. element

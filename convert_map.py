@@ -625,9 +625,7 @@ def signal_corrections(
                     message=f'type {signal.type!r} is no traffic-light code - a static sign',
                     location=_signal_position(road=road, signal=signal, frame=frame),
                 )
-            if changes.get('dynamic', signal.dynamic) == 'yes' and signal.type in words.signals.get(
-                'non_vehicle_light_types', ()
-            ):
+            if changes.get('dynamic', signal.dynamic) == 'yes' and signal.type in words.signals.non_vehicle_light_types:
                 vocabulary.record(
                     element='signal.type', element_id=signal.id, value=signal.type, meaning='not_a_vehicle_light',
                     message=f'light type {signal.type!r} is no vehicle light - no stoplines',

@@ -81,7 +81,8 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSi
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSignal import (
     SignalReference,
 )
-from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record, translate
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadtype import (
     RoadType,
 )
@@ -90,15 +91,6 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadty
 )
 
 
-degradation_logger = logging.getLogger("crdesigner.degradation")
-
-# Lane speed units (ASAM OpenDRIVE e_unitSpeed) and what divides a value into m/s
-SPEED_UNIT_DIVISORS = {"m/s": 1.0, "km/h": 3.6, "mph": 2.237}
-# The link and connection values the reader understands (IAI; the vocabulary dictionary checks translations against them).
-LINK_ELEMENT_TYPES = ("road", "junction")
-CONTACT_POINTS = ("start", "end")
-# The unit of a lane speed that names none; None leaves such a speed unset (IAI; set from the vocabulary dictionary).
-DEFAULT_SPEED_UNIT = None
 # A number written with a decimal comma, e.g. length="29,7078"
 DECIMAL_COMMA = re.compile(r"^\s*[+-]?\d+,\d+(?:[eE][+-]?\d+)?\s*$")
 # Attributes that hold ids, names or enums, never a number to re-read with a decimal point
@@ -127,13 +119,9 @@ class UnknownGeometry(ValueError):
 
 
 def _record_dropped(element: str, element_id, error: ValueError):
-    degradation_logger.warning(
-        "%s %s dropped: %s",
-        element,
-        element_id,
-        error,
-        extra={"kind": getattr(error, "kind", type(error).__name__), "element": element,
-               "id": element_id, "value": str(error), "action": "dropped"},
+    record(
+        getattr(error, "kind", type(error).__name__), element, element_id, str(error), "dropped",
+        "%s %s dropped: %s", element, element_id, error,
     )
 
 
@@ -143,14 +131,9 @@ def _validity_lanes(validity: etree.ElementTree, element: str, element_id) -> Op
     try:
         return range(int(from_lane), int(to_lane) + 1)
     except ValueError:
-        degradation_logger.warning(
-            "%s %s: validity lanes %s..%s are not integers - validity skipped",
-            element,
-            element_id,
-            from_lane,
-            to_lane,
-            extra={"kind": "unparseable_number", "element": f"{element}.validity", "id": element_id,
-                   "value": f"{from_lane}..{to_lane}", "action": "skipped"},
+        record(
+            "unparseable_number", f"{element}.validity", element_id, f"{from_lane}..{to_lane}", "skipped",
+            "%s %s: validity lanes %s..%s are not integers - validity skipped", element, element_id, from_lane, to_lane,
         )
         return None
 
@@ -189,12 +172,9 @@ def parse_opendrive(file_path: Path, odr_conf: open_drive_config = open_drive_co
                         decimal_commas[f"{elem.tag}.{attr}"] += 1
         etree.cleanup_namespaces(root_node)
     for element, count in sorted(decimal_commas.items()):
-        degradation_logger.warning(
-            "%d %s value(s) written with a decimal comma - read as a decimal point",
-            count,
-            element,
-            extra={"kind": "decimal_comma", "element": element, "id": None, "value": count,
-                   "action": "read_as_decimal_point"},
+        record(
+            "decimal_comma", element, None, count, "read_as_decimal_point",
+            "%d %s value(s) written with a decimal comma - read as a decimal point", count, element,
         )
 
     opendrive = OpenDrive()
@@ -265,9 +245,9 @@ def _road_link(road_id, link: etree.ElementTree, link_class):
     element_type = translate("link.elementType", link.get("elementType"), road_id)
     contact_point = translate("link.contactPoint", link.get("contactPoint"), road_id)
     values = (
-        ("link.elementType", element_type, LINK_ELEMENT_TYPES),
+        ("link.elementType", element_type, vocabulary.ALLOWED["link.elementType"]),
         ("link.elementId", link.get("elementId"), None),
-        ("link.contactPoint", contact_point, CONTACT_POINTS + (None,)),
+        ("link.contactPoint", contact_point, vocabulary.CONTACT_POINTS + (None,)),
     )
     if not _readable(road_id, link.tag, values):
         return None
@@ -286,15 +266,9 @@ def _readable(road_id, tag: str, values) -> bool:
     """
     for element, value, allowed in values:
         if (allowed is None and value is None) or (allowed is not None and value not in allowed):
-            degradation_logger.warning(
-                "road %s %s: %s %r - %s skipped",
-                road_id,
-                tag,
-                element,
-                value,
-                tag,
-                extra={"kind": "unknown_value" if value is not None else "missing_attribute",
-                       "element": element, "id": road_id, "value": value, "action": "skipped"},
+            record(
+                "unknown_value" if value is not None else "missing_attribute", element, road_id, value, "skipped",
+                "road %s %s: %s %r - %s skipped", road_id, tag, element, value, tag,
             )
             return False
     return True
@@ -313,12 +287,13 @@ def parse_opendrive_road_type(road: Road, opendrive_xml_road_type: etree.Element
 
     use_type = translate("road.type", opendrive_xml_road_type.get("type"), road.id)
     if use_type not in RoadType.allowedTypes:
-        degradation_logger.warning(
-            "road %s: type %r - read as unknown",
+        record(
+            "unknown_value" if use_type is not None else "missing_attribute",
+            "road.type",
             road.id,
             use_type,
-            extra={"kind": "unknown_value" if use_type is not None else "missing_attribute",
-                   "element": "road.type", "id": road.id, "value": use_type, "action": "read_as_unknown"},
+            "read_as_unknown",
+            "road %s: type %r - read as unknown", road.id, use_type,
         )
         use_type = "unknown"
     road_type = RoadType(
@@ -346,13 +321,10 @@ def _road_type_speed(road_id, speed: etree.ElementTree) -> Optional[RoadTypeSpee
             _record_dropped("speed", road_id, error)
             return None
     unit = _speed_unit(road_id, "type", speed.get("unit"))
-    if unit not in SPEED_UNIT_DIVISORS:
-        degradation_logger.warning(
-            "road %s type: speed unit %r not recognised - read as m/s",
-            road_id,
-            unit,
-            extra={"kind": "unknown_value" if unit is not None else "missing_attribute",
-                   "element": "speed.unit", "id": road_id, "value": unit, "action": "read_as_m/s"},
+    if unit not in vocabulary.SPEED_UNIT_DIVISORS:
+        record(
+            "unknown_value" if unit is not None else "missing_attribute", "speed.unit", road_id, unit, "read_as_m/s",
+            "road %s type: speed unit %r not recognised - read as m/s", road_id, unit,
         )
     return RoadTypeSpeed(max_speed=max_speed, unit=unit)
 
@@ -367,16 +339,12 @@ def _speed_unit(road_id, where: str, unit: Optional[str]) -> Optional[str]:
     :return: The unit, or None
     """
     unit = translate("speed.unit", unit, road_id)
-    if unit is None and DEFAULT_SPEED_UNIT is not None:
-        degradation_logger.warning(
-            "road %s %s: speed without unit read as %s (vocabulary)",
-            road_id,
-            where,
-            DEFAULT_SPEED_UNIT,
-            extra={"kind": "translated", "element": "speed.unit", "id": road_id, "value": None,
-                   "action": f"read_as_{DEFAULT_SPEED_UNIT}"},
+    if unit is None and vocabulary.DEFAULT_SPEED_UNIT is not None:
+        record(
+            "translated", "speed.unit", road_id, None, f"read_as_{vocabulary.DEFAULT_SPEED_UNIT}",
+            "road %s %s: speed without unit read as %s (vocabulary)", road_id, where, vocabulary.DEFAULT_SPEED_UNIT,
         )
-        unit = DEFAULT_SPEED_UNIT
+        unit = vocabulary.DEFAULT_SPEED_UNIT
     return unit
 
 
@@ -458,12 +426,9 @@ def parse_opendrive_road_geometry(
         curv_start = parse_float(road_geometry.find("spiral").get("curvStart"), "spiral.curvStart")
         curv_end = parse_float(road_geometry.find("spiral").get("curvEnd"), "spiral.curvEnd")
         if np.isclose(curv_start, curv_end):
-            degradation_logger.warning(
-                "road %s: spiral with equal start and end curvature %s - read as an arc",
-                new_road.id,
-                curv_start,
-                extra={"kind": "degenerate_geometry", "element": "geometry.spiral", "id": new_road.id,
-                       "value": curv_start, "action": "read_as_arc"},
+            record(
+                "degenerate_geometry", "geometry.spiral", new_road.id, curv_start, "read_as_arc",
+                "road %s: spiral with equal start and end curvature %s - read as an arc", new_road.id, curv_start,
             )
             add_arc_or_line(curv_start)
         else:
@@ -623,13 +588,9 @@ def parse_opendrive_road_lane_section(
     new_lane_section.sPos = parse_required_float(lane_section.get("s"), "laneSection.s")
     single_side = lane_section.get("singleSide")
     if single_side not in ["true", "false", None]:
-        degradation_logger.warning(
-            "road %s lane section %s: singleSide %r - read as false",
-            new_road.id,
-            lane_section_id,
-            single_side,
-            extra={"kind": "unknown_value", "element": "laneSection.singleSide", "id": new_road.id,
-                   "value": single_side, "action": "read_as_false"},
+        record(
+            "unknown_value", "laneSection.singleSide", new_road.id, single_side, "read_as_false",
+            "road %s lane section %s: singleSide %r - read as false", new_road.id, lane_section_id, single_side,
         )
         single_side = "false"
     new_lane_section.single_side = single_side
@@ -717,16 +678,18 @@ def parse_opendrive_road_lane_section(
             if speed is not None:
                 # speed is always converted to m/s
                 unit = _speed_unit(new_road.id, f"lane {new_lane.id}", speed.get("unit"))
-                divisor = SPEED_UNIT_DIVISORS.get(unit)
+                divisor = vocabulary.SPEED_UNIT_DIVISORS.get(unit)
                 if divisor is None:
-                    degradation_logger.warning(
+                    record(
+                        "unknown_value" if unit is not None else "missing_attribute",
+                        "speed.unit",
+                        new_road.id,
+                        unit,
+                        "speed_unset",
                         "road %s lane %s: speed unit %r not recognised - speed left unset",
                         new_road.id,
                         new_lane.id,
                         unit,
-                        extra={"kind": "unknown_value" if unit is not None else "missing_attribute",
-                               "element": "speed.unit", "id": new_road.id, "value": unit,
-                               "action": "speed_unset"},
                     )
                 else:
                     with _dropped_on_error("speed", new_road.id):
@@ -770,12 +733,9 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
     try:
         new_signal.signal_value = road_signal.get("value")
     except ValueError:
-        degradation_logger.warning(
-            "signal %s: value %r is not a number - value dropped",
-            new_signal.id,
-            road_signal.get("value"),
-            extra={"kind": "unparseable_number", "element": "signal.value", "id": new_signal.id,
-                   "value": road_signal.get("value"), "action": "value_dropped"},
+        record(
+            "unparseable_number", "signal.value", new_signal.id, road_signal.get("value"), "value_dropped",
+            "signal %s: value %r is not a number - value dropped", new_signal.id, road_signal.get("value"),
         )
         new_signal.signal_value = None
     new_signal.unit = road_signal.get("unit")
@@ -796,11 +756,9 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
     for child in road_signal.iterchildren():
         if child.tag == 'validity':
             if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
-                degradation_logger.warning(
-                    "signal %s: validity without fromLane/toLane - validity skipped",
-                    new_signal.id,
-                    extra={"kind": "missing_attribute", "element": "signal.validity",
-                           "id": new_signal.id, "value": None, "action": "skipped"},
+                record(
+                    "missing_attribute", "signal.validity", new_signal.id, None, "skipped",
+                    "signal %s: validity without fromLane/toLane - validity skipped", new_signal.id,
                 )
                 continue
             lanes = _validity_lanes(child, "signal", new_signal.id)
@@ -809,12 +767,11 @@ def parse_opendrive_road_signal(new_road: Road, road_signal: etree.ElementTree):
             for lane_idx in lanes:
                 lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
-                    degradation_logger.warning(
+                    record(
+                        "unknown_reference", "signal.validity", new_signal.id, lane_idx, "skipped",
                         "signal %s: validity lane %s not found in the first lane section - lane skipped",
                         new_signal.id,
                         lane_idx,
-                        extra={"kind": "unknown_reference", "element": "signal.validity",
-                               "id": new_signal.id, "value": lane_idx, "action": "skipped"},
                     )
                     continue
                 if hasattr(lane, 'signal_references'):
@@ -866,11 +823,9 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
     for child in road_signal_reference.iterchildren():
         if child.tag == 'validity':
             if 'fromLane' not in child.keys() or 'toLane' not in child.keys():
-                degradation_logger.warning(
-                    "signalReference %s: validity without fromLane/toLane - validity skipped",
-                    new_signal_reference.id,
-                    extra={"kind": "missing_attribute", "element": "signalReference.validity",
-                           "id": new_signal_reference.id, "value": None, "action": "skipped"},
+                record(
+                    "missing_attribute", "signalReference.validity", new_signal_reference.id, None, "skipped",
+                    "signalReference %s: validity without fromLane/toLane - validity skipped", new_signal_reference.id,
                 )
                 continue
             lanes = _validity_lanes(child, "signalReference", new_signal_reference.id)
@@ -879,12 +834,11 @@ def parse_opendrive_road_signal_reference(new_road: Road, road_signal_reference:
             for lane_idx in lanes:
                 lane = new_road.lanes.lane_sections[0].get_lane(lane_idx)
                 if lane is None:
-                    degradation_logger.warning(
+                    record(
+                        "unknown_reference", "signalReference.validity", new_signal_reference.id, lane_idx, "skipped",
                         "signalReference %s: validity lane %s not found in the first lane section - lane skipped",
                         new_signal_reference.id,
                         lane_idx,
-                        extra={"kind": "unknown_reference", "element": "signalReference.validity",
-                               "id": new_signal_reference.id, "value": lane_idx, "action": "skipped"},
                     )
                     continue
                 if hasattr(lane, 'signal_references'):
@@ -1149,15 +1103,17 @@ def parse_opendrive_junction(opendrive: OpenDrive, junction: etree.ElementTree):
         
         connecting_road = connection.get("connectingRoad")
         contact_point = translate("connection.contactPoint", connection.get("contactPoint"), new_junction.id)
-        if contact_point not in CONTACT_POINTS:
-            degradation_logger.warning(
+        if contact_point not in vocabulary.CONTACT_POINTS:
+            record(
+                "unknown_value" if contact_point is not None else "missing_attribute",
+                "connection.contactPoint",
+                new_junction.id,
+                contact_point,
+                "skipped",
                 "junction %s connection %s: contactPoint %r - connection skipped",
                 new_junction.id,
                 connection.get("id"),
                 contact_point,
-                extra={"kind": "unknown_value" if contact_point is not None else "missing_attribute",
-                       "element": "connection.contactPoint", "id": new_junction.id,
-                       "value": contact_point, "action": "skipped"},
             )
             continue
         if connecting_road is None:  # sometimes we observed linkedRoad being used instead

@@ -670,12 +670,12 @@ def is_painted_stop_line(
     unsigned stop, and the painted position differs from where CARLA's lights stop); AutoCritic
     lists them as not converted.
     """
-    painted = words.markings.get("painted_stop_lines", {})
-    if tag == "signal" and element_type in painted.get("signal_types", ()):
+    painted = words.markings.painted_stop_lines
+    if tag == "signal" and element_type in painted.signal_types:
         return True
-    if tag == "object" and (element_type or "").lower() in painted.get("object_types", ()):
+    if tag == "object" and (element_type or "").lower() in painted.object_types:
         return True
-    return any(re.fullmatch(pattern, name or "", re.IGNORECASE) for pattern in painted.get("names", ()))
+    return any(re.fullmatch(pattern, name or "", re.IGNORECASE) for pattern in painted.names)
 
 
 def report_painted_stop_lines(*, opendrive, frame, words: vocabulary.Vocabulary) -> list[dict[str, Any]]:

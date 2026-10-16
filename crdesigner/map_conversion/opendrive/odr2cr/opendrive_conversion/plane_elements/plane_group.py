@@ -15,6 +15,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.plane_eleme
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLanes import (
     RoadMark,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import ALLOWED, record
 
 
 def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
@@ -25,12 +26,10 @@ def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
     """
     mark = LineMarking.UNKNOWN
 
-    if plane_line_marking.type in ("solid", "broken") and plane_line_marking.weight not in ("standard", "bold"):
-        logging.getLogger("crdesigner.degradation").warning(
-            "road mark weight %r has no CommonRoad line marking - unknown",
-            plane_line_marking.weight,
-            extra={"kind": "unknown_value", "element": "roadMark.weight", "id": None,
-                   "value": plane_line_marking.weight, "action": "unknown_marking"},
+    if plane_line_marking.type in ("solid", "broken") and plane_line_marking.weight not in ALLOWED["roadMark.weight"]:
+        record(
+            "unknown_value", "roadMark.weight", None, plane_line_marking.weight, "unknown_marking",
+            "road mark weight %r has no CommonRoad line marking - unknown", plane_line_marking.weight,
         )
 
     if plane_line_marking.type == "solid":
@@ -65,11 +64,9 @@ def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
         mark = LineMarking.DASHED_SOLID
 
     elif plane_line_marking.type != "unknown":  # "unknown" is ParametricLaneGroup's placeholder, not input
-        logging.getLogger("crdesigner.degradation").warning(
-            "road mark type %r has no CommonRoad line marking - unknown",
-            plane_line_marking.type,
-            extra={"kind": "unknown_value", "element": "roadMark.type", "id": None,
-                   "value": plane_line_marking.type, "action": "unknown_marking"},
+        record(
+            "unknown_value", "roadMark.type", None, plane_line_marking.type, "unknown_marking",
+            "road mark type %r has no CommonRoad line marking - unknown", plane_line_marking.type,
         )
 
     return mark

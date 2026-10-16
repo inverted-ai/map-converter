@@ -26,21 +26,15 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLa
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSignal import (
     Signal,
 )
-
-
-# The sign table for a country that has none, and sign types read as another type, per country (IAI; set from the
-# vocabulary dictionary).
-UNKNOWN_COUNTRY_TABLE = "ZAM"
-SIGN_TYPE_REPLACEMENTS = {"DEU": {"252": "260"}, "ZAM": {"252": "260"}}
-# Dynamic signal types that are no vehicle light (pedestrian and bicycle lights); IAI, set from the vocabulary dictionary.
-NON_VEHICLE_LIGHT_TYPES = ("1000002", "1000007", "1000013")
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record
 
 
 def _replacements(traffic_sign_enum) -> Dict[str, str]:
     """The sign-type replacements for the country whose sign table is ``traffic_sign_enum``."""
     for country, table in TrafficSignIDCountries.items():
         if table is traffic_sign_enum:
-            return SIGN_TYPE_REPLACEMENTS.get(country, {})
+            return vocabulary.SIGN_TYPE_REPLACEMENTS.get(country, {})
     return {}
 
 def extract_traffic_element_id(
@@ -65,12 +59,9 @@ def extract_traffic_element_id(
     elif signal_type + "-" + signal_subtype in set(item.value for item in traffic_sign_enum):
         element_id = traffic_sign_enum(signal_type + "-" + str(signal_subtype))
     elif (replacement := _replacements(traffic_sign_enum).get(signal_type)) is not None:
-        logging.getLogger("crdesigner.degradation").warning(
-            "signal.type %s read as %s (vocabulary)",
-            signal_type,
-            replacement,
-            extra={"kind": "translated", "element": "signal.type", "id": None, "value": signal_type,
-                   "action": f"read_as_{replacement}"},
+        record(
+            "translated", "signal.type", None, signal_type, f"read_as_{replacement}",
+            "signal.type %s read as %s (vocabulary)", signal_type, replacement,
         )
         element_id = traffic_sign_enum(replacement)
     else:
@@ -139,16 +130,18 @@ def assign_traffic_signals_to_road(
             if signal_country not in TrafficSignIDCountries or (
                 signal_country == "ZAM" and raw_country.upper() != "ZAM"
             ):
-                logging.getLogger("crdesigner.degradation").warning(
+                record(
+                    "unknown_value" if signal.country else "missing_attribute",
+                    "signal.country",
+                    signal.id,
+                    signal.country,
+                    "defaulted",
                     "signal %s: no sign table for country %r - using %s",
                     signal.id,
                     signal.country,
-                    UNKNOWN_COUNTRY_TABLE,
-                    extra={"kind": "unknown_value" if signal.country else "missing_attribute",
-                           "element": "signal.country", "id": signal.id,
-                           "value": signal.country, "action": "defaulted"},
+                    vocabulary.UNKNOWN_COUNTRY_TABLE,
                 )
-                signal_country = UNKNOWN_COUNTRY_TABLE
+                signal_country = vocabulary.UNKNOWN_COUNTRY_TABLE
 
             if (
                 (signal_country == "DEU" or signal_country not in TrafficSignIDCountries.keys())
@@ -211,7 +204,7 @@ def assign_traffic_signals_to_road(
                 if traffic_light_lanes.get(signal.signal_id) is None
                 else traffic_light_lanes[signal.signal_id]
             )
-            if signal.type not in NON_VEHICLE_LIGHT_TYPES:
+            if signal.type not in vocabulary.NON_VEHICLE_LIGHT_TYPES:
                 traffic_light = TrafficLight(
                     traffic_light_id=generate_unique_id(),
                     position=position,

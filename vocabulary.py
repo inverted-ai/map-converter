@@ -49,11 +49,6 @@ from conversion_report import DEGRADATION_LOGGER, record_location
 
 from commonroad.scenario.traffic_sign import TrafficSignIDCountries
 
-from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion import network as reader_network
-from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.plane_elements import (
-    traffic_signals as reader_signals,
-)
-from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import parser as reader_parser
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary as reader_vocabulary
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLanes import Lane
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadtype import RoadType
@@ -76,29 +71,45 @@ SIGNAL_KEYS = (
 )
 MARKING_KEYS = ("stop_stencils", "yield_stencils", "painted_stop_lines")
 PAINTED_KEYS = ("names", "object_types", "signal_types")
-ORIENTATIONS = ("+", "-", "none")
 # Per translatable element attribute, the names the converter understands (None: any name, e.g. a country).
 UNDERSTOOD: dict[str, Optional[tuple[str, ...]]] = {
+    **reader_vocabulary.ALLOWED,
     "lane.type": tuple(Lane.laneTypes),
-    # the road-mark types plane_group.convert_line_marking reads
-    "roadMark.type": (
-        "solid", "broken", "solid solid", "broken broken", "curb", "none",
-        "solid broken", "solid dashed", "broken solid", "dashed solid",
-    ),
-    "roadMark.weight": ("standard", "bold"),
     "object.type": tuple(ROAD_OBJECT_TYPES + CUSTOM_OBJECT_TYPES),
-    "object.orientation": ORIENTATIONS,
-    "signal.orientation": ORIENTATIONS,
-    "signalReference.orientation": ORIENTATIONS,
-    "signal.dynamic": ("yes", "no"),
-    "signal.country": None,
-    "connection.contactPoint": reader_parser.CONTACT_POINTS,
-    "link.elementType": reader_parser.LINK_ELEMENT_TYPES,
-    "link.contactPoint": reader_parser.CONTACT_POINTS,
     "road.type": tuple(RoadType.allowedTypes),
-    "speed.unit": tuple(reader_parser.SPEED_UNIT_DIVISORS),
+    "signal.country": None,
 }
 DEFAULT_KEYS = ("speed_unit",)
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class Signals:
+    """The ``signals`` section (see the module docstring); a key no file gives keeps the literal reading."""
+
+    traffic_light_types: Optional[tuple[str, ...]] = None  # None: every dynamic signal is a light
+    non_vehicle_light_types: tuple[str, ...] = ()
+    countries_by_code: dict[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+    lane_zero_validity_means_none: bool = False
+    unknown_country_table: str = "ZAM"
+    sign_type_replacements: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class PaintedStopLines:
+    """``markings.painted_stop_lines``: name patterns, object types (lower case) and signal types."""
+
+    names: tuple[str, ...] = ()
+    object_types: tuple[str, ...] = ()
+    signal_types: tuple[str, ...] = ()
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class Markings:
+    """The ``markings`` section; left out, no object is a stencil or a painted stop line."""
+
+    stop_stencils: tuple[str, ...] = ()
+    yield_stencils: tuple[str, ...] = ()
+    painted_stop_lines: PaintedStopLines = dataclasses.field(default_factory=PaintedStopLines)
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -111,8 +122,9 @@ class Vocabulary:
         translations: Per element attribute, ``{name in the file: name the converter understands}``.
         match: For a vendor dictionary, the header fields a file must have (``vendor``, ``name``,
             ``revMajor``, ``revMinor``); empty for the base dictionary.
-        signals: The ``signals`` section, only the keys the file gives (see the module docstring).
-        markings: The ``markings`` section, only the keys the file gives.
+        signals: The ``signals`` section.
+        markings: The ``markings`` section.
+        given: The ``signals.<key>`` and ``markings.<key>`` the file gives (:func:`combine` takes only those).
         defaults: The ``defaults`` section, only the keys the file gives.
         vendors: ``{path, sha256}`` of each vendor dictionary :func:`combine` applied on top of this one.
     """
@@ -121,8 +133,9 @@ class Vocabulary:
     sha256: str
     translations: dict[str, dict[str, str]]
     match: dict[str, str] = dataclasses.field(default_factory=dict)
-    signals: dict[str, Any] = dataclasses.field(default_factory=dict)
-    markings: dict[str, Any] = dataclasses.field(default_factory=dict)
+    signals: Signals = dataclasses.field(default_factory=Signals)
+    markings: Markings = dataclasses.field(default_factory=Markings)
+    given: frozenset[str] = frozenset()
     defaults: dict[str, Any] = dataclasses.field(default_factory=dict)
     vendors: tuple[dict[str, str], ...] = ()
 
@@ -148,6 +161,8 @@ def load(*, path: str, vendor: bool = False) -> Vocabulary:
     match = {str(k): str(v) for k, v in (content.get("match") or {}).items()}
     if vendor and (not match or set(match) - set(HEADER_FIELDS)):
         raise ValueError(f"vocabulary {path}: a vendor dictionary needs a match on {', '.join(HEADER_FIELDS)}")
+    signals = _signals(path=path, section=content.get("signals") or {})
+    markings = _markings(path=path, section=content.get("markings") or {})
     translations = {}
     for element, table in (content.get("translations") or {}).items():
         if element not in UNDERSTOOD:
@@ -168,8 +183,9 @@ def load(*, path: str, vendor: bool = False) -> Vocabulary:
         sha256=hashlib.sha256(raw).hexdigest(),
         translations=translations,
         match=match,
-        signals=_signals(path=path, section=content.get("signals") or {}),
-        markings=_markings(path=path, section=content.get("markings") or {}),
+        signals=Signals(**signals),
+        markings=Markings(**markings),
+        given=frozenset([*(f"signals.{key}" for key in signals), *(f"markings.{key}" for key in markings)]),
         defaults=_defaults(path=path, section=content.get("defaults") or {}),
     )
 
@@ -196,9 +212,9 @@ def _defaults(*, path: str, section: dict) -> dict[str, Any]:
     defaults: dict[str, Any] = {}
     if section.get("speed_unit") is not None:
         unit = str(section["speed_unit"])
-        if unit not in reader_parser.SPEED_UNIT_DIVISORS:
+        if unit not in reader_vocabulary.SPEED_UNIT_DIVISORS:
             raise ValueError(
-                f"vocabulary {path}: defaults: speed_unit {unit} is not one of {', '.join(reader_parser.SPEED_UNIT_DIVISORS)}"
+                f"vocabulary {path}: defaults: speed_unit {unit} is not one of {', '.join(reader_vocabulary.SPEED_UNIT_DIVISORS)}"
             )
         defaults["speed_unit"] = unit
     return defaults
@@ -213,11 +229,11 @@ def _markings(*, path: str, section: dict) -> dict[str, Any]:
     if "painted_stop_lines" in section:
         painted = section["painted_stop_lines"] or {}
         _check_keys(path=path, where="painted_stop_lines: ", section=painted, known=PAINTED_KEYS)
-        markings["painted_stop_lines"] = {
-            "names": _patterns(path=path, where="painted_stop_lines name", values=painted.get("names")),
-            "object_types": tuple(str(t).lower() for t in painted.get("object_types") or []),
-            "signal_types": tuple(str(t) for t in painted.get("signal_types") or []),
-        }
+        markings["painted_stop_lines"] = PaintedStopLines(
+            names=_patterns(path=path, where="painted_stop_lines name", values=painted.get("names")),
+            object_types=tuple(str(t).lower() for t in painted.get("object_types") or []),
+            signal_types=tuple(str(t) for t in painted.get("signal_types") or []),
+        )
     return markings
 
 
@@ -283,16 +299,15 @@ def matching(*, vendors: list[Vocabulary], header: dict[str, Optional[str]]) -> 
 
 
 def combine(*, vocabularies: Sequence[Vocabulary]) -> Vocabulary:
-    """One dictionary from several: later ones win per translated name and per ``signals`` key."""
+    """One dictionary from several: later ones win per translated name and per ``signals``/``markings`` key given."""
     translations: dict[str, dict[str, str]] = {}
-    signals: dict[str, Any] = {}
-    markings: dict[str, Any] = {}
+    signals, markings = Signals(), Markings()
     defaults: dict[str, Any] = {}
     for words in vocabularies:
         for element, table in words.translations.items():
             translations[element] = {**translations.get(element, {}), **table}
-        signals.update(words.signals)
-        markings.update(words.markings)
+        signals = dataclasses.replace(signals, **_given(words=words, section="signals"))
+        markings = dataclasses.replace(markings, **_given(words=words, section="markings"))
         defaults.update(words.defaults)
     first = vocabularies[0]
     return Vocabulary(
@@ -301,27 +316,34 @@ def combine(*, vocabularies: Sequence[Vocabulary]) -> Vocabulary:
         translations=translations,
         signals=signals,
         markings=markings,
+        given=frozenset().union(*(words.given for words in vocabularies)),
         defaults=defaults,
         vendors=tuple({"path": v.path, "sha256": v.sha256} for v in vocabularies[1:]),
     )
 
 
+def _given(*, words: Vocabulary, section: str) -> dict[str, Any]:
+    prefix = f"{section}."
+    values = getattr(words, section)
+    return {key[len(prefix):]: getattr(values, key[len(prefix):]) for key in words.given if key.startswith(prefix)}
+
+
 def install(*, vocabulary: Vocabulary) -> None:
     """Make the OpenDRIVE reader use ``vocabulary`` (process-wide, like crdesigner's own config objects)."""
     reader_vocabulary.TRANSLATIONS = {element: dict(table) for element, table in vocabulary.translations.items()}
-    reader_network.STOP_STENCIL_NAMES = list(vocabulary.markings.get("stop_stencils", ()))
-    reader_network.YIELD_STENCIL_NAMES = list(vocabulary.markings.get("yield_stencils", ()))
-    reader_signals.UNKNOWN_COUNTRY_TABLE = vocabulary.signals.get("unknown_country_table", "ZAM")
-    reader_signals.NON_VEHICLE_LIGHT_TYPES = vocabulary.signals.get("non_vehicle_light_types", ())
-    reader_parser.DEFAULT_SPEED_UNIT = vocabulary.defaults.get("speed_unit")
-    reader_signals.SIGN_TYPE_REPLACEMENTS = {
-        country: dict(table) for country, table in vocabulary.signals.get("sign_type_replacements", {}).items()
+    reader_vocabulary.STOP_STENCIL_NAMES = list(vocabulary.markings.stop_stencils)
+    reader_vocabulary.YIELD_STENCIL_NAMES = list(vocabulary.markings.yield_stencils)
+    reader_vocabulary.UNKNOWN_COUNTRY_TABLE = vocabulary.signals.unknown_country_table
+    reader_vocabulary.NON_VEHICLE_LIGHT_TYPES = vocabulary.signals.non_vehicle_light_types
+    reader_vocabulary.SIGN_TYPE_REPLACEMENTS = {
+        country: dict(table) for country, table in vocabulary.signals.sign_type_replacements.items()
     }
+    reader_vocabulary.DEFAULT_SPEED_UNIT = vocabulary.defaults.get("speed_unit")
 
 
 def is_traffic_light(*, signal_type: Optional[str], vocabulary: Vocabulary) -> bool:
     """Whether a signal marked dynamic is a traffic light: its type matches ``traffic_light_types`` (when given)."""
-    patterns = vocabulary.signals.get("traffic_light_types")
+    patterns = vocabulary.signals.traffic_light_types
     if patterns is None:
         return True
     return any(re.fullmatch(pattern, signal_type or "") for pattern in patterns)
@@ -337,7 +359,7 @@ def country_for_code(
     if (country or "").strip() or not signal_type:
         return None
     code_type, code_subtype = signal_type.upper(), (subtype or "").upper()
-    for table_country, codes in vocabulary.signals.get("countries_by_code", {}).items():
+    for table_country, codes in vocabulary.signals.countries_by_code.items():
         if f"{code_type}-{code_subtype}" in codes or code_type in codes:
             return table_country, code_type, code_subtype
     return None
@@ -345,7 +367,7 @@ def country_for_code(
 
 def names_no_lane(*, validity_from: object, validity_to: object, vocabulary: Vocabulary) -> bool:
     """Whether a ``<validity>`` naming only lane 0 is read as naming no lane (``lane_zero_validity_means_none``)."""
-    if not vocabulary.signals.get("lane_zero_validity_means_none"):
+    if not vocabulary.signals.lane_zero_validity_means_none:
         return False
     try:
         return float(validity_from) == 0.0 and float(validity_to) == 0.0

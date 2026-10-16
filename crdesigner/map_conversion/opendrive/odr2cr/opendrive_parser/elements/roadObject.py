@@ -1,6 +1,6 @@
 import logging
 
-from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import translate
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import ALLOWED, record, translate
 
 
 ROAD_OBJECT_TYPES = [
@@ -111,12 +111,9 @@ class Object:
     def type(self, value):
         value = translate("object.type", value, self.id)
         if value not in ROAD_OBJECT_TYPES and value not in CUSTOM_OBJECT_TYPES:
-            logging.getLogger("crdesigner.degradation").warning(
-                "object %s: type %r not supported - type none",
-                self.id,
-                value,
-                extra={"kind": "unknown_value", "element": "object.type", "id": self.id,
-                       "value": value, "action": "defaulted"},
+            record(
+                "unknown_value", "object.type", self.id, value, "defaulted",
+                "object %s: type %r not supported - type none", self.id, value,
             )
             value = "none"
         self._type = str(value)
@@ -257,13 +254,10 @@ class Object:
     @orientation.setter
     def orientation(self, value):
         value = translate("object.orientation", value, self.id)
-        if value not in ["+", "-", "none"]:
-            logging.getLogger("crdesigner.degradation").warning(
-                "object %s: orientation %r - using 'none'",
-                self.id,
-                value,
-                extra={"kind": "unknown_value", "element": "object.orientation",
-                       "id": self.id, "value": value, "action": "defaulted"},
+        if value not in ALLOWED["object.orientation"]:
+            record(
+                "unknown_value", "object.orientation", self.id, value, "defaulted",
+                "object %s: orientation %r - using 'none'", self.id, value,
             )
             value = "none"
         self._orientation = str(value)

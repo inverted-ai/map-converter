@@ -52,7 +52,7 @@ def test_bidirectional_lane_is_kept_tagged_and_not_linked_head_on(tmp_path):
     for ll in lanelets:  # a link across the gap would collapse a boundary onto the far lanelet's end
         for bound in (ll.leftBound, ll.rightBound):
             assert math.dist((bound[0].x, bound[0].y), (bound[-1].x, bound[-1].y)) > 40.0
-    assert mq.crossed_geometry(outputs=outputs) == {"reversed_bounds": 0, "invalid_polygons": 0}
+    assert mq.crossed_geometry(outputs=outputs)["lanelets"] == 0
     graph = mq.vehicle_routing_graph(lanelet_map=outputs.lanelet_map)
     bidirectional = next(ll for ll in lanelets if "one_way" in ll.attributes and ll.attributes["one_way"] == "no")
     assert any(graph.following(ll) == [bidirectional] for ll in lanelets)

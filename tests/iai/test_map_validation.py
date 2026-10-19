@@ -17,7 +17,7 @@ CLEAN_METRICS = {
     "lanelet_count": 100,
     "routing_edge_pct": 100.0,
     "seam_handshake_pct": 100.0,
-    "crossed_geometry": {"reversed_bounds": 0, "invalid_polygons": 0},
+    "crossed_geometry": {"reversed_bounds": 0, "invalid_polygons": 0, "inverted_on_load": 0, "lanelets": 0},
     "lanelets_without_subtype": 0,
     "point_extent_m": 500.0,
     "origin": [49.0, 8.0],
@@ -42,7 +42,7 @@ def _failed(
 
 
 def _crossed(*, count: int, lanelets: int) -> dict:
-    return {**CLEAN_METRICS, "lanelet_count": lanelets, "crossed_geometry": {"reversed_bounds": count, "invalid_polygons": 0}}
+    return {**CLEAN_METRICS, "lanelet_count": lanelets, "crossed_geometry": {"reversed_bounds": count, "invalid_polygons": 0, "inverted_on_load": 0, "lanelets": count}}
 
 
 @pytest.mark.parametrize("profile", ["perfect", "strict"])

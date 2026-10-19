@@ -249,7 +249,7 @@ def evaluate(
         detail="share of meeting lanelet ends that share their nodes",
     )
     crossed = metrics.get("crossed_geometry")
-    count = None if crossed is None else sum(crossed.values())
+    count = None if crossed is None else crossed["lanelets"]
     fraction = None if count is None or not lanelets else count / lanelets
     add(
         name="crossed_lanelets",
@@ -257,7 +257,8 @@ def evaluate(
         value=None if count is None else {"count": count, "fraction": fraction},
         limit={"min_count": config.min_crossed_count, "max_fraction": config.max_crossed_fraction},
         passed=count is None or count < config.min_crossed_count or (fraction or 0.0) <= config.max_crossed_fraction,
-        detail="lanelets whose outline folds or touches itself; fails at min_count or more above max_fraction",
+        detail="lanelets whose outline folds or touches itself, or that Lanelet2 reads against their written "
+        "direction; fails at min_count or more above max_fraction",
     )
     every_control(
         name="traffic_light_stoplines",

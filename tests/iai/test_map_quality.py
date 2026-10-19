@@ -97,7 +97,45 @@ def test_crossed_geometry_reversed_bounds():
         left=[_point(x=0, y=12), _point(x=10, y=12)], right=[_point(x=10, y=10), _point(x=0, y=10)]
     )
     crossed = mq.crossed_geometry(outputs=_outputs(lanelets=[a, reversed_right]))
-    assert crossed == {"reversed_bounds": 1, "invalid_polygons": 1}
+    assert crossed == {"reversed_bounds": 1, "invalid_polygons": 1, "inverted_on_load": 0, "lanelets": 1}
+
+
+def _line(*, points: list[tuple[float, float]]) -> LineString3d:
+    return LineString3d(getId(), [_point(x=x, y=y) for x, y in points])
+
+
+def test_a_bound_lanelet2_turned_around_alone_is_inverted_on_load():
+    left, right = _line(points=[(0, 2), (10, 2)]), _line(points=[(0, 0), (10, 0)])
+    misread = Lanelet(getId(), left, right.invert())
+
+    faults = mq.crossed_lanelets(outputs=_outputs(lanelets=[misread]))
+
+    assert [(f["id"], f["detail"]) for f in faults] == [(f"lanelet {misread.id}", "reversed_bounds invalid_polygons inverted_on_load")]
+
+
+def test_opposite_lanes_reading_their_shared_centre_line_both_ways_are_not_misread():
+    centre = _line(points=[(0, 0), (10, 0)])
+    eastbound = Lanelet(getId(), centre, _line(points=[(0, -3), (10, -3)]))
+    westbound = Lanelet(getId(), centre.invert(), _line(points=[(10, 3), (0, 3)]))
+
+    assert mq.crossed_lanelets(outputs=_outputs(lanelets=[eastbound, westbound])) == []
+
+
+def test_opposite_lanes_reading_their_shared_centre_line_the_same_way_are_misread():
+    centre = _line(points=[(0, 0), (10, 0)])
+    eastbound = Lanelet(getId(), centre, _line(points=[(0, -3), (10, -3)]))
+    misread = Lanelet(getId(), centre, _line(points=[(10, 3), (0, 3)]))
+
+    faults = mq.crossed_lanelets(outputs=_outputs(lanelets=[eastbound, misread]))
+
+    assert {f["id"] for f in faults if "inverted_on_load" in f["detail"]} == {f"lanelet {eastbound.id}", f"lanelet {misread.id}"}
+
+
+def test_neighbours_sharing_a_bound_the_same_way_are_not_misread():
+    a, b = _chain()
+    side = Lanelet(getId(), a.rightBound, _line(points=[(0, -3), (10, -3)]))
+
+    assert mq.crossed_lanelets(outputs=_outputs(lanelets=[a, side])) == []
 
 
 def test_xy_hash_ignores_z_and_ids():
@@ -151,7 +189,7 @@ def test_metrics_on_converted_map(converted_junction):
     assert metrics["sign_ways_vs_stoplines"]["light_stoplines"] == 2
     assert metrics["load_error_count"] == 0
     assert metrics["origin"] == [49.0, 8.0]
-    assert metrics["crossed_geometry"] == {"reversed_bounds": 0, "invalid_polygons": 0}
+    assert metrics["crossed_geometry"] == {"reversed_bounds": 0, "invalid_polygons": 0, "inverted_on_load": 0, "lanelets": 0}
     assert metrics["z_conflicts"]["count"] == 0
     assert metrics["one_way_no_count"] == 0
     assert metrics["mesh_in_frame_fraction"] == 1.0

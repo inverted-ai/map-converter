@@ -370,23 +370,31 @@ def xy_geometry_hash(*, outputs: ConversionOutputs) -> str:
     return hashlib.sha256(json.dumps(coords).encode()).hexdigest()
 
 
+CROSSED_KINDS = ("reversed_bounds", "invalid_polygons", "inverted_on_load")
+
+
 def crossed_geometry(*, outputs: ConversionOutputs) -> dict[str, int]:
-    """Lanelets whose geometry folds over itself.
+    """Lanelets whose geometry folds over itself, or that Lanelet2 reads against their written direction.
 
     Returns:
         ``reversed_bounds``: lanelets whose left and right bounds run in opposite directions,
         i.e. ``d(l0,r0) + d(l1,r1)`` exceeds ``d(l0,r1) + d(l1,r0)`` by more than
         ``CROSSED_BOUNDS_GAP_M``. ``invalid_polygons``: lanelet polygons shapely reports as
-        invalid (self-intersecting).
+        invalid (self-intersecting). ``inverted_on_load``: lanelets with a bound Lanelet2's loader turned
+        around although it is stored their way (:func:`misread_lanelet_ids`). ``lanelets``: lanelets of any kind.
     """
     faults = crossed_lanelets(outputs=outputs)
-    return {kind: sum(1 for f in faults if kind in f["detail"]) for kind in ("reversed_bounds", "invalid_polygons")}
+    return {
+        **{kind: sum(1 for f in faults if kind in f["detail"].split()) for kind in CROSSED_KINDS},
+        "lanelets": len(faults),
+    }
 
 
 def crossed_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
     """The lanelets :func:`crossed_geometry` counts, with their centres; ``detail`` names the kinds."""
     from shapely.geometry import Polygon
 
+    misread = misread_lanelet_ids(lanelet_map=outputs.lanelet_map)
     faults = []
     for ll in outputs.lanelet_map.laneletLayer:
         left = [(p.x, p.y) for p in ll.leftBound]
@@ -399,12 +407,38 @@ def crossed_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
             for kind, found in (
                 ("reversed_bounds", straight - crossed > CROSSED_BOUNDS_GAP_M),
                 ("invalid_polygons", len(ring) >= 3 and not Polygon(ring).is_valid),
+                ("inverted_on_load", ll.id in misread),
             )
             if found
         ]
         if kinds:
             faults.append(fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll), detail=" ".join(kinds)))
     return faults
+
+
+def misread_lanelet_ids(*, lanelet_map) -> set[int]:
+    """Lanelets whose bound Lanelet2's loader inverted where the way's other users show it should not have.
+
+    The converter stores a way in the direction of the lanelet that creates it; a neighbour shares it as the
+    other side of the line (same direction: not inverted) or as the same side (opposite direction: exactly one
+    of the two reads it inverted). A way that only one lanelet uses is never inverted. Ways with more than two
+    users are not judged.
+    """
+    users: dict[int, list[tuple[int, str, bool]]] = collections.defaultdict(list)
+    for ll in lanelet_map.laneletLayer:
+        users[ll.leftBound.id].append((ll.id, "left", ll.leftBound.inverted()))
+        users[ll.rightBound.id].append((ll.id, "right", ll.rightBound.inverted()))
+    misread = set()
+    for uses in users.values():
+        if len(uses) == 1 and uses[0][2]:
+            misread.add(uses[0][0])
+        elif len(uses) == 2:
+            (a, side_a, inverted_a), (b, side_b, inverted_b) = uses
+            if side_a != side_b:
+                misread.update(lanelet for lanelet, inverted in ((a, inverted_a), (b, inverted_b)) if inverted)
+            elif inverted_a == inverted_b:
+                misread.update((a, b))
+    return misread
 
 
 def mesh_in_frame_fraction(*, outputs: ConversionOutputs) -> Optional[float]:

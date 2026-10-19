@@ -130,8 +130,8 @@ element affected, and records it. `<map>_conversion_report.json` holds:
    20 parent ids (the converter reads none of them except the signals' `vectorSignal` ids).
 6. `records_by_kind` and `records`: every record, with `kind`, `element` (`<tag>` when the element was
    dropped, else `<tag>.<attribute>`), `id` (road, signal, object or junction), `value`, `action` and the
-   message; `heuristic` records also have `applied` and `location` (`[x, y]` in the local frame of the
-   outputs). Each record is also printed as a warning, once per `kind`, `element` and `value`.
+   message; `heuristic` records also have `applied`, and records that know where they apply have `location`
+   (`[x, y]` in the local frame of the outputs). Each record is also printed as a warning, once per `kind`, `element` and `value`.
 
 | `kind` | Example | What the converter does |
 |---|---|---|
@@ -144,6 +144,7 @@ element affected, and records it. `<map>_conversion_report.json` holds:
 | `unknown_reference` | signal `<validity>` naming a lane that does not exist | That lane is skipped |
 | `heuristic` | a light with no lane validity | Where a heuristic (`element` = its id) applies and what it does there, or, with `applied` false, would do; see "Heuristics" |
 | `not_converted` | a painted stop line | Listed with its position; nothing is written for it |
+| `geometry` | a lane edge farther inside a bend than the bend's radius loops back over itself | `bound_loop_cut`: the loop is cut at the crossing (only loops turning against the lane; turnarounds and ramps crossing over themselves are kept); `bound_vertices_added`: vertices added on a bound's own segments so Lanelet2's loader reads its direction as written; `sharp_kink`: a planView heading jump over 90°, reported only. Each with `location` |
 
 ### Validation
 
@@ -171,7 +172,7 @@ checks failed and exits with code 4. A failed `perfect` verdict also says whethe
 | L1 | `has_lanelets` | the `.osm` has no lanelets | same |
 | L2 | `routing_edge_pct` | any lanelet has no predecessor, successor or neighbour in the routing graph | fewer than 95% have one |
 | L3 | `seam_handshake_pct` | any pair of meeting lanelet ends does not share its nodes | fewer than 95% share them |
-| L4 | `crossed_lanelets` | any lanelet outline folds or touches itself | at least 3 lanelets fold and they are more than 2% of all lanelets |
+| L4 | `crossed_lanelets` | any lanelet outline folds or touches itself, or Lanelet2 reads it against its written direction | at least 3 lanelets fold and they are more than 2% of all lanelets |
 | L5 | `traffic_light_stoplines` | any traffic light has no stopline | same |
 | L6 | `stop_yield_stoplines` | any stop or yield sign has no stopline | same |
 | L7 | `point_extent_m` | a point lies more than 100 km from the local origin | same |
@@ -557,7 +558,7 @@ self-contained `report.html`. Per map it records:
   | `untyped_way_count` | `.osm` ways without a `type` tag |
   | `osm_size_bytes`, `origin` | `.osm` size, `lanelet_map_origin` |
   | `xy_geometry_hash` | hash of all point positions (1 cm); changes only when geometry moves |
-  | `crossed_geometry` | lanelets whose bounds run in opposite directions (`reversed_bounds`) or whose polygon self-intersects (`invalid_polygons`) |
+  | `crossed_geometry` | lanelets whose bounds run in opposite directions (`reversed_bounds`), whose polygon self-intersects (`invalid_polygons`), or that Lanelet2's loader turned around against how they are stored (`inverted_on_load`); `lanelets`: lanelets of any kind |
   | `one_way_no_count` | lanelets tagged `one_way=no` |
   | `mesh_in_frame_fraction` | fraction of mesh vertices inside `visualization.png` |
 

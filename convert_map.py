@@ -27,11 +27,10 @@ import pyproj
 import yaml
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
-from shapely.geometry import LineString
 
 import lanelet2
 from torchdrivesim.map import Stopline, MapConfig, store_map_config, resolve_paths_to_absolute
-from torchdrivesim.lanelet2 import LaneletMap, load_lanelet_map, road_mesh_from_lanelet_map, lanelet_map_to_lane_mesh
+from torchdrivesim.lanelet2 import LaneletMap, load_lanelet_map, lanelet_map_to_lane_mesh
 from torchdrivesim.mesh import BirdviewMesh, BirdviewRGBMeshGenerator
 from torchdrivesim.rendering import renderer_from_config, RendererConfig
 from torchdrivesim.map import traffic_controls_from_map_config
@@ -49,6 +48,7 @@ from commonroad.scenario.lanelet import LaneletNetwork
 import autocritic_report
 import conversion_heuristics
 import conversion_report
+import lanelet_bounds
 import map_quality
 import map_validation
 import traffic_controls
@@ -309,120 +309,6 @@ def bidirectional_fixes(*, lanelet_network: LaneletNetwork, tolerance: float = 5
             if succ is not None and math.dist(succ.left_vertices[0][:2], end) >= tolerance:
                 links.append((lanelet.lanelet_id, succ_id))
     return BidirectionalFixes(links=links, reverse_connectors=reverse_connectors)
-
-
-def simplify_lanelet_network(*, network: LaneletNetwork, tolerance: float) -> int:
-    """Apply 2D Douglas-Peucker to each lanelet's left/right boundaries; rebuild centerlines.
-
-    Mutates ``network`` in place. Endpoints are preserved by shapely's simplify,
-    so lanelet-to-lanelet connectivity (predecessor/successor handshakes) is
-    unaffected. Because RDP is deterministic, two adjacent lanelets whose shared
-    boundary arrays were identical pre-simplification produce identical
-    post-simplification arrays, so cr2lanelet's 0.001 m shared-way dedup still
-    works.
-
-    Args:
-        network: The CommonRoad lanelet network whose lanelets will be simplified.
-        tolerance: Max permissible lateral deviation per vertex, in metres.
-
-    Returns:
-        The total number of vertices removed across all lanelets (for logging).
-    """
-    removed = 0
-    # First pass: normalize every lanelet to 3D so adjacent boundaries always
-    # share a trailing dimension. cr2lanelet's `_vertices_are_equal` does a raw
-    # numpy subtract with no trailing-axis guard; if an adj-pair ends up mixed
-    # 2D/3D it crashes the OSM export.
-    for lanelet in network.lanelets:
-        lanelet.left_vertices = _ensure_3d(polyline=lanelet.left_vertices, lanelet_id=lanelet.lanelet_id)
-        lanelet.right_vertices = _ensure_3d(polyline=lanelet.right_vertices, lanelet_id=lanelet.lanelet_id)
-        lanelet.center_vertices = _ensure_3d(polyline=lanelet.center_vertices, lanelet_id=lanelet.lanelet_id)
-        _refresh_lanelet_caches(lanelet=lanelet)
-    for lanelet in network.lanelets:
-        left = lanelet.left_vertices
-        right = lanelet.right_vertices
-        if left.shape[0] < 3 and right.shape[0] < 3:
-            continue
-        new_left = _simplify_polyline(polyline=left, tolerance=tolerance)
-        new_right = _simplify_polyline(polyline=right, tolerance=tolerance)
-        # Centerline must be re-derived from the simplified boundaries; if left and
-        # right end up with different vertex counts, resample both to the longer one
-        # on its own arc-length axis before averaging.
-        new_center = _midline(left=new_left, right=new_right)
-        removed += (left.shape[0] - new_left.shape[0]) + (right.shape[0] - new_right.shape[0])
-        lanelet.left_vertices = new_left
-        lanelet.right_vertices = new_right
-        lanelet.center_vertices = new_center
-        # commonroad-io's vertex setters do not refresh the polygon / arc-length
-        # caches built in Lanelet.__init__, so do it here.
-        _refresh_lanelet_caches(lanelet=lanelet)
-    return removed
-
-
-def _refresh_lanelet_caches(*, lanelet) -> None:
-    """Mirror the cache initialization done by Lanelet.__init__ after vertex mutation."""
-    from commonroad.geometry.shape import Polygon as CRPolygon
-    lanelet._polygon = CRPolygon(np.concatenate((lanelet.right_vertices, np.flip(lanelet.left_vertices, 0))))
-    lanelet._distance = None
-    lanelet._inner_distance = None
-
-
-def _ensure_3d(*, polyline: np.ndarray, lanelet_id: int) -> np.ndarray:
-    """Pad a 2D polyline with a z=0 column (logged as a degradation); pass 3D through unchanged."""
-    if polyline.shape[1] == 3:
-        return polyline
-    logging.getLogger("crdesigner.degradation").warning(
-        "lanelet %s: boundary has no heights - using z=0",
-        lanelet_id,
-        extra={"kind": "missing_value", "element": "lanelet.vertices.z", "id": lanelet_id, "value": None, "action": "defaulted"},
-    )
-    return np.column_stack([polyline, np.zeros(polyline.shape[0], dtype=polyline.dtype)])
-
-
-def _simplify_polyline(*, polyline: np.ndarray, tolerance: float) -> np.ndarray:
-    """Run Douglas-Peucker on the XY projection; preserve z by arc-length interpolation if present.
-
-    The output preserves the input's trailing dimension (2 or 3), so adjacent
-    lanelets that share a boundary continue to have matching vertex shapes
-    (cr2lanelet's `_vertices_are_equal` requires this).
-    """
-    if polyline.shape[0] < 3:
-        return polyline
-    xy = polyline[:, :2]
-    simplified_xy = np.asarray(LineString(xy).simplify(tolerance, preserve_topology=False).coords,
-                               dtype=polyline.dtype)
-    if polyline.shape[1] == 2:
-        return simplified_xy
-    # 3D path: interpolate z onto the surviving XY points using cumulative XY arc length.
-    orig_s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
-    new_s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(simplified_xy, axis=0), axis=1))])
-    if orig_s[-1] > 0 and new_s[-1] > 0:
-        new_s = new_s * (orig_s[-1] / new_s[-1])
-    z = np.interp(new_s, orig_s, polyline[:, 2])
-    return np.column_stack([simplified_xy, z.astype(polyline.dtype)])
-
-
-def _midline(*, left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    """Compute the centerline of two boundary polylines.
-
-    If the two polylines have the same vertex count after simplification, we
-    average pointwise. Otherwise we resample both onto a common arc-length axis
-    using the denser of the two as the reference, then average. This is the same
-    convention used elsewhere in commonroad-io's lanelet construction.
-    """
-    if left.shape[0] == right.shape[0]:
-        return (left + right) / 2.0
-    n = max(left.shape[0], right.shape[0])
-    return (_resample_polyline(polyline=left, n=n) + _resample_polyline(polyline=right, n=n)) / 2.0
-
-
-def _resample_polyline(*, polyline: np.ndarray, n: int) -> np.ndarray:
-    cumulative = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(polyline, axis=0), axis=1))])
-    if cumulative[-1] == 0.0:
-        return np.repeat(polyline[:1], n, axis=0)
-    targets = np.linspace(0.0, cumulative[-1], n)
-    out = np.column_stack([np.interp(targets, cumulative, polyline[:, i]) for i in range(polyline.shape[1])])
-    return out.astype(polyline.dtype)
 
 
 def trim_map(lanelet_map, center, radius, vertical_limits=None):
@@ -832,6 +718,12 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
             f'Bidirectional lanelets: unlinked {len(fixes.links)} wrong links, '
             f'removed {len(fixes.reverse_connectors)} reverse connectors'
         )
+    # A bound that loops back makes Lanelet2's loader turn it around (lanelet_bounds module docstring).
+    for lanelet_id, (left, right) in lanelet_bounds.loop_free_bounds(
+        network=lanelet_network, to_local=parsed.frame.to_local
+    ).items():
+        lanelet_bounds.set_bounds(lanelet=lanelet_network.find_lanelet_by_id(lanelet_id), left=left, right=right)
+    lanelet_bounds.record_sharp_kinks(opendrive=parsed.opendrive, to_local=parsed.frame.to_local)
 
     # Export CommonRoad to Lanelet2, iterating tolerance until the OSM fits the size budget.
     commonroad_config = GeneralConfig()
@@ -847,11 +739,16 @@ def export_osm(*, cfg: MapConversionConfig, parsed: ParsedXodr) -> ExportedOsm:
 
     for attempt in range(max_attempts):
         if tol > 0:
-            removed = simplify_lanelet_network(network=lanelet_network, tolerance=tol)
+            removed = lanelet_bounds.simplify_lanelet_network(network=lanelet_network, tolerance=tol)
             logger.info(
                 f'Simplify attempt {attempt + 1}/{max_attempts}: tol={tol:.3f} m '
                 f'(removed {removed} vertices across {len(lanelet_network.lanelets)} lanelets)'
             )
+        # After simplification, which moves the vertex Lanelet2's loader judges a bound's direction by.
+        for lanelet_id, (left, right) in lanelet_bounds.align_safe_bounds(
+            network=lanelet_network, to_local=parsed.frame.to_local
+        ).items():
+            lanelet_bounds.set_bounds(lanelet=lanelet_network.find_lanelet_by_id(lanelet_id), left=left, right=right)
         l2osm = CR2LaneletConverter(
             config=lanelet2_config,
             cr_config=commonroad_config,
@@ -1005,7 +902,7 @@ def build_mesh(*, cfg: MapConversionConfig, location: str, osm_path: str, projec
     mesh_path = os.path.join(cfg.dir_path, f"{location}_mesh.json")
     lanelet_map = lanelet2.io.load(osm_path, projector)
     logger.info(f'Computing road mesh')
-    road_mesh = road_mesh_from_lanelet_map(lanelet_map)
+    road_mesh = lanelet_bounds.road_mesh(lanelet_map=lanelet_map)
     road_mesh = BirdviewMesh.set_properties(road_mesh, category='road').to(road_mesh.device)
     lane_mesh = lanelet_map_to_lane_mesh(
         lanelet_map, left_handed=False,

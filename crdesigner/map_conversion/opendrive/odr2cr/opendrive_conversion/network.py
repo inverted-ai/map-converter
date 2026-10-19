@@ -182,6 +182,18 @@ def convert_to_base_lanelet_network(lanelet_network: ConversionLaneletNetwork) -
     return network
 
 
+def left_bound_on_right(lanelet) -> bool:
+    """IAI: whether the lanelet's left bound lies on the right of its direction (its outline, left bound forward
+    and right bound back, runs counter-clockwise).
+
+    :param lanelet: The lanelet to check.
+    :return: True if the left and right bounds are on the wrong sides.
+    """
+    ring = np.vstack((lanelet.left_vertices[:, :2], lanelet.right_vertices[::-1, :2]))
+    x, y = ring[:, 0], ring[:, 1]
+    return float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)) > 0
+
+
 class Network:
     """Represents a network of parametric lanes, with a LinkIndex
     which stores the neighbor relations between the parametric lanes.
@@ -436,6 +448,16 @@ class Network:
 
         # Perform lane splits and joins
         lanelet_network.join_and_split_possible_lanes()
+
+        # IAI: lanelets are built with the inner border as left bound, which is mostly the right of the driving
+        # direction in left-hand traffic (their neighbours are already mirrored there)
+        for lanelet in lanelet_network.lanelets:
+            if lanelet.parametric_lane_group.driving_direction is False and left_bound_on_right(lanelet):
+                lanelet.left_vertices, lanelet.right_vertices = lanelet.right_vertices, lanelet.left_vertices
+                lanelet.line_marking_left_vertices, lanelet.line_marking_right_vertices = (
+                    lanelet.line_marking_right_vertices,
+                    lanelet.line_marking_left_vertices,
+                )
 
         lanelet_network.convert_all_lanelet_ids()
         self._link_index.update_intersection_lane_id(lanelet_network.old_lanelet_ids())

@@ -8,7 +8,9 @@ Vendored code reports every input it cannot use as written through
   ``unparseable_number``, ``degenerate_geometry``, ``unknown_reference``; ``heuristic`` when a
   :mod:`conversion_heuristics` rule detected the situation it fixes (``element`` is its id,
   ``value`` its name; these records also carry ``applied`` and ``location``, local ``[x, y]``);
-  ``not_converted`` for an element listed but deliberately not converted (painted stop lines).
+  ``not_converted`` for an element listed but deliberately not converted (painted stop lines);
+  ``geometry`` for a lane-bound repair or a suspicious planView shape (:mod:`lanelet_bounds`: ``bound_loop_cut``,
+  ``sharp_kink``). Records that know where they apply carry ``location``, local ``[x, y]``.
 - ``element``: ``<tag>`` when the whole element was dropped (``action="dropped"``), else
   ``<tag>.<attribute>``.
 - ``id``: the enclosing road, signal, object or junction id, when known.
@@ -84,7 +86,7 @@ class ConversionReport(logging.Handler):
         if entry["kind"] == "heuristic":
             entry["applied"] = getattr(record, "applied", True)
             entry["location"] = getattr(record, "location", None)
-        elif entry["kind"] == "translated" and getattr(record, "location", None) is not None:
+        elif getattr(record, "location", None) is not None:
             entry["location"] = record.location
         self.records.append(entry)
 

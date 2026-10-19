@@ -1,12 +1,14 @@
 """Builder for small synthetic OpenDRIVE maps used as IAI test fixtures.
 
 Every IAI test builds its XODR here and writes it to ``tmp_path``; corpus maps are never
-committed. Geometry is straight lines only, which keeps expected values easy to compute.
+committed. Geometry is straight lines unless a road lists ``geometries`` (lines, arcs and kinks),
+which keeps expected values easy to compute.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import subprocess
 import sys
@@ -92,8 +94,18 @@ class ObjectSpec:
 
 
 @dataclasses.dataclass(slots=True)
+class GeometrySpec:
+    """One ``<planView>`` record: a line (``curvature`` 0) or an arc; ``heading_jump`` turns the
+    heading at its start, leaving a kink where it meets the previous record."""
+
+    length: float
+    curvature: float = 0.0
+    heading_jump: float = 0.0
+
+
+@dataclasses.dataclass(slots=True)
 class RoadSpec:
-    """A straight road from ``(x, y)`` along heading ``hdg``."""
+    """A road from ``(x, y)`` along heading ``hdg``: straight, or the chain ``geometries`` (lengths summing to ``length``)."""
 
     id: str
     length: float
@@ -112,6 +124,7 @@ class RoadSpec:
     signals: list[SignalSpec] = dataclasses.field(default_factory=list)
     signal_references: list[SignalReferenceSpec] = dataclasses.field(default_factory=list)
     objects: list[ObjectSpec] = dataclasses.field(default_factory=list)
+    geometries: Optional[list[GeometrySpec]] = None
 
 
 @dataclasses.dataclass(slots=True)
@@ -273,6 +286,28 @@ def _object(*, obj: ObjectSpec) -> str:
     return f"<object {attrs}/>"
 
 
+def _plan_view(*, road: RoadSpec) -> str:
+    geometries = road.geometries or [GeometrySpec(length=road.length)]
+    assert math.isclose(sum(g.length for g in geometries), road.length), f"road {road.id}: geometry lengths != length"
+    x, y, hdg, s, out = road.x, road.y, road.hdg, 0.0, ""
+    for geometry in geometries:
+        hdg += geometry.heading_jump
+        shape = "<line/>" if geometry.curvature == 0 else f'<arc curvature="{_num(value=geometry.curvature)}"/>'
+        out += (
+            f'<geometry s="{_num(value=s)}" x="{_num(value=x)}" y="{_num(value=y)}" '
+            f'hdg="{_num(value=hdg)}" length="{_num(value=geometry.length)}">{shape}</geometry>'
+        )
+        if geometry.curvature == 0:
+            x, y = x + geometry.length * math.cos(hdg), y + geometry.length * math.sin(hdg)
+        else:
+            turned = hdg + geometry.length * geometry.curvature
+            x += (math.sin(turned) - math.sin(hdg)) / geometry.curvature
+            y -= (math.cos(turned) - math.cos(hdg)) / geometry.curvature
+            hdg = turned
+        s += geometry.length
+    return out
+
+
 def _road(*, road: RoadSpec) -> str:
     attrs = _attrs(
         name=road.name if road.name is not None else f"road{road.id}",
@@ -284,10 +319,7 @@ def _road(*, road: RoadSpec) -> str:
     link = _link(tag="predecessor", link=road.predecessor) + _link(
         tag="successor", link=road.successor
     )
-    geometry = (
-        f'<geometry s="0.0" x="{_num(value=road.x)}" y="{_num(value=road.y)}" '
-        f'hdg="{_num(value=road.hdg)}" length="{_num(value=road.length)}"><line/></geometry>'
-    )
+    geometry = _plan_view(road=road)
     elevations = "".join(
         f'<elevation s="{_num(value=s)}" a="{_num(value=a)}" b="{_num(value=b)}" '
         f'c="{_num(value=c)}" d="{_num(value=d)}"/>'

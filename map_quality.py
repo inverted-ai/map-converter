@@ -194,29 +194,30 @@ def fault(*, element: str, location: Sequence[float], detail: str = "") -> dict[
 
 
 def unrouted_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
-    """Lanelets with no routing-graph edge (Germany, vehicle rules), with their centres."""
+    """Lanelets left unlinked where they meet another lanelet, at the seam.
+
+    A lanelet counts when its end meets another lanelet's start (both bound ends within ``SEAM_TOLERANCE_M``) and
+    the routing graph (Germany, vehicle rules) has no edge from it to that lanelet. An end that meets nothing (the
+    map's edge, a dead end) is no fault, nor are neighbours that drive the other way.
+    """
     lanelets = list(outputs.lanelet_map.laneletLayer)
-    if not lanelets:
+    pairs = _seam_pairs(lanelets=lanelets)
+    if not pairs:
         return []
     graph = vehicle_routing_graph(lanelet_map=outputs.lanelet_map)
-    return [
-        fault(element=f"lanelet {ll.id}", location=_lanelet_centre(lanelet=ll))
-        for ll in lanelets
-        if not (
-            graph.following(ll)
-            or graph.previous(ll)
-            or graph.left(ll)
-            or graph.right(ll)
-            or graph.adjacentLeft(ll)
-            or graph.adjacentRight(ll)
-        )
-    ]
+    faults: dict[int, dict[str, Any]] = {}
+    for i, j in pairs:
+        ll, other = lanelets[i], lanelets[j]
+        if ll.id in faults or other.id in {following.id for following in graph.following(ll)}:
+            continue
+        seam = ((ll.leftBound[-1].x + ll.rightBound[-1].x) / 2, (ll.leftBound[-1].y + ll.rightBound[-1].y) / 2)
+        faults[ll.id] = fault(element=f"lanelets {ll.id} -> {other.id}", location=seam, detail="meet without a routing link")
+    return list(faults.values())
 
 
 def routing_edge_pct(*, outputs: ConversionOutputs) -> Optional[float]:
-    """Percentage of lanelets with at least one routing-graph edge (Germany, vehicle rules).
+    """Percentage of lanelets not left unlinked where they meet another lanelet (:func:`unrouted_lanelets`).
 
-    An edge is a following, previous, left, right, adjacent-left or adjacent-right relation.
     ``None`` for a map without lanelets.
     """
     count = len(outputs.lanelet_map.laneletLayer)
@@ -242,37 +243,32 @@ def unshaken_seams(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
     return _seams(outputs=outputs)[1]
 
 
-def _seams(*, outputs: ConversionOutputs) -> tuple[int, list[dict[str, Any]]]:
+def _seam_pairs(*, lanelets: list) -> list[tuple[int, int]]:
+    """Index pairs ``(i, j)``: lanelet ``i``'s end meets lanelet ``j``'s start (both bound ends within ``SEAM_TOLERANCE_M``)."""
     from scipy.spatial import cKDTree
 
-    lanelets = list(outputs.lanelet_map.laneletLayer)
     if len(lanelets) < 2:
-        return 0, []
+        return []
     left_starts = np.array([(ll.leftBound[0].x, ll.leftBound[0].y) for ll in lanelets])
     right_starts = np.array([(ll.rightBound[0].x, ll.rightBound[0].y) for ll in lanelets])
     left_ends = np.array([(ll.leftBound[-1].x, ll.leftBound[-1].y) for ll in lanelets])
     right_ends = np.array([(ll.rightBound[-1].x, ll.rightBound[-1].y) for ll in lanelets])
-    candidates = cKDTree(left_starts).query_ball_point(left_ends, r=SEAM_TOLERANCE_M)
-    seams = 0
+    pairs = []
+    for i, js in enumerate(cKDTree(left_starts).query_ball_point(left_ends, r=SEAM_TOLERANCE_M)):
+        pairs.extend((i, j) for j in js if j != i and np.hypot(*(right_starts[j] - right_ends[i])) <= SEAM_TOLERANCE_M)
+    return pairs
+
+
+def _seams(*, outputs: ConversionOutputs) -> tuple[int, list[dict[str, Any]]]:
+    lanelets = list(outputs.lanelet_map.laneletLayer)
+    pairs = _seam_pairs(lanelets=lanelets)
     unshaken = []
-    for i, js in enumerate(candidates):
-        ll = lanelets[i]
-        for j in js:
-            if j == i or np.hypot(*(right_starts[j] - right_ends[i])) > SEAM_TOLERANCE_M:
-                continue
-            other = lanelets[j]
-            seams += 1
-            if not (
-                ll.leftBound[-1].id == other.leftBound[0].id
-                and ll.rightBound[-1].id == other.rightBound[0].id
-            ):
-                unshaken.append(
-                    fault(
-                        element=f"lanelets {ll.id} -> {other.id}",
-                        location=(left_ends[i] + right_ends[i]) / 2,
-                    )
-                )
-    return seams, unshaken
+    for i, j in pairs:
+        ll, other = lanelets[i], lanelets[j]
+        if not (ll.leftBound[-1].id == other.leftBound[0].id and ll.rightBound[-1].id == other.rightBound[0].id):
+            seam = ((ll.leftBound[-1].x + ll.rightBound[-1].x) / 2, (ll.leftBound[-1].y + ll.rightBound[-1].y) / 2)
+            unshaken.append(fault(element=f"lanelets {ll.id} -> {other.id}", location=seam))
+    return len(pairs), unshaken
 
 
 def z_conflicts(*, outputs: ConversionOutputs) -> dict[str, float]:

@@ -133,14 +133,14 @@ def _failed_names(*, verdict: dict) -> set[str]:
 
 
 def test_conversion_report_holds_the_verdict(tmp_path):
-    # One two-way road: its two lanelets have no routing edges, and its stop sign has no stopline.
+    # One two-way road, open at both ends (which routing allows); its stop sign has no stopline.
     road = xb.straight_road(id="1", length=30.0, signals=[xb.SignalSpec(id="5", s=10.0, dynamic="no", type="206")])
     verdict, stderr = _convert(tmp_path=tmp_path, roads=[road])
-    assert _failed_names(verdict=verdict) == {"routing_edge_pct", "stop_yield_stoplines"}
+    assert _failed_names(verdict=verdict) == {"stop_yield_stoplines"}
     assert (verdict["status"], verdict["profile"]) == ("not_judged", "none")
     assert verdict["profiles"] == {
-        "perfect": {"status": "fail", "failed": ["routing_edge_pct", "stop_yield_stoplines"]},
-        "strict": {"status": "fail", "failed": ["routing_edge_pct", "stop_yield_stoplines"]},
+        "perfect": {"status": "fail", "failed": ["stop_yield_stoplines"]},
+        "strict": {"status": "fail", "failed": ["stop_yield_stoplines"]},
     }
     assert verdict["controls"] == {
         "lights": 0,
@@ -152,7 +152,7 @@ def test_conversion_report_holds_the_verdict(tmp_path):
     assert verdict["verifier"]["status"] == "skipped"
     by_name = {c["name"]: c for c in verdict["checks"]}
     assert [(f["id"], f["location"]) for f in by_name["stop_yield_stoplines"]["locations"]] == [("signal 5", [10.0, -5.0])]
-    assert len(by_name["routing_edge_pct"]["locations"]) == 2  # both lanelets of the road
+    assert by_name["routing_edge_pct"]["value"] == 100.0
 
 
 def test_verifier_checks_only_the_formulas_asked_for(tmp_path):
@@ -231,13 +231,17 @@ def test_autocritic_off_records_no_verdict(tmp_path):
 MAP_OUTPUTS = ("case.osm", "case_stoplines.json", "case_mesh.json", "metadata.json", "visualization.png", "case_signal_groups.json")
 
 
-def _two_way_road(*, tmp_path) -> None:
-    """One two-way road: its two lanelets have no routing edges, so routing_edge_pct fails every preset."""
-    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+UNLINKED_ROADS = [xb.straight_road(id="1", length=30.0), xb.straight_road(id="2", length=30.0, x=30.0)]
+
+
+def _unlinked_roads(*, tmp_path) -> None:
+    """Two two-way roads meeting end to start without a link: half their lanelets meet another without a routing
+    edge (routing_edge_pct 50%) and the meeting ends share no points (seam_handshake_pct 0%); both fail every preset."""
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=UNLINKED_ROADS))
 
 
 def test_failing_preset_withholds_the_outputs_and_exits_4(tmp_path):
-    _two_way_road(tmp_path=tmp_path)
+    _unlinked_roads(tmp_path=tmp_path)
     result = xb.run_convert_map(map_dir=str(tmp_path), **{"autocritic.preset": "perfect"})
     assert result.returncode == conversion_common.REJECTED_EXIT_CODE, result.stderr
     assert "routing_edge_pct" in result.stderr.strip().splitlines()[-1]
@@ -245,15 +249,19 @@ def test_failing_preset_withholds_the_outputs_and_exits_4(tmp_path):
     with open(tmp_path / "case_conversion_report.json") as f:
         report = json.load(f)
     assert (report["outcome"], report["validation"]["status"]) == ("rejected", "fail")
-    assert "Validation: routing_edge_pct = 0.0" in result.stderr
+    assert "Validation: routing_edge_pct = 50.0" in result.stderr
     assert "strict profile fails too" in result.stderr
     assert (tmp_path / "case_provenance.json").exists()
 
 
 def test_threshold_override_decides_with_the_preset(tmp_path):
-    _two_way_road(tmp_path=tmp_path)
-    config = {"autocritic.preset": "perfect", "autocritic.thresholds.min_routing_edge_pct": "0"}
-    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)], **config)
+    _unlinked_roads(tmp_path=tmp_path)
+    config = {
+        "autocritic.preset": "perfect",
+        "autocritic.thresholds.min_routing_edge_pct": "0",
+        "autocritic.thresholds.min_seam_handshake_pct": "0",
+    }
+    verdict, _ = _convert(tmp_path=tmp_path, roads=UNLINKED_ROADS, **config)
     assert (verdict["status"], verdict["profile"]) == ("pass", "perfect")
     assert verdict["thresholds"]["min_routing_edge_pct"] == 0.0
     assert verdict["profiles"]["perfect"]["status"] == "fail"  # the preset itself, without the override
@@ -261,10 +269,10 @@ def test_threshold_override_decides_with_the_preset(tmp_path):
 
 
 def test_without_a_preset_nothing_is_judged_and_the_outputs_are_kept(tmp_path):
-    _two_way_road(tmp_path=tmp_path)
-    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=30.0)])
+    _unlinked_roads(tmp_path=tmp_path)
+    verdict, _ = _convert(tmp_path=tmp_path, roads=UNLINKED_ROADS)
     assert verdict["status"] == "not_judged"
-    assert verdict["profiles"]["perfect"]["failed"] == ["routing_edge_pct"]
+    assert verdict["profiles"]["perfect"]["failed"] == ["routing_edge_pct", "seam_handshake_pct"]
     assert all((tmp_path / name).exists() for name in MAP_OUTPUTS)
 
 

@@ -170,7 +170,7 @@ checks failed and exits with code 4. A failed `perfect` verdict also says whethe
 | # | Check | `perfect` fails when | `strict` fails when |
 |---|---|---|---|
 | L1 | `has_lanelets` | the `.osm` has no lanelets | same |
-| L2 | `routing_edge_pct` | any lanelet has no predecessor, successor or neighbour in the routing graph | fewer than 95% have one |
+| L2 | `routing_edge_pct` | any lanelet whose end meets another lanelet's start has no routing link to it (an end that meets nothing, such as the map's edge, is allowed) | more than 5% of lanelets are left unlinked |
 | L3 | `seam_handshake_pct` | any pair of meeting lanelet ends does not share its nodes | fewer than 95% share them |
 | L4 | `crossed_lanelets` | any lanelet outline folds or touches itself, or Lanelet2 reads it against its written direction | at least 3 lanelets fold and they are more than 2% of all lanelets |
 | L5 | `traffic_light_stoplines` | any traffic light has no stopline | same |
@@ -550,7 +550,7 @@ self-contained `report.html`. Per map it records:
   |---|---|
   | `lanelet_count` | lanelets in the `.osm` |
   | `load_error_count` | errors Lanelet2 reports while loading the `.osm` |
-  | `routing_edge_pct` | % of lanelets with at least one routing-graph relation (successor, predecessor, left/right neighbour) |
+  | `routing_edge_pct` | % of lanelets not left unlinked where they meet another lanelet: an end within 0.1 m of another lanelet's start with no routing-graph edge to it counts; open ends do not |
   | `seam_handshake_pct` | % of lanelet seams (one lanelet's end meets another's start within 0.1 m) whose boundary points are shared; unshared seams break routing |
   | `z_conflicts` | points at the same position (1 cm) with elevations more than 1 cm apart: `count` and `max_dz` |
   | `stoplines_by_agent_type` | stoplines per `agent_type` |

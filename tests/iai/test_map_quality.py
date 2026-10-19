@@ -54,11 +54,17 @@ def _chain() -> tuple[Lanelet, Lanelet]:
     return _lanelet(left=[l0, l1], right=[r0, r1]), _lanelet(left=[l1, l2], right=[r1, r2])
 
 
-def test_routing_counts_isolated_lanelet():
+def test_routing_allows_open_ends():
     a, b = _chain()
     isolated = _lanelet(left=[_point(x=0, y=52), _point(x=10, y=52)], right=[_point(x=0, y=50), _point(x=10, y=50)])
-    pct = mq.routing_edge_pct(outputs=_outputs(lanelets=[a, b, isolated]))
-    assert pct == pytest.approx(200.0 / 3.0)
+    assert mq.routing_edge_pct(outputs=_outputs(lanelets=[a, b, isolated])) == 100.0
+    assert mq.routing_edge_pct(outputs=_outputs(lanelets=[isolated])) == 100.0
+
+
+def test_routing_counts_lanelets_that_meet_without_a_link():
+    a, _ = _chain()
+    unlinked = _lanelet(left=[_point(x=10, y=2), _point(x=20, y=2)], right=[_point(x=10, y=0), _point(x=20, y=0)])
+    assert mq.routing_edge_pct(outputs=_outputs(lanelets=[a, unlinked])) == 50.0
 
 
 def test_seam_handshake_shared_vs_duplicated_points():
@@ -70,11 +76,11 @@ def test_seam_handshake_shared_vs_duplicated_points():
     assert mq.seam_handshake_pct(outputs=_outputs(lanelets=[a])) is None
 
 
-def test_unrouted_lanelets_are_listed_at_their_centres():
-    a, b = _chain()
-    isolated = _lanelet(left=[_point(x=0, y=52), _point(x=10, y=52)], right=[_point(x=0, y=50), _point(x=10, y=50)])
-    faults = mq.unrouted_lanelets(outputs=_outputs(lanelets=[a, b, isolated]))
-    assert [(f["id"], f["location"]) for f in faults] == [(f"lanelet {isolated.id}", [5.0, 51.0])]
+def test_unrouted_lanelets_are_listed_at_the_seam():
+    a, _ = _chain()
+    unlinked = _lanelet(left=[_point(x=10, y=2), _point(x=20, y=2)], right=[_point(x=10, y=0), _point(x=20, y=0)])
+    faults = mq.unrouted_lanelets(outputs=_outputs(lanelets=[a, unlinked]))
+    assert [(f["id"], f["location"]) for f in faults] == [(f"lanelets {a.id} -> {unlinked.id}", [10.0, 1.0])]
 
 
 def test_unshaken_seams_are_listed_at_the_seam():
@@ -194,7 +200,7 @@ def test_metrics_on_converted_map(converted_junction):
     assert metrics["one_way_no_count"] == 0
     assert metrics["mesh_in_frame_fraction"] == 1.0
     assert metrics["lanelet_count"] >= 4
-    assert metrics["routing_edge_pct"] < 100.0
+    assert metrics["routing_edge_pct"] == 100.0
     assert metrics["osm_size_bytes"] == os.path.getsize(os.path.join(converted_junction, "junction.osm"))
 
 

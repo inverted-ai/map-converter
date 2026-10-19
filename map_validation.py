@@ -34,7 +34,7 @@ class ValidationConfig:
     """Thresholds of the self-validation checks.
 
     Attributes:
-        min_routing_edge_pct: Lowest share of lanelets with a routing edge.
+        min_routing_edge_pct: Lowest share of lanelets not left unlinked where they meet another lanelet.
         min_seam_handshake_pct: Lowest share of geometric seams whose end nodes are shared.
         min_crossed_count: Crossed lanelets (outline folds or touches itself) fail the check only
             from this many on ...
@@ -241,7 +241,7 @@ def evaluate(
     at_least(
         name="routing_edge_pct",
         limit=config.min_routing_edge_pct,
-        detail="share of lanelets with a predecessor, successor or neighbour in the routing graph",
+        detail="share of lanelets not left unlinked where they meet another lanelet (open ends are allowed)",
     )
     at_least(
         name="seam_handshake_pct",

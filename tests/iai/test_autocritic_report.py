@@ -110,7 +110,7 @@ def test_conversion_writes_the_report_next_to_the_outputs(tmp_path):
     report = json.loads((tmp_path / "case_autocritic.json").read_text())
     keys = {(s["kind"], s["key"]) for s in report["sections"]}
     assert ("autofix", "H6") in keys  # H6 decided the sign gets no row: its lane reaches no junction
-    assert ("metric", "routing_edge_pct") in keys
+    assert ("metric", "stop_yield_stoplines") in keys  # that sign has no stopline
     assert "data:image/png;base64," in (tmp_path / "case_autocritic.html").read_text()
 
 

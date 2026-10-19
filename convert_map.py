@@ -1083,7 +1083,7 @@ def convert_map(cfg: MapConversionConfig) -> str:
     error, verdict = None, None
     report_path = os.path.join(cfg.dir_path, f"{location}_conversion_report.json")
     try:
-        osm_path, verdict = _convert(cfg=cfg, opendrive_path=opendrive_path)
+        osm_path, verdict, frame = _convert(cfg=cfg, opendrive_path=opendrive_path)
         if verdict is not None and cfg.report.enabled:
             json_path, html_path = autocritic_report.write(
                 map_dir=cfg.dir_path,
@@ -1093,6 +1093,8 @@ def convert_map(cfg: MapConversionConfig) -> str:
                 autofix_enabled=cfg.autofix.enabled,
                 would_have_fixed=cfg.autocritic.would_have_fixed,
                 config=cfg.report,
+                xodr_path=opendrive_path,
+                to_local=frame.to_local,
             )
             logger.info(f'Wrote AutoCritic report to {html_path} and {json_path}')
         if verdict is not None and verdict.status == 'fail':
@@ -1138,8 +1140,11 @@ def withhold_outputs(*, map_dir: str, location: str) -> list[str]:
     return deleted
 
 
-def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Optional[map_validation.Verdict]]:
-    """The pipeline stages of :func:`convert_map`, on a validated config: the ``.osm`` path and the verdict (``None`` with AutoCritic off)."""
+def _convert(
+    *, cfg: MapConversionConfig, opendrive_path: str
+) -> tuple[str, Optional[map_validation.Verdict], CustomTransfomer]:
+    """The pipeline stages of :func:`convert_map`, on a validated config: the ``.osm`` path, the verdict (``None``
+    with AutoCritic off) and the frame the outputs are in."""
     parsed = parse_xodr(
         opendrive_path=opendrive_path,
         allow_zero_origin=cfg.allow_zero_origin,
@@ -1176,7 +1181,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         opendrive_version=_opendrive_version(header=parsed.opendrive.header),
     )
     if not cfg.autocritic.enabled:
-        return os.path.abspath(exported.osm_path), None
+        return os.path.abspath(exported.osm_path), None, parsed.frame
     verdict = map_validation.validate(
         map_dir=cfg.dir_path,
         lanelet_network=exported.unsimplified_network,
@@ -1193,7 +1198,7 @@ def _convert(*, cfg: MapConversionConfig, opendrive_path: str) -> tuple[str, Opt
         ),
     )
     logger.info(f'Validation: {verdict.status}')
-    return os.path.abspath(exported.osm_path), verdict
+    return os.path.abspath(exported.osm_path), verdict, parsed.frame
 
 
 if __name__ == '__main__':

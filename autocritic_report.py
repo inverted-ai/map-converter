@@ -7,8 +7,10 @@ Three kinds of section, each with its own numbered items:
 - ``vocabulary``: per element attribute, every place the vocabulary dictionary translated a name or code;
 - ``metric``: per validation check that failed, or that lists places (L10-L13), every place it found.
 
-The HTML gives each section a numbered text list, a birdview of the whole map with the items circled and
-numbered, and close-ups of each item (24 per image), all embedded; :class:`ReportConfig` switches the parts.
+The HTML opens with a "Map" section: the converted map (road surface, lanelet bounds, stoplines by type) beside
+the raw ``.xodr`` read independently (:mod:`xodr_view`). Each section then gets a numbered text list, a birdview of
+the whole map with the items circled and numbered, and close-ups of each item (24 per image), all embedded and
+with the stoplines drawn; :class:`ReportConfig` switches the parts.
 Item locations are in the local frame of the outputs. The FSM heuristics H11-H13 are reported by
 ``traffic_light_fsm.py`` in ``<map>_fsm_review.json``.
 """
@@ -20,6 +22,7 @@ import dataclasses
 import html
 import io
 import json
+import logging
 import math
 import os
 from typing import Any, Optional
@@ -28,6 +31,8 @@ import numpy as np
 
 from conversion_report import heuristic_number
 from traffic_light_fsm import load_metadata, resolve_map_path, utm_projector
+
+logger = logging.getLogger(__name__)
 
 CLOSEUPS_PER_PAGE = 24
 CLOSEUP_COLUMNS = 4
@@ -40,6 +45,22 @@ PNG_COLOURS = 32  # line art: a small palette keeps each image a fraction of its
 NUMBERED_ON_BIRDVIEW = 300  # more items than this are circled without numbers
 MARKER = "#d03b3b"
 ROAD = "#8a8f94"
+SURFACE = "#c3c7cb"
+STOPLINE_COLOURS = {"traffic_light": "#c2187a", "stop_sign": "#1f5fbf", "yield_sign": "#e08a00"}
+STOPLINE_LABELS = {"traffic_light": "traffic light", "stop_sign": "stop sign", "yield_sign": "yield sign"}
+RAW_LANE_COLOURS = {
+    "Driving": "#8a8f94",
+    "Bidirectional": "#8a8f94",
+    "Shoulder": "#c9cdd1",
+    "Border": "#dfe2e5",
+    "Sidewalk": "#d9c9a3",
+    "Biking": "#a7c7a0",
+    "Parking": "#9fb7d0",
+    "Median": "#c7d8c0",
+}
+RAW_OTHER_LANE = "#e8c4c4"
+RAW_SIGNAL = "#c2187a"
+MAP_PANEL_PX = 800
 
 
 @dataclasses.dataclass(slots=True)
@@ -49,9 +70,11 @@ class ReportConfig:
     Attributes:
         enabled: Write ``<map>_autocritic.json`` and ``.html`` (needs ``autocritic.enabled``).
         text: The numbered list of each section.
-        birdview: One whole-map image per section with its items numbered.
+        birdview: The "Map" section, and one whole-map image per section with its items numbered.
         closeups: One close-up per item, 24 per image.
         max_closeups: Most close-ups per section; the remaining items are listed only.
+        stoplines: Draw the stoplines (traffic light, stop sign, yield sign) on the map, birdviews and close-ups.
+        raw_xodr: Draw the raw ``.xodr`` beside the converted map (:mod:`xodr_view`, needs the optional ``carla``).
     """
 
     enabled: bool = True
@@ -59,6 +82,29 @@ class ReportConfig:
     birdview: bool = True
     closeups: bool = True
     max_closeups: int = 240
+    stoplines: bool = True
+    raw_xodr: bool = True
+
+
+@dataclasses.dataclass(slots=True)
+class MapLayers:
+    """What the "Map" section draws, all in the outputs' local frame.
+
+    Attributes:
+        road_faces: ``(n, 3, 2)`` road triangles of the mesh.
+        polylines: Lanelet bounds.
+        stoplines: ``(agent_type, (2, 2) segment)`` per stopline row.
+        raw_lanes: ``(lane type, ring)`` per lane piece of the raw ``.xodr``; empty when not drawn.
+        raw_signals: ``(n, 2)`` signal positions of the raw ``.xodr``.
+        raw_note: Why the raw ``.xodr`` is not drawn, or ``None``.
+    """
+
+    road_faces: np.ndarray
+    polylines: list[np.ndarray]
+    stoplines: list[tuple[str, np.ndarray]]
+    raw_lanes: list[tuple[str, np.ndarray]]
+    raw_signals: np.ndarray
+    raw_note: Optional[str]
 
 
 def _items(*, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -168,6 +214,82 @@ def load_polylines(*, map_dir: str) -> list[np.ndarray]:
     ]
 
 
+def stopline_segment(*, row: dict[str, Any]) -> np.ndarray:
+    """The ``(2, 2)`` segment a stopline row stands for: ``width`` across the lane at ``(x, y)``, square to its
+    ``orientation`` (the direction of travel)."""
+    across = np.array([-math.sin(row["orientation"]), math.cos(row["orientation"])]) * row["width"] / 2
+    centre = np.array([row["x"], row["y"]])
+    return np.array([centre - across, centre + across])
+
+
+def load_stoplines(*, map_dir: str) -> list[tuple[str, np.ndarray]]:
+    """``(agent_type, segment)`` of every row of the map's stoplines JSON (none when it is missing)."""
+    path = resolve_map_path(map_dir=map_dir, name=load_metadata(map_dir=map_dir)["stoplines_path"])
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [(row["agent_type"], stopline_segment(row=row)) for row in json.load(f)]
+
+
+def load_road_faces(*, map_dir: str) -> np.ndarray:
+    """``(n, 3, 2)`` road triangles of the map's mesh JSON (none when it is missing)."""
+    path = resolve_map_path(map_dir=map_dir, name=load_metadata(map_dir=map_dir)["mesh_path"])
+    if not os.path.exists(path):
+        return np.zeros((0, 3, 2))
+    with open(path) as f:
+        mesh = json.load(f)
+    verts, faces = np.array(mesh["verts"][0]), np.array(mesh["faces"][0], dtype=int).reshape(-1, 3)
+    road = mesh["categories"].index("road")
+    return verts[faces[np.array(mesh["vert_category"][0])[faces[:, 0]] == road]]
+
+
+def map_layers(*, map_dir: str, config: ReportConfig, xodr_path: Optional[str], to_local) -> MapLayers:
+    """The "Map" section's layers of the outputs in ``map_dir``.
+
+    Args:
+        map_dir: The outputs' folder (they must still be there).
+        config: The report settings.
+        xodr_path: The converted ``.xodr``, for the raw view.
+        to_local: ``(x, y) -> (x, y)`` from the ``.xodr``'s frame to the outputs' local frame.
+    """
+    import xodr_view
+
+    raw_lanes, raw_signals, raw_note = [], np.zeros((0, 2)), None
+    if not config.raw_xodr:
+        raw_note = "switched off (report.raw_xodr)"
+    elif xodr_path is None:
+        raw_note = "no .xodr given"
+    else:
+        raw = xodr_view.read(xodr_path=xodr_path)
+        raw_note = raw.error
+        raw_lanes = [(kind, np.array([to_local(x, y) for x, y in ring])) for kind, ring in raw.lanes]
+        raw_signals = np.array([to_local(x, y) for x, y in raw.signals]).reshape(-1, 2)
+        if raw_note is None and not raw_lanes:
+            raw_note = "the reader found no lanes"
+    return MapLayers(
+        road_faces=load_road_faces(map_dir=map_dir),
+        polylines=load_polylines(map_dir=map_dir),
+        stoplines=load_stoplines(map_dir=map_dir) if config.stoplines else [],
+        raw_lanes=raw_lanes,
+        raw_signals=raw_signals,
+        raw_note=raw_note,
+    )
+
+
+def map_summary(*, layers: MapLayers) -> dict[str, Any]:
+    """The JSON report's ``map``: stopline rows per agent type, and what the raw view drew."""
+    points = np.concatenate([ring for _, ring in layers.raw_lanes]) if layers.raw_lanes else np.zeros((0, 2))
+    return {
+        "stoplines": {kind: sum(1 for k, _ in layers.stoplines if k == kind) for kind in STOPLINE_LABELS},
+        "raw_xodr": {
+            "lanes": len(layers.raw_lanes),
+            "signals": len(layers.raw_signals),
+            "extent": [round(float(v), 2) for v in (*points.min(axis=0), *points.max(axis=0))] if len(points) else None,
+            "note": layers.raw_note,
+        },
+    }
+
+
 def _image_uri(*, image) -> str:
     """A PIL image as a PNG data URI, quantized to ``PNG_COLOURS``."""
     out = io.BytesIO()
@@ -200,14 +322,72 @@ def _bounding_boxes(*, polylines: list[np.ndarray]) -> np.ndarray:
     return np.array([[*p.min(axis=0), *p.max(axis=0)] for p in polylines]).reshape(-1, 4)
 
 
-def _birdview(*, polylines: list[np.ndarray], boxes: np.ndarray, items: list[dict[str, Any]]) -> str:
+def _map_image(*, layers: MapLayers) -> str:
+    """The converted map (road surface, lanelet bounds, stoplines) and, beside it in the same frame, the raw
+    ``.xodr`` (lanes by type, signals), as one PNG data URI."""
+    from PIL import Image, ImageDraw
+
+    pieces = [layers.road_faces.reshape(-1, 2), *layers.polylines, *(ring for _, ring in layers.raw_lanes)]
+    points = np.concatenate([p for p in pieces if len(p)]) if any(len(p) for p in pieces) else np.zeros((1, 2))
+    points = points[np.isfinite(points).all(axis=1)]
+    points = points if len(points) else np.zeros((1, 2))
+    low, high = points.min(axis=0), points.max(axis=0)
+    pad = max(5.0, 0.03 * float((high - low).max()))
+    low, high = low - pad, high + pad
+    scale = MAP_PANEL_PX / float((high - low).max())
+    size = (int((high[0] - low[0]) * scale) + 1, int((high[1] - low[1]) * scale) + 1)
+
+    def px(xy: np.ndarray) -> list[tuple[float, float]]:
+        return [((x - low[0]) * scale, (high[1] - y) * scale) for x, y in xy]
+
+    converted = Image.new("RGB", size, "white")
+    draw = ImageDraw.Draw(converted)
+    for face in layers.road_faces:
+        draw.polygon(px(face), fill=SURFACE)
+    for line in layers.polylines:
+        draw.line(px(line), fill=ROAD, width=1)
+    for kind, segment in layers.stoplines:
+        draw.line(px(segment), fill=STOPLINE_COLOURS.get(kind, MARKER), width=3)
+    panels = [("Converted map (Lanelet2, road mesh, stoplines)", converted)]
+    if layers.raw_lanes:
+        raw = Image.new("RGB", size, "white")
+        draw = ImageDraw.Draw(raw)
+        for kind, ring in layers.raw_lanes:
+            draw.polygon(px(ring), fill=RAW_LANE_COLOURS.get(kind, RAW_OTHER_LANE))
+        for x, y in px(layers.raw_signals):
+            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=RAW_SIGNAL)
+        panels.append(("Raw XODR (CARLA's reader: lanes by type, signals)", raw))
+    gap, title_px = 10, 16
+    canvas = Image.new("RGB", (len(panels) * size[0] + (len(panels) - 1) * gap, size[1] + title_px), "white")
+    draw = ImageDraw.Draw(canvas)
+    for k, (title, panel) in enumerate(panels):
+        left = k * (size[0] + gap)
+        canvas.paste(panel, (left, title_px))
+        draw.text((left + 2, 2), title, fill="black")
+        draw.rectangle((left, title_px, left + size[0] - 1, title_px + size[1] - 1), outline="#d8dddc")
+    return _image_uri(image=canvas)
+
+
+def _birdview(
+    *, polylines: list[np.ndarray], boxes: np.ndarray, items: list[dict[str, Any]], stoplines: list[tuple[str, np.ndarray]]
+) -> str:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    from matplotlib.collections import LineCollection
+
     fig, ax = plt.subplots(figsize=(10, 10))
     _draw_roads(ax=ax, polylines=polylines, linewidth=0.3)
+    if stoplines:
+        ax.add_collection(
+            LineCollection(
+                [segment for _, segment in stoplines],
+                colors=[STOPLINE_COLOURS.get(kind, MARKER) for kind, _ in stoplines],
+                linewidths=1.5,
+            )
+        )
     points = np.array([i["location"] for i in items])
     ax.scatter(points[:, 0], points[:, 1], s=140, facecolors="none", edgecolors=MARKER, linewidths=2.0)
     if len(items) <= NUMBERED_ON_BIRDVIEW:
@@ -223,8 +403,10 @@ def _birdview(*, polylines: list[np.ndarray], boxes: np.ndarray, items: list[dic
     return _png(fig=fig, dpi=BIRDVIEW_DPI)
 
 
-def _closeup_tile(*, polylines: list[np.ndarray], boxes: np.ndarray, item: dict[str, Any]):
-    """One close-up: the roads within ``CLOSEUP_HALF_WIDTH_M`` of the item, its marker and its number."""
+def _closeup_tile(
+    *, polylines: list[np.ndarray], boxes: np.ndarray, item: dict[str, Any], stoplines: list[tuple[str, np.ndarray]]
+):
+    """One close-up: the roads and stoplines within ``CLOSEUP_HALF_WIDTH_M`` of the item, its marker and number."""
     from PIL import Image, ImageDraw
 
     x, y = item["location"]
@@ -236,6 +418,10 @@ def _closeup_tile(*, polylines: list[np.ndarray], boxes: np.ndarray, item: dict[
     for line in (polylines[k] for k in np.flatnonzero(near)):
         pixels = np.column_stack(((line[:, 0] - (x - h)) * scale, ((y + h) - line[:, 1]) * scale))
         draw.line([tuple(v) for v in pixels], fill=ROAD, width=1)
+    for kind, segment in stoplines:
+        if np.abs(segment.mean(axis=0) - (x, y)).max() <= h:
+            pixels = np.column_stack(((segment[:, 0] - (x - h)) * scale, ((y + h) - segment[:, 1]) * scale))
+            draw.line([tuple(v) for v in pixels], fill=STOPLINE_COLOURS.get(kind, MARKER), width=3)
     centre, r = CLOSEUP_TILE_PX / 2, CLOSEUP_MARKER_PX
     draw.ellipse((centre - r, centre - r, centre + r, centre + r), outline=MARKER, width=2)
     draw.rectangle((0, 0, CLOSEUP_TILE_PX, 13), fill="white")
@@ -244,7 +430,9 @@ def _closeup_tile(*, polylines: list[np.ndarray], boxes: np.ndarray, item: dict[
     return tile
 
 
-def _closeup_pages(*, polylines: list[np.ndarray], boxes: np.ndarray, items: list[dict[str, Any]]) -> list[str]:
+def _closeup_pages(
+    *, polylines: list[np.ndarray], boxes: np.ndarray, items: list[dict[str, Any]], stoplines: list[tuple[str, np.ndarray]]
+) -> list[str]:
     """Close-ups of ``items``, ``CLOSEUPS_PER_PAGE`` per image (drawn with PIL: far faster than one axes each)."""
     from PIL import Image
 
@@ -255,7 +443,7 @@ def _closeup_pages(*, polylines: list[np.ndarray], boxes: np.ndarray, items: lis
         step = CLOSEUP_TILE_PX + CLOSEUP_GAP_PX
         page = Image.new("RGB", (CLOSEUP_COLUMNS * step, rows * step), "white")
         for k, item in enumerate(page_items):
-            tile = _closeup_tile(polylines=polylines, boxes=boxes, item=item)
+            tile = _closeup_tile(polylines=polylines, boxes=boxes, item=item, stoplines=stoplines)
             page.paste(tile, ((k % CLOSEUP_COLUMNS) * step, (k // CLOSEUP_COLUMNS) * step))
         pages.append(_image_uri(image=page))
     return pages
@@ -279,10 +467,19 @@ SECTION_HEADINGS = {
 }
 
 
-def render_html(*, report: dict[str, Any], polylines: list[np.ndarray], config: ReportConfig, title: str) -> str:
-    """The self-contained HTML of ``report`` (images embedded as PNG data URIs)."""
+def render_html(
+    *,
+    report: dict[str, Any],
+    polylines: list[np.ndarray],
+    config: ReportConfig,
+    title: str,
+    layers: Optional[MapLayers] = None,
+) -> str:
+    """The self-contained HTML of ``report`` (images embedded as PNG data URIs); with ``layers``, a "Map" section
+    first: the converted map with its stoplines beside the raw ``.xodr``."""
     summary = report["summary"]
     boxes = _bounding_boxes(polylines=polylines)
+    stoplines = [] if layers is None else layers.stoplines
     parts = [
         "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>",
         f"<title>{html.escape(title)} AutoCritic</title><style>{CSS}</style></head><body>",
@@ -290,6 +487,25 @@ def render_html(*, report: dict[str, Any], polylines: list[np.ndarray], config: 
         f"<p>AutoFix {'on' if summary['autofix'] else 'off'}; preset {html.escape(str(summary['preset']))}; "
         f"verdict {html.escape(str(summary['status']))}. Numbers in each section match its images.</p>",
     ]
+    if layers is not None and config.birdview:
+        parts.append("<h2>Map</h2>")
+        counts = ", ".join(
+            f"<span style='color:{STOPLINE_COLOURS[kind]}'>&#9632;</span> {label}: {sum(1 for k, _ in layers.stoplines if k == kind)}"
+            for kind, label in STOPLINE_LABELS.items()
+        )
+        parts.append(f"<p>Stoplines: {counts}.</p>" if config.stoplines else "<p class=muted>Stoplines not drawn (report.stoplines).</p>")
+        if layers.raw_note is not None:
+            parts.append(f"<p class=muted>Raw XODR not drawn: {html.escape(layers.raw_note)}</p>")
+        else:
+            parts.append(
+                "<p class=muted>Left: the converted map. Right: the Raw XODR as CARLA's OpenDRIVE reader sees it, "
+                "in the same frame; a difference between the two is a reading or conversion error.</p>"
+            )
+        try:
+            parts.append(f"<img src='{_map_image(layers=layers)}' alt='map'>")
+        except Exception as exc:  # noqa: BLE001 - the map image must not cost the map its outputs
+            logger.warning(f"AutoCritic report: the map image failed: {type(exc).__name__}: {exc}")
+            parts.append(f"<p class=muted>Map image not drawn: {html.escape(type(exc).__name__)}: {html.escape(str(exc))}</p>")
     if not report["sections"]:
         parts.append("<p>No heuristic applied, none would have, and no check found anything.</p>")
     for number, section in enumerate(report["sections"], 1):
@@ -310,10 +526,10 @@ def render_html(*, report: dict[str, Any], polylines: list[np.ndarray], config: 
                 )
             parts.append("</ol>")
         if config.birdview and placed:
-            parts.append(f"<img src='{_birdview(polylines=polylines, boxes=boxes, items=placed)}' alt='birdview'>")
+            parts.append(f"<img src='{_birdview(polylines=polylines, boxes=boxes, items=placed, stoplines=stoplines)}' alt='birdview'>")
         if config.closeups and placed:
             shown = placed[: config.max_closeups]
-            for page in _closeup_pages(polylines=polylines, boxes=boxes, items=shown):
+            for page in _closeup_pages(polylines=polylines, boxes=boxes, items=shown, stoplines=stoplines):
                 parts.append(f"<img src='{page}' alt='close-ups'>")
             if len(placed) > len(shown):
                 parts.append(f"<p class=muted>{len(placed) - len(shown)} more items have no close-up (report.max_closeups).</p>")
@@ -330,19 +546,29 @@ def write(
     autofix_enabled: bool,
     would_have_fixed: bool,
     config: ReportConfig,
+    xodr_path: Optional[str] = None,
+    to_local=None,
 ) -> tuple[str, str]:
     """Write ``<map>_autocritic.json`` and ``<map>_autocritic.html`` into ``map_dir`` (its outputs must still be there).
+
+    Args:
+        xodr_path: The converted ``.xodr``, drawn raw beside the converted map.
+        to_local: ``(x, y) -> (x, y)`` from the ``.xodr``'s frame to the outputs' local frame (identity if omitted).
 
     Returns:
         The absolute paths of the JSON and the HTML.
     """
     report = build(records=records, verdict=verdict, autofix_enabled=autofix_enabled, would_have_fixed=would_have_fixed)
+    layers = None
+    if config.birdview:
+        layers = map_layers(map_dir=map_dir, config=config, xodr_path=xodr_path, to_local=to_local or (lambda x, y: (x, y)))
+        report["map"] = map_summary(layers=layers)
     json_path = os.path.abspath(os.path.join(map_dir, f"{location}_autocritic.json"))
     with open(json_path, "w") as f:
         json.dump(report, f, indent=2)
     images = config.birdview or config.closeups
-    polylines = load_polylines(map_dir=map_dir) if images and report["sections"] else []
+    polylines = layers.polylines if layers is not None else load_polylines(map_dir=map_dir) if images and report["sections"] else []
     html_path = os.path.abspath(os.path.join(map_dir, f"{location}_autocritic.html"))
     with open(html_path, "w") as f:
-        f.write(render_html(report=report, polylines=polylines, config=config, title=location))
+        f.write(render_html(report=report, polylines=polylines, config=config, title=location, layers=layers))
     return json_path, html_path

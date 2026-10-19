@@ -88,8 +88,10 @@ exit code 3 and write nothing.
 | `autocritic.thresholds.<name>` | unset | Override one of the preset's thresholds, e.g. `autocritic.thresholds.min_routing_edge_pct=98`. |
 | `autocritic.would_have_fixed` | `true` | The AutoCritic report also lists where switched-off heuristics would have acted. |
 | `report.enabled` | `true` | Write the AutoCritic report (`<map>_autocritic.html` and `.json`); needs `autocritic.enabled`. |
-| `report.text` / `report.birdview` / `report.closeups` | `true` | The report's numbered lists, its whole-map image per section, its close-up images (24 per image). |
+| `report.text` / `report.birdview` / `report.closeups` | `true` | The report's numbered lists, its "Map" section and whole-map image per section, its close-up images (24 per image). |
 | `report.max_closeups` | `240` | Most close-ups per section; further items are listed only. |
+| `report.stoplines` | `true` | Draw the stoplines (traffic light, stop sign, yield sign, each its colour, counted in a legend) on the map, the birdviews and the close-ups. |
+| `report.raw_xodr` | `true` | Draw the raw `.xodr` beside the converted map, read by CARLA's OpenDRIVE reader (`xodr_view.py`, the optional `carla` package; no Python 3.13 wheel). Without it the report says why. |
 | `vocabulary` | `<repo>/vocabularies/default.yaml` | The vocabulary dictionary: names the map uses, translated into names the converter understands (see "Vocabulary" below). |
 | `vocabulary_vendors` | `<repo>/vocabularies/vendors` | Folder of vendor dictionaries; every one whose `match` fits the file header applies on top of `vocabulary`. |
 | `speed_unit` | `m/s` | The unit of the map's speeds (lane and road-type `<speed>`) that name none: `m/s`, `km/h`, `mph`, or a number that converts the map's unit to m/s (e.g. `speed_unit=0.3048` for feet per second). Each such speed is recorded in the conversion report. Speeds that name their unit, and speed-limit signs whose `unit` is `m/s`, `km/h` or `mph`, are converted by it; every speed reaches the map in m/s (a sign without a unit keeps its number). |
@@ -550,7 +552,7 @@ self-contained `report.html`. Per map it records:
   |---|---|
   | `lanelet_count` | lanelets in the `.osm` |
   | `load_error_count` | errors Lanelet2 reports while loading the `.osm` |
-  | `routing_edge_pct` | % of lanelets not left unlinked where they meet another lanelet: an end within 0.1 m of another lanelet's start with no routing-graph edge to it counts; open ends do not |
+  | `routing_edge_pct` | % of lanelets not left unlinked where they meet another lanelet: an end within 1 m of another lanelet's start with no routing-graph edge to it counts; open ends do not |
   | `seam_handshake_pct` | % of lanelet seams (one lanelet's end meets another's start within 0.1 m) whose boundary points are shared; unshared seams break routing |
   | `z_conflicts` | points at the same position (1 cm) with elevations more than 1 cm apart: `count` and `max_dz` |
   | `stoplines_by_agent_type` | stoplines per `agent_type` |

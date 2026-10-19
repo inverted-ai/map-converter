@@ -17,7 +17,7 @@ else:
     import tomli as tomllib
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-IAI_DEPENDENCIES = {"lanelet2", "torchdrivesim", "torch", "imageio", "scikit-learn", "click"}
+IAI_DEPENDENCIES = {"lanelet2", "torchdrivesim", "torch", "imageio", "scikit-learn", "click", "carla"}
 
 
 def _caret(*, version: str) -> str:

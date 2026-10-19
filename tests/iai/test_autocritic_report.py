@@ -127,3 +127,96 @@ def test_report_can_be_switched_off(tmp_path, setting):
     result = xb.run_convert_map(map_dir=str(tmp_path), **{setting: "false"})
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / "case_autocritic.html").exists() and not (tmp_path / "case_autocritic.json").exists()
+
+
+# --- the "Map" section: converted map with stoplines, beside the raw XODR -----------------------------------
+
+
+def _row(*, agent_type: str, x: float, orientation: float = 0.0) -> dict:
+    return {"actor_id": 1, "agent_type": agent_type, "x": x, "y": 0.0, "length": 1.0, "width": 3.5, "orientation": orientation}
+
+
+def test_a_stopline_row_is_a_segment_across_its_lane():
+    segment = ar.stopline_segment(row=_row(agent_type="stop_sign", x=10.0))
+    np.testing.assert_allclose(segment, [[10.0, -1.75], [10.0, 1.75]])
+    across_north = ar.stopline_segment(row=_row(agent_type="stop_sign", x=0.0, orientation=np.pi / 2))
+    np.testing.assert_allclose(across_north, [[1.75, 0.0], [-1.75, 0.0]], atol=1e-9)
+
+
+def _layers(*, raw_note=None) -> ar.MapLayers:
+    face = np.array([[[0.0, -2.0], [20.0, -2.0], [20.0, 2.0]], [[0.0, -2.0], [20.0, 2.0], [0.0, 2.0]]])
+    rows = [_row(agent_type=t, x=x) for t, x in (("traffic_light", 5.0), ("stop_sign", 10.0), ("yield_sign", 15.0))]
+    raw = [] if raw_note else [("Driving", np.array([[0.0, -2.0], [20.0, -2.0], [20.0, 2.0], [0.0, 2.0]]))]
+    return ar.MapLayers(
+        road_faces=face,
+        polylines=POLYLINES,
+        stoplines=[(r["agent_type"], ar.stopline_segment(row=r)) for r in rows],
+        raw_lanes=raw,
+        raw_signals=np.zeros((0, 2)),
+        raw_note=raw_note,
+    )
+
+
+def test_the_map_section_comes_first_with_every_stopline_type_counted():
+    report = ar.build(records=[], verdict=None, autofix_enabled=True, would_have_fixed=True)
+    html = ar.render_html(report=report, polylines=POLYLINES, config=ar.ReportConfig(), title="case", layers=_layers())
+    assert html.index("<h2>Map") < html.index("No heuristic applied")
+    for label in ("traffic light: 1", "stop sign: 1", "yield sign: 1"):
+        assert label in html
+    assert html.count("<img src='data:image/png;base64,") == 1
+    assert "Raw XODR" in html
+
+
+def test_the_map_section_says_why_the_raw_xodr_is_missing():
+    report = ar.build(records=[], verdict=None, autofix_enabled=True, would_have_fixed=True)
+    html = ar.render_html(
+        report=report, polylines=POLYLINES, config=ar.ReportConfig(), title="case", layers=_layers(raw_note="no reader")
+    )
+    assert "Raw XODR not drawn: no reader" in html
+
+
+def _light_rows(*, map_dir) -> int:
+    rows = json.loads(next(map_dir.glob("*_stoplines.json")).read_text())
+    return sum(r["agent_type"] == "traffic_light" for r in rows)
+
+
+def test_every_report_draws_the_map_with_its_stoplines_and_the_raw_xodr(tmp_path):
+    roads, junctions, controllers = xb.junction_map()
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    html = (tmp_path / "case_autocritic.html").read_text()
+    assert _light_rows(map_dir=tmp_path) > 0
+    assert f"traffic light: {_light_rows(map_dir=tmp_path)}" in html
+    summary = json.loads((tmp_path / "case_autocritic.json").read_text())["map"]
+    assert summary["stoplines"]["traffic_light"] == _light_rows(map_dir=tmp_path)
+    assert summary["raw_xodr"]["note"] is None and summary["raw_xodr"]["lanes"] > 0
+
+
+def test_the_raw_xodr_lies_on_the_converted_map_in_the_local_frame(tmp_path):
+    road = xb.straight_road(id="1", length=60.0, x=1000.0, y=-500.0)
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[road], offset=(100.0, 50.0, 0.0, 0.0)))
+    result = xb.run_convert_map(map_dir=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    raw_extent = np.array(json.loads((tmp_path / "case_autocritic.json").read_text())["map"]["raw_xodr"]["extent"])
+    points = np.concatenate(ar.load_polylines(map_dir=str(tmp_path)))
+    np.testing.assert_allclose(raw_extent, [*points.min(axis=0), *points.max(axis=0)], atol=0.5)
+
+
+def test_a_report_without_findings_still_draws_the_map(tmp_path):
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+    result = xb.run_convert_map(map_dir=str(tmp_path), **{"report.raw_xodr": "false"})
+    assert result.returncode == 0, result.stderr
+    html = (tmp_path / "case_autocritic.html").read_text()
+    assert "<h2>Map" in html and "data:image/png;base64," in html
+    assert "Raw XODR not drawn: switched off (report.raw_xodr)" in html
+
+
+def test_a_rejected_map_report_still_has_its_stoplines(tmp_path):
+    roads, junctions, controllers = xb.junction_map()
+    roads += [xb.straight_road(id="7", length=30.0, y=300.0), xb.straight_road(id="8", length=30.0, x=30.0, y=300.0)]
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=roads, junctions=junctions, controllers=controllers))
+    result = xb.run_convert_map(map_dir=str(tmp_path), **{"autocritic.preset": "perfect"})
+    assert result.returncode == conversion_common.REJECTED_EXIT_CODE, result.stderr
+    summary = json.loads((tmp_path / "case_autocritic.json").read_text())["map"]
+    assert summary["stoplines"]["traffic_light"] > 0

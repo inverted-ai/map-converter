@@ -277,6 +277,19 @@ def test_a_bound_whose_only_readable_vertices_are_its_ends_gets_a_readable_middl
     assert _loaded_inversions(tmp_path=tmp_path, left=new_left, right=new_right) == (False, False)
 
 
+def test_a_tangle_in_one_bound_is_judged_as_the_loader_judges_it(tmp_path):
+    # A connector whose right bound zig-zags at the bend: Lanelet2's side test at the middle vertex reads it
+    # backwards; the prediction must agree with the loader, then the fix must hold under it.
+    left = np.array([[-0.2, 37.2], [11.6, 26.0], [12.8, 24.5], [13.0, 23.2], [11.6, 20.8], [7.7, 7.1], [4.3, 0.2]])
+    right = np.array([[-2.5, 34.9], [9.9, 23.1], [9.9, 23.8], [8.6, 22.1], [4.8, 8.5], [2.1, 2.9], [3.6, 3.3]])
+    assert _loaded_inversions(tmp_path=tmp_path, left=left, right=right) == (False, True)
+    assert lanelet_bounds.misjudged_by_align(left=left, right=right)
+
+    new_left, new_right = lanelet_bounds.align_safe(left=left, right=right)
+
+    assert _loaded_inversions(tmp_path=tmp_path, left=new_left, right=new_right) == (False, False)
+
+
 def test_bounds_align_already_reads_are_left_alone():
     left, right = np.array([[0.0, 3.0], [10.0, 3.0], [20.0, 3.0]]), np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]])
 

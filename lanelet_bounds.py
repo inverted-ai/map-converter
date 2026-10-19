@@ -182,13 +182,13 @@ def misjudged_by_align(*, left: np.ndarray, right: np.ndarray) -> bool:
 
     ``align`` inverts ``left`` unless the middle vertex of ``right`` lies right of it, then ``right`` unless the
     middle vertex of (the possibly inverted) ``left`` lies left of it; "middle vertex" is ``ls[size / 2]``, or the
-    middle of the end points for two vertices. This ports that test (side of the closest segment).
+    middle of the end points for two vertices. The side comes from Lanelet2's own geometry (:func:`_side_of`).
     """
     if len(left) < 2 or len(right) < 2:
         return False
-    if _signed_distance(line=left[:, :2], point=_middle(points=right)) >= 0:
+    if _side_of(line=left)(_middle(points=right)) >= 0:
         return True
-    return _signed_distance(line=right[:, :2], point=_middle(points=left)) <= 0
+    return _side_of(line=right)(_middle(points=left)) <= 0
 
 
 def align_safe(*, left: np.ndarray, right: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -197,8 +197,9 @@ def align_safe(*, left: np.ndarray, right: np.ndarray) -> tuple[np.ndarray, np.n
     already reads them as written, or when no such vertex exists."""
     if not misjudged_by_align(left=left, right=right):
         return left, right
-    right = _with_middle(points=right, readable=lambda p: _signed_distance(line=left[:, :2], point=p) < 0)
-    left = _with_middle(points=left, readable=lambda p: _signed_distance(line=right[:, :2], point=p) > 0)
+    side_of_left, side_of_right = _side_of(line=left), _side_of(line=right)
+    right = _with_middle(points=right, readable=lambda p: side_of_left(p) < 0)
+    left = _with_middle(points=left, readable=lambda p: side_of_right(p) > 0)
     return left, right
 
 
@@ -246,24 +247,16 @@ def _split_longest(*, points: np.ndarray, first: int = 0, last: Optional[int] = 
     return np.insert(points, s + 1, (points[s] + points[s + 1]) / 2, axis=0), s
 
 
-def _signed_distance(*, line: np.ndarray, point: np.ndarray) -> float:
-    """Distance from ``point`` to ``line``, positive when it lies left of the closest segment (Lanelet2's
-    ``signedDistance``; at a vertex the turn there decides)."""
-    start, end = line[:-1], line[1:]
-    step = end - start
-    t = np.clip(((point - start) * step).sum(axis=1) / np.maximum((step * step).sum(axis=1), 1e-12), 0.0, 1.0)
-    distances = np.linalg.norm(start + step * t[:, None] - point, axis=1)
-    k = int(np.argmin(distances))
-    left = _cross(a=step[k], b=point - start[k]) > 0
-    if t[k] >= 1.0 and k + 1 < len(step):
-        left_next = _cross(a=step[k + 1], b=point - start[k + 1]) > 0
-        convex = _cross(a=step[k], b=step[k + 1]) > 0
-        left = (left or left_next) if convex else (left and left_next)
-    return float(distances[k]) if left else -float(distances[k])
+def _side_of(*, line: np.ndarray):
+    """``point -> signed distance`` to ``line``, positive left of it, computed by Lanelet2 itself
+    (``geometry.toArcCoordinates``, the side test ``align`` uses), so the prediction is the loader's."""
+    import lanelet2
+    from lanelet2.core import BasicPoint2d, LineString3d, Point3d, getId
 
-
-def _cross(*, a: np.ndarray, b: np.ndarray) -> float:
-    return float(a[0] * b[1] - a[1] * b[0])
+    linestring = lanelet2.geometry.to2D(
+        LineString3d(getId(), [Point3d(getId(), float(x), float(y), 0.0) for x, y in line[:, :2]])
+    )
+    return lambda point: float(lanelet2.geometry.toArcCoordinates(linestring, BasicPoint2d(float(point[0]), float(point[1]))).distance)
 
 
 def loop_free_bounds(*, network: LaneletNetwork, to_local) -> dict[int, tuple[np.ndarray, np.ndarray]]:

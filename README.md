@@ -184,12 +184,13 @@ checks failed and exits with code 4. A failed `perfect` verdict also says whethe
 | L11 | `dropped_signals` | any signal was dropped past its road's end (`max_dropped_signals` 0) | listed, not judged |
 | L12 | `far_signals` | listed, not judged (`max_far_signals`; far = nearest stopline more than `far_signal_m`, 50 m) | same |
 | L13 | `not_converted` | listed, never judged | same |
+| L14 | `static_light_codes` | listed, never judged: signals with a traffic-light code marked `dynamic="no"`, read as static signs with no stoplines | same |
 
-L10-L13 come from the conversion itself: lanelets the OpenDRIVE links whose ends lie farther apart than the seam
+L10-L14 come from the conversion itself: lanelets the OpenDRIVE links whose ends lie farther apart than the seam
 tolerance (H10), so routing cannot cross; signals H14 dropped because they lie past their road's end; lights and
-signs whose nearest stopline row lies far from the signal; and painted stop lines (unrecognised and dropped
-elements are in the report's `unrecognised_tokens` and `elements`). Only `perfect` judges L10 and L11; L12 and
-L13 are listed in both presets. Set any limit with `autocritic.thresholds.<name>`.
+signs whose nearest stopline row lies far from the signal; painted stop lines (unrecognised and dropped elements are
+in the report's `unrecognised_tokens` and `elements`); and signals with a traffic-light code marked `dynamic="no"`,
+which the reader takes for static signs. Only `perfect` judges L10 and L11; L12-L14 are listed in both presets. Set any limit with `autocritic.thresholds.<name>`.
 
 The output metrics come from `map_quality.py` (the same metrics `map_report.py` records). A metric that raises
 fails its check; one with nothing to measure (no seams, say) passes.
@@ -216,7 +217,7 @@ items for scripts. After a summary (AutoFix on or off, preset, verdict) it has o
 1. heuristic that changed the conversion against BasicConversion (AutoFix);
 2. heuristic that was off and would have acted (with AutoFix off, every heuristic; `autocritic.would_have_fixed`);
 3. element attribute the vocabulary dictionary translated (every place, see "Vocabulary");
-4. check that failed, or that lists places (L10-L13).
+4. check that failed, or that lists places (L10-L14).
 
 Each section numbers its items (element, position in the local frame, what happened) and draws them: a birdview
 of the whole map with every item circled and numbered, and a close-up of each (50 m wide, 24 per image). The

@@ -363,6 +363,16 @@ def test_painted_stop_lines_are_listed_as_not_converted(tmp_path):
     assert check["limit"] is None
 
 
+def test_a_light_code_marked_static_is_listed_without_failing_a_preset(tmp_path):
+    static_light = xb.SignalSpec(id="7", s=20.0, dynamic="no", type="1000001")
+    road = xb.straight_road(id="1", length=50.0, signals=[static_light])
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[road])
+    check = _check(verdict=verdict, name="static_light_codes")
+    assert [place["id"] for place in check["locations"]] == ["signal 7"]
+    assert check["limit"] is None and check["passed"]
+    assert "static_light_codes" not in verdict["profiles"]["perfect"]["failed"]
+
+
 
 def test_perfect_allows_no_linked_gap_and_no_dropped_signal():
     assert (mv.PROFILES["perfect"].max_linked_gaps, mv.PROFILES["perfect"].max_dropped_signals) == (0, 0)

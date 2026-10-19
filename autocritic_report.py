@@ -5,7 +5,7 @@ Three kinds of section, each with its own numbered items:
 - ``autofix``: per heuristic, every place it changed the conversion against BasicConversion;
 - ``would_have_fixed``: per heuristic that was off (or with AutoFix off), every place it would have acted;
 - ``vocabulary``: per element attribute, every place the vocabulary dictionary translated a name or code;
-- ``metric``: per validation check that failed, or that lists places (L10-L13), every place it found.
+- ``metric``: per validation check that failed, or that lists places (L10-L14), every place it found.
 
 The HTML opens with a "Map" section: the converted map (road surface, lanelet bounds, stoplines by type) beside
 the raw ``.xodr`` read independently (:mod:`xodr_view`). Each section then gets a numbered text list, a birdview of

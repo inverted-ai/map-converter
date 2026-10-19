@@ -541,6 +541,26 @@ def signal_corrections(
     return corrections
 
 
+def static_light_codes(*, opendrive, words: vocabulary.Vocabulary, frame: CustomTransfomer) -> list[dict]:
+    """Signals with a traffic-light code (the dictionary's ``traffic_light_types``) marked ``dynamic="no"``.
+
+    The reader takes only dynamic signals for lights, so these become static signs with no stoplines; whether the
+    author meant a light is not decided here, AutoCritic lists them (``static_light_codes``).
+    """
+    if words.signals.traffic_light_types is None:
+        return []
+    return [
+        map_quality.fault(
+            element=f'signal {signal.id}',
+            location=_signal_position(road=road, signal=signal, frame=frame),
+            detail=f'traffic-light code {signal.type} marked dynamic="no": a static sign, no stoplines',
+        )
+        for road in opendrive.roads
+        for signal in road.signals
+        if signal.dynamic == 'no' and vocabulary.is_traffic_light(signal_type=signal.type, vocabulary=words)
+    ]
+
+
 def signals_past_road_end(
     *, opendrive, heuristics: conversion_heuristics.HeuristicsConfig, frame: CustomTransfomer
 ) -> list[tuple[object, object, Optional[float]]]:
@@ -1195,6 +1215,7 @@ def _convert(
             dropped_signals=parsed.dropped_signals,
             signal_distances=stoplines.distances,
             painted_stop_lines=stoplines.painted_stop_lines,
+            static_light_codes=static_light_codes(opendrive=parsed.opendrive, words=parsed.words, frame=parsed.frame),
         ),
     )
     logger.info(f'Validation: {verdict.status}')

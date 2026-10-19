@@ -71,12 +71,15 @@ class ConversionFindings:
         signal_distances: Per light and sign signal with stopline rows, its distance to the nearest
             (``distance_m`` instead of ``detail``).
         painted_stop_lines: Painted stop lines, listed and never converted.
+        static_light_codes: Signals with a traffic-light code marked ``dynamic="no"``: read as static signs, so
+            they get no stoplines; listed, never judged.
     """
 
     linked_gaps: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     dropped_signals: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     signal_distances: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     painted_stop_lines: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    static_light_codes: list[dict[str, Any]] = dataclasses.field(default_factory=list)
 
 
 PROFILES = {
@@ -328,6 +331,12 @@ def evaluate(
         places=findings.painted_stop_lines,
         limit=None,
         detail="painted stop lines, never converted (unrecognised and dropped elements: see the report summary)",
+    )
+    listed(
+        name="static_light_codes",
+        places=findings.static_light_codes,
+        limit=None,
+        detail='signals with a traffic-light code marked dynamic="no": read as static signs, so they get no stoplines',
     )
     return checks
 

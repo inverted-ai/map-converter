@@ -61,6 +61,7 @@ RAW_LANE_COLOURS = {
 RAW_OTHER_LANE = "#e8c4c4"
 RAW_SIGNAL = "#c2187a"
 MAP_PANEL_PX = 800
+MAP_PANEL_MIN_PX = 380
 
 
 @dataclasses.dataclass(slots=True)
@@ -335,6 +336,10 @@ def _map_image(*, layers: MapLayers) -> str:
     pad = max(5.0, 0.03 * float((high - low).max()))
     low, high = low - pad, high + pad
     scale = MAP_PANEL_PX / float((high - low).max())
+    width = MAP_PANEL_MIN_PX / scale  # a narrow map keeps room for its panel's title
+    if high[0] - low[0] < width:
+        centre = (high[0] + low[0]) / 2
+        low, high = np.array([centre - width / 2, low[1]]), np.array([centre + width / 2, high[1]])
     size = (int((high[0] - low[0]) * scale) + 1, int((high[1] - low[1]) * scale) + 1)
 
     def px(xy: np.ndarray) -> list[tuple[float, float]]:

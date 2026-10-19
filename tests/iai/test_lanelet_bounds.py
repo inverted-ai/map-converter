@@ -265,6 +265,18 @@ def test_align_safe_bounds_are_read_as_written_with_the_same_shape(tmp_path):
         assert len(after) >= len(before)
 
 
+def test_a_bound_whose_only_readable_vertices_are_its_ends_gets_a_readable_middle(tmp_path):
+    # A connector turning right: the right bound folds back near the corner, so the left bound's only inner vertex
+    # reads on the wrong side; only its ends read right, and an end can never be the middle vertex.
+    left = np.array([[-27.6, -18.9], [-22.3, -7.0], [19.6, -7.0]])
+    right = np.array([[-24.7, -20.2], [-19.4, -8.3], [-22.3, -10.2], [19.4, -10.1]])
+    assert _loaded_inversions(tmp_path=tmp_path, left=left, right=right) == (False, True)
+
+    new_left, new_right = lanelet_bounds.align_safe(left=left, right=right)
+
+    assert _loaded_inversions(tmp_path=tmp_path, left=new_left, right=new_right) == (False, False)
+
+
 def test_bounds_align_already_reads_are_left_alone():
     left, right = np.array([[0.0, 3.0], [10.0, 3.0], [20.0, 3.0]]), np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]])
 

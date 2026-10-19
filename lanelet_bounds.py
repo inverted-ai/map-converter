@@ -207,26 +207,32 @@ def _middle(*, points: np.ndarray) -> np.ndarray:
 
 
 def _with_middle(*, points: np.ndarray, readable) -> np.ndarray:
-    """``points`` with segments split so that a vertex ``readable`` accepts, nearest the middle, is ``ls[size / 2]``."""
+    """``points`` with segments split so that a vertex ``readable`` accepts, nearest the middle, is ``ls[size / 2]``.
+
+    Only an inner vertex can become the middle one; when none reads right, the midpoint of the longest segment whose
+    midpoint does is added first."""
     n = len(points)
     if n > 2 and readable(points[n // 2, :2]):
         return points
-    candidates = [k for k in range(n) if readable(points[k, :2])]
-    if not candidates:
-        return points
-    k = min(candidates, key=lambda c: abs(c - n // 2))
+    inner = [k for k in range(1, n - 1) if readable(points[k, :2])]
     out = points
-    if k < n // 2 or n <= 2:
-        while k < len(out) // 2 or len(out) <= 2:  # add vertices before k
-            out, split = _split_longest(points=out, last=k)
-            if split is None:
-                return points
-            k += 1
-    else:
-        while len(out) // 2 < k:  # add vertices after k
-            out, split = _split_longest(points=out, first=k)
-            if split is None:
-                return points
+    if not inner:
+        segments = [s for s in range(n - 1) if readable((points[s, :2] + points[s + 1, :2]) / 2)]
+        if not segments:
+            return points
+        s = max(segments, key=lambda s: float(np.linalg.norm(points[s + 1, :2] - points[s, :2])))
+        out = np.insert(points, s + 1, (points[s] + points[s + 1]) / 2, axis=0)
+        inner = [s + 1]
+    k = min(inner, key=lambda c: abs(c - len(out) // 2))
+    while k < len(out) // 2:  # add vertices before k
+        out, split = _split_longest(points=out, last=k)
+        if split is None:
+            return points
+        k += 1
+    while len(out) // 2 < k:  # add vertices after k
+        out, split = _split_longest(points=out, first=k)
+        if split is None:
+            return points
     return out
 
 

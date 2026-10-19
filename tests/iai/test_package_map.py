@@ -9,8 +9,9 @@ import conversion_common
 from tests.iai import xodr_builder as xb
 
 
-def _converted(*, tmp_path, **config: str):
-    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=[xb.straight_road(id="1", length=30.0)]))
+def _converted(*, tmp_path, roads=None, **config: str):
+    roads = roads or [xb.straight_road(id="1", length=30.0)]
+    xb.write_xodr(map_dir=tmp_path, name="case", text=xb.build_xodr(roads=roads))
     return xb.run_convert_map(map_dir=str(tmp_path), **config)
 
 
@@ -38,7 +39,9 @@ def test_package_holds_what_the_map_service_reads_and_the_provenance(tmp_path):
 
 
 def test_a_rejected_map_is_not_packaged(tmp_path):
-    result = _converted(tmp_path=tmp_path, **{"autocritic.preset": "perfect"})
+    # two roads meeting end to start without a link: routing fails the perfect preset
+    unlinked = [xb.straight_road(id="1", length=30.0), xb.straight_road(id="2", length=30.0, x=30.0)]
+    result = _converted(tmp_path=tmp_path, roads=unlinked, **{"autocritic.preset": "perfect"})
     assert result.returncode == conversion_common.REJECTED_EXIT_CODE
     packaged = _package(map_dir=tmp_path)
     assert packaged.returncode == conversion_common.REFUSED_EXIT_CODE

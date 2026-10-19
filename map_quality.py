@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VISUALIZATION_FOV = 800.0
 SEAM_TOLERANCE_M = 0.1
+MEET_TOLERANCE_M = 1.0  # lane ends this close to another lane's start are meant to connect (H10's default)
 Z_CONFLICT_MIN_M = 0.01
 CROSSED_BOUNDS_GAP_M = 1.0
 STOP_YIELD_SIGN_NUMBERS = ("206", "205")
@@ -196,12 +197,12 @@ def fault(*, element: str, location: Sequence[float], detail: str = "") -> dict[
 def unrouted_lanelets(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
     """Lanelets left unlinked where they meet another lanelet, at the seam.
 
-    A lanelet counts when its end meets another lanelet's start (both bound ends within ``SEAM_TOLERANCE_M``) and
+    A lanelet counts when its end meets another lanelet's start (both bound ends within ``MEET_TOLERANCE_M``) and
     the routing graph (Germany, vehicle rules) has no edge from it to that lanelet. An end that meets nothing (the
     map's edge, a dead end) is no fault, nor are neighbours that drive the other way.
     """
     lanelets = list(outputs.lanelet_map.laneletLayer)
-    pairs = _seam_pairs(lanelets=lanelets)
+    pairs = _seam_pairs(lanelets=lanelets, tolerance=MEET_TOLERANCE_M)
     if not pairs:
         return []
     graph = vehicle_routing_graph(lanelet_map=outputs.lanelet_map)
@@ -243,8 +244,8 @@ def unshaken_seams(*, outputs: ConversionOutputs) -> list[dict[str, Any]]:
     return _seams(outputs=outputs)[1]
 
 
-def _seam_pairs(*, lanelets: list) -> list[tuple[int, int]]:
-    """Index pairs ``(i, j)``: lanelet ``i``'s end meets lanelet ``j``'s start (both bound ends within ``SEAM_TOLERANCE_M``)."""
+def _seam_pairs(*, lanelets: list, tolerance: float = SEAM_TOLERANCE_M) -> list[tuple[int, int]]:
+    """Index pairs ``(i, j)``: lanelet ``i``'s end meets lanelet ``j``'s start (both bound ends within ``tolerance``)."""
     from scipy.spatial import cKDTree
 
     if len(lanelets) < 2:
@@ -254,8 +255,8 @@ def _seam_pairs(*, lanelets: list) -> list[tuple[int, int]]:
     left_ends = np.array([(ll.leftBound[-1].x, ll.leftBound[-1].y) for ll in lanelets])
     right_ends = np.array([(ll.rightBound[-1].x, ll.rightBound[-1].y) for ll in lanelets])
     pairs = []
-    for i, js in enumerate(cKDTree(left_starts).query_ball_point(left_ends, r=SEAM_TOLERANCE_M)):
-        pairs.extend((i, j) for j in js if j != i and np.hypot(*(right_starts[j] - right_ends[i])) <= SEAM_TOLERANCE_M)
+    for i, js in enumerate(cKDTree(left_starts).query_ball_point(left_ends, r=tolerance)):
+        pairs.extend((i, j) for j in js if j != i and np.hypot(*(right_starts[j] - right_ends[i])) <= tolerance)
     return pairs
 
 

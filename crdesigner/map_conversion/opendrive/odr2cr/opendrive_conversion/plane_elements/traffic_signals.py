@@ -26,7 +26,16 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLa
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadSignal import (
     Signal,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record
 
+
+def _replacements(traffic_sign_enum) -> Dict[str, str]:
+    """The sign-type replacements for the country whose sign table is ``traffic_sign_enum``."""
+    for country, table in TrafficSignIDCountries.items():
+        if table is traffic_sign_enum:
+            return vocabulary.SIGN_TYPE_REPLACEMENTS.get(country, {})
+    return {}
 
 def extract_traffic_element_id(
     signal_type: str, signal_subtype: str, traffic_sign_enum: enum
@@ -49,10 +58,12 @@ def extract_traffic_element_id(
         element_id = traffic_sign_enum(signal_type)
     elif signal_type + "-" + signal_subtype in set(item.value for item in traffic_sign_enum):
         element_id = traffic_sign_enum(signal_type + "-" + str(signal_subtype))
-    elif (
-        traffic_sign_enum is TrafficSignIDGermany or traffic_sign_enum is TrafficSignIDZamunda
-    ) and signal_type == "252":  # traffic sign ID 252 is replaced by 260
-        element_id = traffic_sign_enum("260")
+    elif (replacement := _replacements(traffic_sign_enum).get(signal_type)) is not None:
+        record(
+            "translated", "signal.type", None, signal_type, f"read_as_{replacement}",
+            "signal.type %s read as %s (vocabulary)", signal_type, replacement,
+        )
+        element_id = traffic_sign_enum(replacement)
     else:
         logging.warning(
             "OpenDRIVE/traffic_signals.py: Unknown {} of ID {} of subtype {}!".format(
@@ -101,12 +112,15 @@ def assign_traffic_signals_to_road(
             ):
                 additional_values = []
             else:
-                if signal.unit == "km/h":
-                    additional_values = [str(float(signal.signal_value) / 3.6)]
+                if signal.unit in vocabulary.SPEED_UNIT_DIVISORS:
+                    additional_values = [
+                        str(vocabulary.to_metres_per_second(float(signal.signal_value), signal.unit))
+                    ]
                 else:
                     additional_values = [str(signal.signal_value)]
 
-            signal_country = utils.get_signal_country(signal.country)
+            raw_country = signal.country or ""
+            signal_country = utils.get_signal_country(raw_country)
             country_stop_line_id = {
                 "DEU": "294",
                 "ZAM": "294",
@@ -114,17 +128,32 @@ def assign_traffic_signals_to_road(
                 "CHN": "294",
                 "ESP": "294",
             }
+            # get_signal_country silently returns ZAM for names it does not know
+            if signal_country not in TrafficSignIDCountries or (
+                signal_country == "ZAM" and raw_country.upper() != "ZAM"
+            ):
+                record(
+                    "unknown_value" if signal.country else "missing_attribute",
+                    "signal.country",
+                    signal.id,
+                    signal.country,
+                    "defaulted",
+                    "signal %s: no sign table for country %r - using %s",
+                    signal.id,
+                    signal.country,
+                    vocabulary.UNKNOWN_COUNTRY_TABLE,
+                )
+                signal_country = vocabulary.UNKNOWN_COUNTRY_TABLE
 
             if (
                 (signal_country == "DEU" or signal_country not in TrafficSignIDCountries.keys())
-                and signal.type == "1000003"
-                or signal.type == "1000004"
+                and signal.type in ("1000003", "1000004")
             ):
                 continue
             element_id = extract_traffic_element_id(
                 signal.type, str(signal.subtype), TrafficSignIDCountries[signal_country]
             )
-            if signal.type == country_stop_line_id[signal_country]:
+            if signal.type == country_stop_line_id.get(signal_country):
                 # Creating stop line object by first calculating the position of the two end points that define the
                 # straight stop line
                 position_1, position_2 = calculate_stop_line_position(
@@ -145,6 +174,7 @@ def assign_traffic_signals_to_road(
                 position=position,
                 virtual=False,
             )
+            traffic_sign.opendrive_id = signal.id
 
             road.add_traffic_sign((traffic_sign, lanes, signal.s))
             traffic_signs.append(traffic_sign)
@@ -176,13 +206,14 @@ def assign_traffic_signals_to_road(
                 if traffic_light_lanes.get(signal.signal_id) is None
                 else traffic_light_lanes[signal.signal_id]
             )
-            if signal.type != ("1000002" or "1000007" or "1000013"):
+            if signal.type not in vocabulary.NON_VEHICLE_LIGHT_TYPES:
                 traffic_light = TrafficLight(
                     traffic_light_id=generate_unique_id(),
                     position=position,
                     traffic_light_cycle=get_default_cycle(),
                     direction=tdir,
                 )  # TODO remove for new CR-Format
+                traffic_light.opendrive_id = signal.id
                 road.add_traffic_light((traffic_light, lanes, signal.s))
                 traffic_lights.append(traffic_light)
             else:

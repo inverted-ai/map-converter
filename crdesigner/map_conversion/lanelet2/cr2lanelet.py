@@ -6,7 +6,7 @@ import numpy as np
 from commonroad.common.common_lanelet import LaneletType, LineMarking
 from commonroad.scenario.area import Area
 from commonroad.scenario.lanelet import Lanelet
-from commonroad.scenario.scenario import Location, Scenario
+from commonroad.scenario.scenario import Scenario
 from commonroad.scenario.traffic_light import TrafficLight
 from commonroad.scenario.traffic_sign import TrafficSign
 from pyproj import CRS, Transformer
@@ -23,6 +23,13 @@ from crdesigner.map_conversion.lanelet2.lanelet2 import (
     Way,
     WayRelation,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record
+
+
+# Metres two linked lanelets' boundary end points may be apart and still share a node.
+SHARED_NODE_TOLERANCE = 1.0
+# Metres per degree of latitude, for comparing node positions.
+METRES_PER_DEGREE = 111_000.0
 
 
 def _set_overriding_tags_for_bidirectional_users(lanelet: Lanelet, way_rel: WayRelation):
@@ -48,6 +55,9 @@ def _set_overriding_tags_for_bidirectional_users(lanelet: Lanelet, way_rel: WayR
 
         elif user_bidirectional_value == "bicycle" or user_bidirectional_value == "pedestrian":
             way_rel.tag_dict["one_way:" + user_bidirectional_value] = "no"
+    if any(key.startswith("one_way:vehicle") for key in way_rel.tag_dict):
+        # the general tag, which Lanelet2's vehicle routing and downstream map tools read
+        way_rel.tag_dict["one_way"] = "no"
 
 
 def _line_marking_to_type_subtype_vertices(line_marking: LineMarking) -> [str, str]:
@@ -155,15 +165,21 @@ class CR2LaneletConverter:
     """
 
     def __init__(
-        self, config: Lanelet2Config = lanelet2_config, cr_config: GeneralConfig = general_config
+        self,
+        config: Lanelet2Config = lanelet2_config,
+        cr_config: GeneralConfig = general_config,
+        shared_node_tolerance: float = SHARED_NODE_TOLERANCE,
     ):
         """
         Initialization of CR2LaneletConverter
 
         :param config: Lanelet2 config parameters.
+        :param shared_node_tolerance: Metres two linked lanelets' boundary end points may be apart and still share
+            a node.
         """
         generate_unique_id(0)  # reset ID counter for next test case
         self._config = config
+        self._shared_node_tolerance = shared_node_tolerance
         self._cr_config = cr_config
         self.transformer = None
         self.osm = None
@@ -183,7 +199,7 @@ class CR2LaneletConverter:
         The output projection is set to "ETRF89".
         Additionally, the x and y translation from the scenario object are considered (if provided).
         """
-        loc: Location = scenario.location
+        loc = scenario.location
         proj_string_from = None
         if loc is not None and loc.geo_transformation is not None:
             geo_trans = loc.geo_transformation
@@ -282,6 +298,7 @@ class CR2LaneletConverter:
         # convert lanelets
         for lanelet in lanelet_network.lanelets:
             self._convert_lanelet(lanelet)
+        self._share_seam_nodes()
 
         # convert traffic signs
         for traffic_sign in lanelet_network.traffic_signs:
@@ -298,6 +315,50 @@ class CR2LaneletConverter:
         # self._add_regulatory_element_for_traffic_lights()
 
         return self.osm.serialize_to_xml()
+
+    def _share_seam_nodes(self, tolerance: float = 0.01):
+        """
+        Give every predecessor/successor seam one shared node per boundary.
+
+        A lanelet whose boundary reuses a neighbour's way takes that way's end nodes, which can be
+        different nodes at the same place as its predecessor's last nodes. Routing needs shared node ids,
+        so coinciding seam nodes (within tolerance metres, height included) are merged.
+
+        :param tolerance: Maximum distance in metres between two seam nodes that are merged.
+        """
+        degree_tolerance = tolerance / METRES_PER_DEGREE
+        replaced = {}
+
+        def resolve(node_id):
+            while node_id in replaced:
+                node_id = replaced[node_id]
+            return node_id
+
+        for lanelet in self.lanelet_network.lanelets:
+            last = self.last_nodes.get(lanelet.lanelet_id)
+            if last is None:
+                continue
+            for successor_id in lanelet.successor:
+                first = self.first_nodes.get(successor_id)
+                if first is None:
+                    continue
+                for keep, drop in zip(last, first):
+                    keep, drop = resolve(keep), resolve(drop)
+                    if keep == drop:
+                        continue
+                    a, b = self.osm.nodes[keep], self.osm.nodes[drop]
+                    if (
+                        abs(float(a.lat) - float(b.lat)) <= degree_tolerance
+                        and abs(float(a.lon) - float(b.lon)) <= degree_tolerance
+                        and abs(float(a.ele) - float(b.ele)) <= tolerance
+                    ):
+                        replaced[drop] = keep
+        if not replaced:
+            return
+        for way in self.osm.ways.values():
+            way.nodes = [resolve(node_id) for node_id in way.nodes]
+        for node_id in replaced:
+            del self.osm.nodes[node_id]
 
     def _add_regulatory_element_for_traffic_lights(self):
         """
@@ -776,7 +837,7 @@ class CR2LaneletConverter:
         """
         left_nodes, right_nodes = [], []
         start_index = 0
-        end_index = len(lanelet.left_vertices)
+        end_index = None  # the bounds may have different vertex counts
         pot_first_left_node, pot_first_right_node = (
             self._get_shared_first_nodes_from_other_lanelets(lanelet)
         )
@@ -916,7 +977,11 @@ class CR2LaneletConverter:
                         if type_adj_right != "unknown":
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
-                            subtype = subtype_lanelet + "_" + subtype_adj_right
+                            if lanelet.adj_right_same_direction and subtype_adj_right == subtype_lanelet:
+                                # same-direction lanes repeating one marking share a single line
+                                subtype = subtype_lanelet
+                            else:
+                                subtype = subtype_lanelet + "_" + subtype_adj_right
 
                             # dashed_dashed does not exist in L2 format
                             if subtype == "dashed_dashed":
@@ -985,7 +1050,11 @@ class CR2LaneletConverter:
                         if type_adj_left != "unknown":
                             # if there are two linemarking types, add the subtypes together to match the L2 notation
                             # as the type should be the same, the type of the first lanelet line marking is used
-                            subtype = subtype_adj_left + "_" + subtype_lanelet
+                            if lanelet.adj_left_same_direction and subtype_adj_left == subtype_lanelet:
+                                # same-direction lanes repeating one marking share a single line
+                                subtype = subtype_lanelet
+                            else:
+                                subtype = subtype_adj_left + "_" + subtype_lanelet
 
                             # dashed_dashed does not exist in L2 format
                             if subtype == "dashed_dashed":
@@ -1009,6 +1078,27 @@ class CR2LaneletConverter:
 
         return None
 
+    def _nodes_at(self, node_ids, vertices) -> bool:
+        """
+        Whether already created nodes lie where this lanelet's own boundary end vertices are.
+
+        Linked lanelets whose ends do not meet (loops, lanes widening at a joint, gaps in the source)
+        must not share nodes: sharing drags this lanelet's boundary end onto the other lanelet's and
+        folds its shape. Such a link is then not routable in Lanelet2, which needs shared end points.
+
+        :param node_ids: Left and right node ids.
+        :param vertices: The lanelet's own left and right end vertices.
+        :return: True if every node is within the shared node tolerance (metres, in x/y) of its vertex.
+        """
+        for node_id, vertex in zip(node_ids, vertices):
+            node = self.osm.nodes[node_id]
+            lat, lon = self.transformer.transform(self.origin_utm[0] + vertex[0], self.origin_utm[1] + vertex[1])
+            north = (float(node.lat) - lat) * METRES_PER_DEGREE
+            east = (float(node.lon) - lon) * METRES_PER_DEGREE * np.cos(np.radians(lat))
+            if np.hypot(north, east) > self._shared_node_tolerance:
+                return False
+        return True
+
     def _get_shared_first_nodes_from_other_lanelets(
         self, lanelet: Lanelet
     ) -> Tuple[Union[str, None], Union[str, None]]:
@@ -1019,16 +1109,17 @@ class CR2LaneletConverter:
         :param lanelet: Lanelet for which shared nodes should be found.
         :return: Id of first left and first right node if they exist.
         """
+        ends = (lanelet.left_vertices[0], lanelet.right_vertices[0])
         if lanelet.predecessor:
             for lanelet_id in lanelet.predecessor:
                 first_left_node, first_right_node = self.last_nodes.get(lanelet_id, (None, None))
-                if first_left_node:
+                if first_left_node and self._nodes_at((first_left_node, first_right_node), ends):
                     return first_left_node, first_right_node
             for pred_id in lanelet.predecessor:
                 pred = self.lanelet_network.find_lanelet_by_id(pred_id)
                 for succ_id in pred.successor:
                     first_left_node, first_right_node = self.first_nodes.get(succ_id, (None, None))
-                    if first_left_node:
+                    if first_left_node and self._nodes_at((first_left_node, first_right_node), ends):
                         return first_left_node, first_right_node
         return None, None
 
@@ -1042,16 +1133,17 @@ class CR2LaneletConverter:
         :param lanelet: Lanelet for which shared nodes should be found.
         :return: Id of last left and last right node if they exist.
         """
+        ends = (lanelet.left_vertices[-1], lanelet.right_vertices[-1])
         if lanelet.successor:
             for lanelet_id in lanelet.successor:
                 last_left_node, last_right_node = self.first_nodes.get(lanelet_id, (None, None))
-                if last_left_node:
+                if last_left_node and self._nodes_at((last_left_node, last_right_node), ends):
                     return last_left_node, last_right_node
             for succ_id in lanelet.successor:
                 succ = self.lanelet_network.find_lanelet_by_id(succ_id)
                 for pred_id in succ.predecessor:
                     last_left_node, last_right_node = self.last_nodes.get(pred_id, (None, None))
-                    if last_left_node:
+                    if last_left_node and self._nodes_at((last_left_node, last_right_node), ends):
                         return last_left_node, last_right_node
 
         return None, None
@@ -1073,6 +1165,17 @@ class CR2LaneletConverter:
                         list(sign.traffic_sign_elements)[0].traffic_sign_element_id.name
                         == "MAX_SPEED"
                     ):
+                        if not sign.traffic_sign_elements[0].additional_values:
+                            record(
+                                "missing_attribute",
+                                "signal.value",
+                                getattr(sign, "opendrive_id", None),
+                                None,
+                                "speed_limit_skipped",
+                                "speed sign %s has no value - no speed limit written",
+                                getattr(sign, "opendrive_id", None),
+                            )
+                            continue
                         # found a max speed sign, create a reg. element
                         speed_sign_id = self.id_count
                         speed_sign_ids.append(speed_sign_id)

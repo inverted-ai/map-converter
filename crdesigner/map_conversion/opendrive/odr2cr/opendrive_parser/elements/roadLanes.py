@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, List, Optional, Union
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.road_record import (
     RoadRecord,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import record, translate
 
 if TYPE_CHECKING:
     from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import Road
@@ -233,8 +234,17 @@ class Lane:
 
     @type.setter
     def type(self, value):
+        value = translate("lane.type", value, getattr(self._parent_road, "id", None))
         if value not in self.laneTypes:
-            raise Exception()
+            road_id = getattr(self._parent_road, "id", None)
+            record(
+                "unknown_value" if value is not None else "missing_attribute", "lane.type", road_id, value, "defaulted",
+                "road %s lane %s: lane type %r not recognised - lane type none",
+                road_id,
+                getattr(self, "_id", None),
+                value,
+            )
+            value = "none"
 
         self._type = str(value)
 
@@ -602,7 +612,7 @@ class RoadMark:
 
     @type.setter
     def type(self, value):
-        self._type = str(value)
+        self._type = str(translate("roadMark.type", value))
 
     @property
     def weight(self) -> str:
@@ -625,7 +635,7 @@ class RoadMark:
                 "RoadMark::weight: Parser could not find value for road_mark.weight, standard is used per default."
             )
             value = "standard"
-        self._weight = str(value)
+        self._weight = str(translate("roadMark.weight", value))
 
     @property
     def color(self) -> str:

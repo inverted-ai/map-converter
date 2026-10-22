@@ -1,0 +1,48 @@
+# The converter's default vocabulary dictionary (vocabulary.py): names an OpenDRIVE file may use, per element
+# attribute, translated into names the converter understands. Used unless convert_map.py gets vocabulary=<file>;
+# to extend it, copy this file, add entries and pass the copy. Every place a translation applies is recorded in
+# <map>_conversion_report.json (kind "translated") and shown in the AutoCritic report.
+translations:
+  object.type:
+    "-1": none
+    parking: parkingSpace
+    stopline: roadMark
+    Pole: pole
+  signal.country:
+    # ASAM OpenDRIVE's own sign catalogue (built on the German one); 1948 corpus signals from five exporters.
+    OpenDRIVE: DEU
+
+signals:
+  # A signal marked dynamic is a traffic light only if its type matches one of these codes (in full); others are
+  # read as static signs. In the corpus every real light has a type 1000001-1002101; one exporter marks 537 static
+  # signs (US codes r1, r2 or -1) dynamic.
+  traffic_light_types: ["100\\d{4}"]
+  # Lights with these types make no vehicle stoplines: pedestrian (1000002), bicycle (1000007) and pedestrian and
+  # bicycle (1000013) lights. An empty list converts every light.
+  non_vehicle_light_types: ["1000002", "1000007", "1000013"]
+  # A sign with no country whose code (TYPE-SUBTYPE or TYPE, any case) is listed is read with that country's sign
+  # table. MUTCD R1-1 is STOP; CommonRoad's US table has no YIELD, and other US codes (R2-1 speed limits without a
+  # value) broke routing when read with the US table, so only R1-1 is listed.
+  countries_by_code:
+    USA: ["R1-1"]
+  # A <validity> naming only lane 0 (fromLane="0" toLane="0") names no lane: lane 0 is the reference line. 546
+  # corpus signals have only this validity.
+  lane_zero_validity_means_none: true
+  # A sign whose country has no CommonRoad sign table is read with this one (ZAM: CommonRoad's generic table).
+  unknown_country_table: ZAM
+  # Sign types read as another type of the same country's table (German 252 as 260).
+  sign_type_replacements:
+    DEU: {"252": "260"}
+    ZAM: {"252": "260"}
+
+markings:
+  # Objects with these names are painted STOP / yield markings: each becomes a stop or yield stopline (CARLA names).
+  stop_stencils: [Stencil_STOP]
+  yield_stencils: [Stencil_GiveWay, Stencil_Yield_Triangles]
+  # Painted stop lines: listed in the reports, never converted. Names are regular expressions (full match, any
+  # case); object types compare in lower case. Corpus encodings: objects named StopLine (CARLA, one other
+  # exporter), objects of type stopline (one map, 222), signals named StopLine (one exporter, 114), signal type 294.
+  painted_stop_lines:
+    names: ["stop_?line"]
+    object_types: [stopline]
+    signal_types: ["294"]

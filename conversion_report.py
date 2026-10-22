@@ -1,0 +1,249 @@
+"""Collect the converter's degradation records and write ``<map>_conversion_report.json``.
+
+Vendored code reports every input it cannot use as written through
+``logging.getLogger("crdesigner.degradation")`` with
+``extra={"kind", "element", "id", "value", "action"}``:
+
+- ``kind``: what was wrong, e.g. ``unknown_value``, ``missing_attribute``, ``decimal_comma``,
+  ``unparseable_number``, ``degenerate_geometry``, ``unknown_reference``; ``heuristic`` when a
+  :mod:`conversion_heuristics` rule detected the situation it fixes (``element`` is its id,
+  ``value`` its name; these records also carry ``applied`` and ``location``, local ``[x, y]``);
+  ``not_converted`` for an element listed but deliberately not converted (painted stop lines);
+  ``geometry`` for a lane-bound repair or a suspicious planView shape (:mod:`lanelet_bounds`: ``bound_loop_cut``,
+  ``sharp_kink``). Records that know where they apply carry ``location``, local ``[x, y]``.
+- ``element``: ``<tag>`` when the whole element was dropped (``action="dropped"``), else
+  ``<tag>.<attribute>``.
+- ``id``: the enclosing road, signal, object or junction id, when known.
+- ``value``: the offending value (or a count, for aggregated records).
+- ``action``: what the converter did instead, e.g. ``dropped``, ``defaulted``, ``read_as_<name>`` (a vocabulary translation, ``kind="translated"``).
+"""
+
+from __future__ import annotations
+
+import collections
+import dataclasses
+import json
+import logging
+import os
+from typing import Any, Optional, Sequence
+
+from lxml import etree
+
+from conversion_common import MapRejected
+
+DEGRADATION_LOGGER = "crdesigner.degradation"
+UNRECOGNISED_KINDS = ("unknown_value",)
+MAX_IDS_PER_TOKEN = 20
+COUNTED_TAGS = (
+    "road",
+    "geometry",
+    "elevation",
+    "superelevation",
+    "crossfall",
+    "shape",
+    "laneOffset",
+    "laneSection",
+    "lane",
+    "width",
+    "border",
+    "roadMark",
+    "speed",
+    "access",
+    "object",
+    "signal",
+    "signalReference",
+    "junction",
+    "connection",
+)
+
+
+def record_location(*, location: Optional[Sequence[float]]) -> Optional[list[float]]:
+    """A record's ``location``: x, y in the local frame, rounded to 1 cm, or None."""
+    return None if location is None else [round(float(v), 2) for v in location[:2]]
+
+
+def heuristic_number(key: str) -> int:
+    """Sort key of a heuristic id: ``H10`` after ``H9``."""
+    return int(key.removeprefix("H"))
+
+
+class ConversionReport(logging.Handler):
+    """A logging handler that keeps every degradation record of one conversion."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.records: list[dict[str, Any]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        entry = {
+            "kind": getattr(record, "kind", None),
+            "element": getattr(record, "element", None),
+            "id": _jsonable(value=getattr(record, "id", None)),
+            "value": _jsonable(value=getattr(record, "value", None)),
+            "action": getattr(record, "action", None),
+            "message": record.getMessage(),
+        }
+        if entry["kind"] == "heuristic":
+            entry["applied"] = getattr(record, "applied", True)
+            entry["location"] = getattr(record, "location", None)
+        elif getattr(record, "location", None) is not None:
+            entry["location"] = record.location
+        self.records.append(entry)
+
+    def summary(self, *, elements_seen: dict[str, int]) -> dict[str, Any]:
+        """Element counts, unrecognised tokens, the heuristics applied and not applied, and record counts by kind."""
+        dropped: collections.Counter = collections.Counter()
+        degraded: collections.Counter = collections.Counter()
+        for r in self.records:
+            element = r["element"] or ""
+            if r["action"] == "dropped" and "." not in element:
+                dropped[element] += 1
+            else:
+                degraded[element.split(".")[0]] += 1
+        tags = sorted(set(elements_seen) | set(dropped) | set(degraded))
+        elements = {
+            tag: {
+                "seen": elements_seen.get(tag),
+                "converted": None if tag not in elements_seen else elements_seen[tag] - dropped[tag],
+                "degraded": degraded[tag],
+                "dropped": dropped[tag],
+            }
+            for tag in tags
+        }
+        tokens: dict[tuple, dict[str, Any]] = {}
+        for r in self.records:
+            if r["kind"] not in UNRECOGNISED_KINDS:
+                continue
+            entry = tokens.setdefault(
+                (r["element"], str(r["value"])), {"element": r["element"], "value": r["value"], "count": 0, "ids": []}
+            )
+            entry["count"] += 1
+            if r["id"] is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
+                entry["ids"].append(r["id"])
+        heuristics: dict[bool, dict[str, dict[str, Any]]] = {True: {}, False: {}}
+        for r in self.records:
+            if r["kind"] != "heuristic":
+                continue
+            entry = heuristics[r["applied"]].setdefault(r["element"], {"name": r["value"], "count": 0, "ids": []})
+            entry["count"] += 1
+            if r["id"] is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
+                entry["ids"].append(r["id"])
+        return {
+            "elements": elements,
+            "unrecognised_tokens": sorted(tokens.values(), key=lambda t: (-t["count"], str(t["element"]))),
+            "heuristics": dict(sorted(heuristics[True].items(), key=lambda item: heuristic_number(item[0]))),
+            "heuristics_not_applied": dict(
+                sorted(heuristics[False].items(), key=lambda item: heuristic_number(item[0]))
+            ),
+            "records_by_kind": dict(sorted(collections.Counter(str(r["kind"]) for r in self.records).items())),
+        }
+
+    def write(
+        self,
+        *,
+        path: str,
+        xodr_path: str,
+        error: Optional[BaseException] = None,
+        validation: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Write the report for ``xodr_path``.
+
+        Args:
+            path: Where to write it.
+            xodr_path: The converted input.
+            error: The exception that ended the run, if any; :class:`MapRejected` makes the
+                outcome ``rejected`` (AutoCritic failed the map), any other ``failed``.
+            validation: The validation verdict (as a dict), for a run that got that far.
+
+        Returns:
+            Absolute path of the written file.
+        """
+        scanned = scan_input(xodr_path=xodr_path)
+        report = {
+            "input": os.path.abspath(xodr_path),
+            "outcome": "ok" if error is None else "rejected" if isinstance(error, MapRejected) else "failed",
+            "error": None if error is None else {"type": type(error).__name__, "message": str(error)},
+            "validation": validation,
+            **self.summary(elements_seen=scanned.counts),
+            "user_data": scanned.user_data,
+            "records": self.records,
+        }
+        path = os.path.abspath(path)
+        with open(path, "w") as f:
+            json.dump(report, f, indent=2)
+        return path
+
+
+class FirstOccurrenceFilter(logging.Filter):
+    """Pass each (kind, element, value) degradation once; the report keeps every occurrence."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: set[tuple] = set()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        key = (getattr(record, "kind", None), getattr(record, "element", None), str(getattr(record, "value", None)))
+        if key in self._seen:
+            return False
+        self._seen.add(key)
+        return True
+
+
+@dataclasses.dataclass(slots=True)
+class InputScan:
+    """What one pass over the input finds.
+
+    Attributes:
+        counts: How many of each :data:`COUNTED_TAGS` element the file holds.
+        user_data: Per (parent element, ``code``) of its ``<userData>`` blocks: ``element``, ``code``, ``count``
+            and the first :data:`MAX_IDS_PER_TOKEN` parent ids, most frequent first. The converter reads none of
+            them except the signal ``vectorSignal`` ids; this lists what a source carries.
+    """
+
+    counts: dict[str, int]
+    user_data: list[dict[str, Any]]
+
+
+def scan_input(*, xodr_path: str) -> InputScan:
+    """Count the :data:`COUNTED_TAGS` elements and summarise the ``<userData>`` blocks (namespaces ignored)."""
+    counts: collections.Counter = collections.Counter()
+    user_data: dict[tuple[str, Optional[str]], dict[str, Any]] = {}
+    try:
+        for _, elem in etree.iterparse(xodr_path, events=("end",), huge_tree=True):
+            tag = etree.QName(elem).localname if isinstance(elem.tag, str) else None
+            if tag in COUNTED_TAGS:
+                counts[tag] += 1
+            if tag == "userData":
+                parent = elem.getparent()
+                parent_tag = etree.QName(parent).localname if parent is not None else None
+                entry = user_data.setdefault(
+                    (parent_tag, elem.get("code")), {"element": parent_tag, "code": elem.get("code"), "count": 0, "ids": []}
+                )
+                entry["count"] += 1
+                parent_id = None if parent is None else parent.get("id")
+                if parent_id is not None and len(entry["ids"]) < MAX_IDS_PER_TOKEN:
+                    entry["ids"].append(parent_id)
+            if tag == "road":
+                elem.clear()  # roads hold almost every counted element; keep memory flat
+    except etree.XMLSyntaxError:
+        return InputScan(counts={}, user_data=[])
+    return InputScan(
+        counts={tag: counts[tag] for tag in COUNTED_TAGS if counts[tag]},
+        user_data=sorted(user_data.values(), key=lambda u: (-u["count"], str(u["element"]), str(u["code"]))),
+    )
+
+
+def attach() -> ConversionReport:
+    """Start collecting ``crdesigner.degradation`` records."""
+    handler = ConversionReport()
+    logging.getLogger(DEGRADATION_LOGGER).addHandler(handler)
+    return handler
+
+
+def detach(*, handler: ConversionReport) -> None:
+    """Stop collecting into ``handler``."""
+    logging.getLogger(DEGRADATION_LOGGER).removeHandler(handler)
+
+
+def _jsonable(*, value: Any) -> Any:
+    return value if value is None or isinstance(value, (bool, int, float, str)) else str(value)

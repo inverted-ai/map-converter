@@ -1,5 +1,5 @@
 import copy
-from collections import deque, defaultdict
+from collections import deque
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import iso3166
@@ -63,6 +63,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.opendr
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.road import (
     Road,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser import vocabulary
 
 
 def get_all_adjacent_lanelets(lanelet_network, incoming_lanelet_id):
@@ -181,6 +182,18 @@ def convert_to_base_lanelet_network(lanelet_network: ConversionLaneletNetwork) -
     return network
 
 
+def left_bound_on_right(lanelet) -> bool:
+    """IAI: whether the lanelet's left bound lies on the right of its direction (its outline, left bound forward
+    and right bound back, runs counter-clockwise).
+
+    :param lanelet: The lanelet to check.
+    :return: True if the left and right bounds are on the wrong sides.
+    """
+    ring = np.vstack((lanelet.left_vertices[:, :2], lanelet.right_vertices[::-1, :2]))
+    x, y = ring[:, 0], ring[:, 1]
+    return float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)) > 0
+
+
 class Network:
     """Represents a network of parametric lanes, with a LinkIndex
     which stores the neighbor relations between the parametric lanes.
@@ -206,7 +219,7 @@ class Network:
 
         :param value: Nae of location as a string.
         """
-        value = value.upper()
+        value = (value or "").upper()
         if value in iso3166.countries_by_name:
             self._country_ID = iso3166.countries_by_name[value].alpha3
         elif value in iso3166.countries_by_alpha2:
@@ -229,8 +242,6 @@ class Network:
 
         self._geo_ref = opendrive.header.geo_reference
         self._offset = opendrive.header.offset
-
-        light_stoplines = defaultdict(list)
 
         # Get country ID form signal data in openDrive and set it as attribute of the network object
         self.assign_country_id(Network.get_country_id_from_opendrive(opendrive.roads))
@@ -265,7 +276,7 @@ class Network:
             # stop lines from road objects
             self._stop_lines_from_road(road)
 
-            reference_border.elevations = road.elevationProfile.elevations
+            reference_border.elevations = road.elevation_profile.elevations
 
             # A lane section is the smallest part that can be converted at once
             for lane_section in road.lanes.lane_sections:
@@ -280,11 +291,6 @@ class Network:
 
                 self._planes.extend(parametric_lane_groups)
 
-                for plane_group in parametric_lane_groups:
-                    if hasattr(plane_group, 'stoplines'):
-                        for stopline in plane_group.stoplines:
-                            light_stoplines[stopline[0]].append(stopline[1:])
-
                 for intersection in self._link_index.intersection_maps():
                     incomings_to_remove = []
                     for incoming_lane_id, successors in intersection.items():
@@ -295,10 +301,6 @@ class Network:
                                 incomings_to_remove.append(incoming_lane_id)
                     for incoming in incomings_to_remove:
                         del intersection[incoming]
-
-            # stop lines from traffic signals (legacy)
-            stop_lines_final = []
-            traffic_lights, traffic_signs, stop_lines = get_traffic_signals(road)
 
     def _extract_road_speed_limit(self, road: Road):
         """
@@ -391,29 +393,18 @@ class Network:
                 stop_line = StopLine(position_1, position_2, LineMarking.SOLID)
                 self._stop_lines.append(stop_line)
 
-                stop_sign_names = [
-                    'Stencil_STOP',
-                ]
-                yield_sign_names = [
-                    'Stencil_Yield_Triangles',
-                ]
-
-                if road_object.name in stop_sign_names + yield_sign_names:
-                    xy, orientation, _, _ = road.planView.calc(road_object.s, compute_curvature=False)
-                    xy = xy + road_object.t * np.array([- np.sin(orientation), np.cos(orientation)])
-                    if road_object.orientation == "+":
-                        orientation = orientation + np.pi
-                    stopline = (xy, orientation, road_object.validLength, road_object.width, road_object.id)
-                    if road_object.name in stop_sign_names:
-                        self._iai_stop_signs.append(stopline)
-                    elif road_object.name in yield_sign_names:
-                        self._iai_yield_signs.append(stopline)
-                    else:
-                        assert False
-
-        for traffic_light in self._traffic_lights:
-            if hasattr(traffic_light, 'opendrive_id'):
-                traffic_light.iai_stoplines = light_stoplines[traffic_light.opendrive_id]
+            if road_object.name in vocabulary.STOP_STENCIL_NAMES + vocabulary.YIELD_STENCIL_NAMES:
+                xy, orientation, _, _ = road.plan_view.calc(road_object.s, compute_curvature=False)
+                xy = xy + road_object.t * np.array([- np.sin(orientation), np.cos(orientation)])
+                if road_object.orientation == "+":
+                    orientation = orientation + np.pi
+                stopline = (xy, orientation, road_object.validLength, road_object.width, road_object.id)
+                if road_object.name in vocabulary.STOP_STENCIL_NAMES:
+                    self._iai_stop_signs.append(stopline)
+                elif road_object.name in vocabulary.YIELD_STENCIL_NAMES:
+                    self._iai_yield_signs.append(stopline)
+                else:
+                    assert False
 
     def export_lanelet_network(
         self, transformer: Optional[Transformer], filter_types: Optional[List[str]] = None
@@ -458,6 +449,16 @@ class Network:
         # Perform lane splits and joins
         lanelet_network.join_and_split_possible_lanes()
 
+        # IAI: lanelets are built with the inner border as left bound, which is mostly the right of the driving
+        # direction in left-hand traffic (their neighbours are already mirrored there)
+        for lanelet in lanelet_network.lanelets:
+            if lanelet.parametric_lane_group.driving_direction is False and left_bound_on_right(lanelet):
+                lanelet.left_vertices, lanelet.right_vertices = lanelet.right_vertices, lanelet.left_vertices
+                lanelet.line_marking_left_vertices, lanelet.line_marking_right_vertices = (
+                    lanelet.line_marking_right_vertices,
+                    lanelet.line_marking_left_vertices,
+                )
+
         lanelet_network.convert_all_lanelet_ids()
         self._link_index.update_intersection_lane_id(lanelet_network.old_lanelet_ids())
         # self.traffic_signal_elements.update_traffic_signs_map_lane_id(lanelet_network.old_lanelet_ids())
@@ -491,11 +492,6 @@ class Network:
             ]:
                 for x in xs:
                     x.position = np.array(transformer.transform(*x.position))
-                    if hasattr(x, 'iai_stoplines'):
-                        x.iai_stoplines = [
-                            (np.array(transformer.transform(*left)), np.array(transformer.transform(*right)))
-                            for left, right in x.iai_stoplines
-                        ]
 
             for x in self._stop_lines:
                 x.start = np.array(transformer.transform(*x.start))

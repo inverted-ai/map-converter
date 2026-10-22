@@ -125,3 +125,15 @@ ENV/
 /tests/map_conversion/test_maps/osm/ped_crossing.osm.xodr
 /tutorials/conversion_examples/example_files/osm/test_ped_crossing.xml
 /tutorials/conversion_examples/example_files/opendrive/ZAM_Over-1_1.odr
+/maps/
+/xodr_output/
+/carla_xodr_path/
+/_private/
+
+# Files written by the upstream test suite
+/tests/common/CHN_Merging-1.xml
+/tests/common/scenario.xml
+/tests/common/function_repaired_scenario.xml
+/tests/common/writer_repaired_scenario.xml
+/tutorials/conversion_examples/example_files/
+/tutorials/conversion_examples/error_visualization_images/

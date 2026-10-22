@@ -1,4 +1,5 @@
 import copy
+import logging
 import math
 import warnings
 from typing import List, Optional, Tuple
@@ -14,6 +15,7 @@ from crdesigner.map_conversion.opendrive.odr2cr.opendrive_conversion.plane_eleme
 from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.elements.roadLanes import (
     RoadMark,
 )
+from crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.vocabulary import ALLOWED, record
 
 
 def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
@@ -23,6 +25,12 @@ def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
     :return: corresponding linemarking type
     """
     mark = LineMarking.UNKNOWN
+
+    if plane_line_marking.type in ("solid", "broken") and plane_line_marking.weight not in ALLOWED["roadMark.weight"]:
+        record(
+            "unknown_value", "roadMark.weight", None, plane_line_marking.weight, "unknown_marking",
+            "road mark weight %r has no CommonRoad line marking - unknown", plane_line_marking.weight,
+        )
 
     if plane_line_marking.type == "solid":
         if plane_line_marking.weight == "standard":
@@ -48,11 +56,18 @@ def convert_line_marking(plane_line_marking: RoadMark) -> LineMarking:
     elif plane_line_marking.type == "none":
         mark = LineMarking.NO_MARKING
 
-    elif plane_line_marking.type == "solid dashed":
+    # ASAM names "solid broken" / "broken solid"; the "dashed" spellings are kept as aliases
+    elif plane_line_marking.type in ("solid broken", "solid dashed"):
         mark = LineMarking.SOLID_DASHED
 
-    elif plane_line_marking.type == "dashed solid":
+    elif plane_line_marking.type in ("broken solid", "dashed solid"):
         mark = LineMarking.DASHED_SOLID
+
+    elif plane_line_marking.type != "unknown":  # "unknown" is ParametricLaneGroup's placeholder, not input
+        record(
+            "unknown_value", "roadMark.type", None, plane_line_marking.type, "unknown_marking",
+            "road mark type %r has no CommonRoad line marking - unknown", plane_line_marking.type,
+        )
 
     return mark
 
@@ -316,6 +331,25 @@ class ParametricLaneGroup:
         :param compute_curvature: Whether to computer curvature. Default is True.
         :return: Cartesian coordinates of point on inner border and tangential direction.
         """
+        plane_idx = self._plane_index(s_pos)
+        return self.parametric_lanes[plane_idx].calc_border(
+            border,
+            s_pos - self._geo_lengths[plane_idx],
+            width_offset,
+            compute_curvature=compute_curvature,
+        )
+
+    def calc_elevation(self, s_pos: float) -> float:
+        """Calc the road elevation at position s_pos of the lane group.
+
+        :param s_pos: Position of parameter ds, as in calc_border.
+        :return: Elevation in metres.
+        """
+        plane_idx = self._plane_index(s_pos)
+        return self.parametric_lanes[plane_idx].calc_elevation(s_pos - self._geo_lengths[plane_idx])
+
+    def _plane_index(self, s_pos: float) -> int:
+        """Index of the parametric lane which is at s_pos."""
         try:
             # get index of geometry which is at s_pos
             mask = self._geo_lengths > s_pos
@@ -330,13 +364,7 @@ class ParametricLaneGroup:
                     f"Tried to calculate a position outside of the borders of the reference path at s={s_pos}"
                     f", but path has only length of l={self._geo_lengths[-1]}"
                 )
-
-        return self.parametric_lanes[plane_idx].calc_border(
-            border,
-            s_pos - self._geo_lengths[plane_idx],
-            width_offset,
-            compute_curvature=compute_curvature,
-        )
+        return plane_idx
 
     def to_lanelet_with_mirroring(
         self,
@@ -370,6 +398,7 @@ class ParametricLaneGroup:
         last_width_difference = 0
         poses = self._calc_border_positions(precision)
         distance_slope = (global_distance[1] - global_distance[0]) / self.length
+        vertex_poses = []  # poses that produced a vertex (none inside the interval without a mirror border)
         for pos in poses:
             inner_pos = self.calc_border("inner", pos)[0]
             outer_pos = self.calc_border("outer", pos)[0]
@@ -467,10 +496,13 @@ class ParametricLaneGroup:
                         right_vertices.append(transformer.transform(outer_pos[0], outer_pos[1]))
                     else:
                         right_vertices.append(outer_pos)
+            if len(left_vertices) > len(vertex_poses):
+                vertex_poses.append(pos)
 
+        elevations = np.array([self.calc_elevation(pos) for pos in vertex_poses]).reshape(-1, 1)
         left_vertices, right_vertices = (
-            np.array(left_vertices),
-            np.array(right_vertices),
+            np.hstack([np.array(left_vertices).reshape(-1, 2), elevations]),
+            np.hstack([np.array(right_vertices).reshape(-1, 2), elevations]),
         )
         # right_vertices = np.array(right_vertices)
 

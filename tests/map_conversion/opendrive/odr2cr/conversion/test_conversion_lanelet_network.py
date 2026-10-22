@@ -1270,14 +1270,14 @@ class TestJointSplitTarget(unittest.TestCase):
         np.testing.assert_almost_equal(
             true_new_lanelet.left_vertices,
             np.array(
-                [transformer.transform(vert[0], vert[1]) for vert in lanelet.left_vertices.tolist()]
+                [(*transformer.transform(vert[0], vert[1]), vert[2]) for vert in lanelet.left_vertices.tolist()]
             ),
         )
         np.testing.assert_almost_equal(
             true_new_lanelet.center_vertices,
             np.array(
                 [
-                    transformer.transform(vert[0], vert[1])
+                    (*transformer.transform(vert[0], vert[1]), vert[2])
                     for vert in lanelet.center_vertices.tolist()
                 ]
             ),
@@ -1286,7 +1286,7 @@ class TestJointSplitTarget(unittest.TestCase):
             true_new_lanelet.right_vertices,
             np.array(
                 [
-                    transformer.transform(vert[0], vert[1])
+                    (*transformer.transform(vert[0], vert[1]), vert[2])
                     for vert in lanelet.right_vertices.tolist()
                 ]
             ),
@@ -1304,14 +1304,14 @@ class TestJointSplitTarget(unittest.TestCase):
         np.testing.assert_almost_equal(
             true_new_lanelet.left_vertices,
             np.array(
-                [transformer.transform(vert[0], vert[1]) for vert in lanelet.left_vertices.tolist()]
+                [(*transformer.transform(vert[0], vert[1]), vert[2]) for vert in lanelet.left_vertices.tolist()]
             ),
         )
         np.testing.assert_almost_equal(
             true_new_lanelet.center_vertices,
             np.array(
                 [
-                    transformer.transform(vert[0], vert[1])
+                    (*transformer.transform(vert[0], vert[1]), vert[2])
                     for vert in lanelet.center_vertices.tolist()
                 ]
             ),
@@ -1320,7 +1320,7 @@ class TestJointSplitTarget(unittest.TestCase):
             true_new_lanelet.right_vertices,
             np.array(
                 [
-                    transformer.transform(vert[0], vert[1])
+                    (*transformer.transform(vert[0], vert[1]), vert[2])
                     for vert in lanelet.right_vertices.tolist()
                 ]
             ),

@@ -171,10 +171,15 @@ class TestRoadLanes(unittest.TestCase):
         for lane_type in types:
             lane1.type = lane_type
             self.assertEqual(lane_type, lane1.type)
-        with self.assertRaises(Exception):
-            lane2.type = "test_wrong_type"
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
+            lane2.type = 'test_wrong_type'
+        self.assertEqual('none', lane2.type)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             lane2.type = 2
+        self.assertEqual('none', lane2.type)
+        with self.assertLogs("crdesigner.degradation", level="WARNING"):
             lane2.type = None
+        self.assertEqual('none', lane2.type)
         lane1.level = levels[0]
         self.assertEqual(True, lane1.level)
         lane1.level = levels[1]

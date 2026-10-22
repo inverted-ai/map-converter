@@ -114,6 +114,9 @@ class Border:
 
     def calc_elevation(self, s_pos) -> float:
         if self.elevations is None:
+            # Lane borders inherit the road's elevation through the same reference chain as their position.
+            if isinstance(self.reference, Border):
+                return self.reference.calc_elevation(self.ref_offset + s_pos)
             return 0.0
         selected_elevation = None
         for elevation in self.elevations:

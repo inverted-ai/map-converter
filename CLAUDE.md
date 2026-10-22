@@ -1,0 +1,93 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Cascade declarations (required by `~/.claude/CLAUDE.md` §1)
+
+- **Purpose:** Converter that turns OpenDRIVE (`.xodr`) maps into the artifact set TorchDriveSim / the Inverted AI API consumes: a Lanelet2 `.osm`, a stoplines JSON, a road-mesh JSON, a `metadata.json` (`MapConfig`), and a top-down `visualization.png`, plus tools for traffic-light FSMs and for measuring conversions.
+- **Audience:** Public tool (`inverted-ai/map-converter` is a public repo). Customers clone it, install `requirements.txt` into a venv and run the scripts from the clone. It is never pip-installed or packaged.
+- **Primary language:** Python (3.10–3.13). Linux x86_64 only.
+- **BC stance:** §6 applies to the IAI surface: the `convert_map.py` command line and `MapConversionConfig` fields, the other root tools' command lines, and the output files and their schemas (`.osm`, `_stoplines.json`, `_mesh.json`, `metadata.json`, and the sidecar JSONs). `metadata.json` must stay loadable by torchdrivesim's `MapConfig(**json)`, which rejects unknown keys — new outputs go in sidecar files. Everything under `crdesigner/` is vendored upstream and is not our public API.
+- **Public-repo rule:** customer names and customer map data never enter a commit. Test fixtures are synthetic XODR built with `tests/iai/xodr_builder.py`; code and comments stay vendor-neutral.
+- **Overrides of global rules:**
+  - **§5 OICO / consolidation:** Do not refactor or de-duplicate inside `crdesigner/` to make it tidier. That directory is a near-verbatim snapshot of upstream — refactors there cost us on the next merge from upstream. OICO applies normally to repo-root scripts and any new IAI-specific files.
+  - **§3 style / §4 keyword-args:** Match upstream style inside `crdesigner/` even where it conflicts with the global PEP8 / keyword-only conventions. Apply the global style rules to repo-root IAI scripts only.
+  - **§7 TDD:** IAI tests live in `tests/iai/`. Tests that convert a map run `convert_map.py` in a subprocess, because crdesigner's config objects are process-global.
+
+## Repo shape
+
+This repo is a fork of [CommonRoad Scenario Designer](https://github.com/CommonRoad/commonroad-scenario-designer) v0.8.5. Most code is vendored upstream; the IAI-specific surface is the repo-root scripts.
+
+- `convert_map.py` — **the IAI entry point.** OpenDRIVE → CommonRoad → Lanelet2 → TorchDriveSim artifacts. See "Conversion pipeline" below.
+- `traffic_light_fsm.py`, `fsm_visualization.py` — traffic-light FSM generation and review rendering from a converted map. Basic grouping is what the XODR declares; H11-H13 (distance clusters, axis split, topology refinement) are AutoFix heuristics, taken from the map's `<map>_provenance.json` unless `--autofix`/`--no-autofix` overrides.
+- `opendrive_signal_groups.py` — reads the XODR's junction membership and controllers into `<map>_signal_groups.json` (called by `convert_map.py`; also a CLI).
+- `map_report.py`, `map_quality.py` — batch conversion report / comparison, and the quality metrics it records.
+- `conversion_common.py` — dependency-free helpers both `convert_map.py` and `map_report.py` use (file sha256, git identity, the refusal exit code 3, the rejection exit code 4 and `MapRejected`).
+- `map_validation.py` — the validation stage: `PROFILES` (`perfect`, the default, and `strict`) of `ValidationConfig` thresholds, `evaluate` over `map_quality` metrics plus `ControlCoverage` (per-light and per-sign stoplines, counted by `traffic_controls.control_stoplines` because the `.osm` has no OpenDRIVE ids), and `run_map_verifier` (CommonRoad `MapVerifier`, report-only, off by default, in a spawned child process group killed at `verifier_timeout_s`).
+- `traffic_controls.py` — stopline rows for traffic lights and stop/yield signs (bound by `<validity>` on the signal or its `<signalReference>`s; lane-entry placement computed with the vendored parametric-lane calls; one stop position per approach lane: where its control nearest the junction stands, a connecting-road control's being the entry of the straightest connecting lane through the junction's `<connection>` lane links; one row per signal and position, one per position with H15; no stop/yield row on a lane a light stops, H16) and their `ControlCoverage`; lists painted stop lines in the conversion report.
+- `conversion_heuristics.py` — **every guess about the XODR author's intent** (H3-H7, H10-H16: id, name = `HeuristicsConfig` entry, docstring with assumption / evidence / what breaks it), configured as `autofix.heuristics.<name>.<setting>=` (`autofix.enabled=false` switches all off: BasicConversion). Each rule function only detects; every detection is a `kind="heuristic"` record (`record`) with `applied` and a local `location`, and the call site acts only when it is applied. New guesses go here, not as special cases elsewhere.
+- `autocritic_report.py` — `<map>_autocritic.json` / self-contained `.html`: first a "Map" section (the converted road surface, lanelet bounds and stoplines by type, beside the raw `.xodr` in the same frame), then numbered AutoFix, would-have-fixed and failing-check items with a birdview and close-ups per section, stoplines drawn on both (`ReportConfig` = `report.*`); written by `convert_map` before a rejection withholds the outputs.
+- `xodr_view.py` — the raw `.xodr` read by CARLA's OpenDRIVE reader (optional `carla` package, offline, in a child process because its C++ can abort): lane outlines by type and signal positions in the file's frame, for the report's raw view. It shares no code with the vendored reader, so a difference between the two views is a reading or conversion error.
+- `lanelet_bounds.py` — lanelet bound geometry between the OpenDRIVE export and the Lanelet2 writer, and the road mesh. Lanelet2's loader (`geometry::align`) judges each bound's direction from its middle vertex and inverts one it finds backwards; `cut_loops` removes lane-edge folds that turn against the lane (kept: turnarounds, ramps crossing over themselves), `align_safe` adds vertices on existing segments so the middle vertex reads correctly, `road_mesh` pairs each lanelet's bounds by fraction of length (torchdrivesim alternates vertices and spans false faces). Every change is a `kind="geometry"` record with a location. Also the bound simplification.
+- `vocabulary.py` — the vocabulary dictionary: loads and checks YAML translations (names the map uses → names the converter understands) and a `signals` section (traffic-light codes, codes read with a country's table, lane-0 validity: formerly H1/H8/H2), combines the base file (`vocabularies/default.yaml` or `vocabulary=`) with every vendor dictionary whose header `match` fits (`vocabularies/vendors/` or `vocabulary_vendors=`), installs the translations into the vendored reader; `convert_map.signal_corrections` and `traffic_controls` read the `signals` section. Applies in every mode.
+- `conversion_report.py` — the `logging.Handler` `convert_map` attaches to `crdesigner.degradation`; writes `<map>_conversion_report.json` (element counts, unrecognised tokens, every record), also for failed runs.
+- `prune_osm_deletes.py` — applies OSM-editor `action="delete"` markers (keeps the original as `<file>.orig`).
+- `package_map.py` — a converted map as the map service's upload ZIP, named and commented with the converter commit; refuses withheld outputs and an `.osm` over `MAP_SERVICE_MAX_OSM_MB` (30, also `osm_target_bytes`' default).
+- `convert_lanelet_to_opendrive.py` — reverse direction via CARLA's tools.
+- `crdesigner/` — **vendored** CommonRoad Scenario Designer. Treat as upstream.
+- `tests/` — upstream pytest suite (pytest + pytest-qt); `tests/iai/` — IAI tests and the synthetic XODR builder.
+- `maps/`, `xodr_output/`, `carla_xodr_path/`, `_private/` — local, git-ignored. Do not commit map data.
+
+## Common commands
+
+All commands: `PYTHONPATH` unset (a sourced ROS environment breaks pytest), the repo's venv python, absolute paths.
+
+- Setup: `python3 -m venv <repo>/.venv && <repo>/.venv/bin/pip install -r <repo>/requirements-tests.txt`. `requirements.txt` is the runtime manifest; `pyproject.toml` is upstream's poetry packaging and is left untouched (`tests/iai/test_requirements.py` keeps the two in step).
+- **Run a conversion:** `<repo>/.venv/bin/python <repo>/convert_map.py dir_path=<folder-with-single-.xodr>` (or `xodr_path=<file.xodr>`, outputs in `<file folder>/<stem>/`; `convert_map()` returns the `.osm` path). Other `MapConversionConfig` fields are OmegaConf dotlist args, optionally on top of a YAML file `config=<file.yaml>` (`load_config`: defaults < file < command line); see README.
+- **Batch report:** `<repo>/.venv/bin/python <repo>/map_report.py run --maps <dir> --out <dir> [--fsm] [--workers N --memory-budget-mb MB --cost-hints <earlier report.json>]`; `compare <a/report.json> <b/report.json> --out <dir>`.
+- Tests: `QT_QPA_PLATFORM=offscreen <repo>/.venv/bin/python -m pytest <repo>/tests` (set `IAI_MAPS_DIR` to a maps folder for the Town15 FSM tests). The upstream suite writes files into the tree; they are git-ignored.
+- Lint: `ruff check .` and `ruff format --check .`. Config in `pyproject.toml` (line-length 100, double quotes, rules `E4,E7,E9,I`). The ANTLR-generated parser at `crdesigner/verification_repairing/verification/hol/parser/gen/` is excluded — do not lint or reformat it.
+- GUI (upstream, not the IAI workflow): `python crdesigner/ui/gui/start_gui.py`. Requires system Qt libs and is rarely needed for IAI work.
+
+The upstream `crdesigner` CLI exists (`python -m crdesigner.ui.command_line --input-file ... odrcr`) but the IAI workflow uses `convert_map.py` because the upstream CLI does not emit the TorchDriveSim artifacts (mesh, stoplines JSON, MapConfig).
+
+## Conversion pipeline (`convert_map.py`)
+
+`convert_map()` calls one keyword-only stage function per step, in this order; each stage writes its own output:
+
+1. `validate_config` — check the config before anything is read (`ConfigError`, exit code 3 from the CLI) and return the `.xodr`: `cfg.xodr_path`, or the single one in `cfg.dir_path` (the filename, minus extension, becomes the map name). With `xodr_path`, `convert_map` points `dir_path` at `<xodr folder>/<stem>/` for the remaining stages.
+2. `parse_xodr` — `parse_opendrive` (`crdesigner.map_conversion.opendrive.odr2cr.opendrive_parser.parser`), then `parse_geo_reference` (pyproj; `tmerc` and `utm`) and the header `<offset>`, combined in one `CustomTransfomer` local frame; no geo-reference → origin (0, 0) with a warning; a present but unusable one raises `InputError` unless `allow_zero_origin`. Then `signal_corrections` (the vocabulary dictionary's `signals`: traffic-light codes, codes read with a country's table) and `signals_past_road_end` (H14; `InputError` when it is not applied) change the parsed signals.
+3. `export_osm` — `Network.load_opendrive` → `Network.export_lanelet_network` builds a CommonRoad lanelet network in the OpenDRIVE inertial frame (`filter_types`: `driving`, `onRamp`, `offRamp`, `exit`, `entry`); `lanelet_bounds` cuts lane-edge folds (`loop_free_bounds`) and records planView kinks over 90° (`record_sharp_kinks`), the bounds are simplified (`lanelet_bounds.simplify_lanelet_network`) and made readable by Lanelet2's loader as written (`align_safe_bounds`), then `CR2LaneletConverter` (`crdesigner/map_conversion/lanelet2/cr2lanelet.py`) with a `CustomTransfomer` wrapping a Lanelet2 `UtmProjector` and the H10 seam tolerance writes `<map>.osm`; `record_seam_gaps` records H10's detections.
+4. `trim` — if `trim_radius` is set, rewrite the `.osm` trimmed to a circle around `center` (and `trim_vertical_limits`).
+5. `extract_stoplines` — `traffic_controls.control_stoplines`: light rows from the lanes each light's validity binds (plus the dictionary's lane-0 reading and heuristics H3-H7), one per light and approach lane (one per approach lane with H15), `Network._iai_stop_signs` / `_iai_yield_signs` stencil rows, sign-signal rows (H6, on by default, within 30 m of a junction), trim-filtered → `<map>_stoplines.json`, with the coverage of lights and stop/yield signs; painted stop lines are listed in the conversion report; then `write_signal_groups` → `<map>_signal_groups.json` (with H15's `stopline_ids`).
+6. `build_mesh` — `lanelet_bounds.road_mesh` (torchdrivesim's road mesh, each lanelet's strip pairing its bounds by fraction of length) / `torchdrivesim.lanelet2.lanelet_map_to_lane_mesh` → `<map>_mesh.json`.
+7. `render_and_finish` — `MapConfig` → `metadata.json`; `visualization.png` via `torchdrivesim.rendering`; `write_provenance` → `<map>_provenance.json`.
+
+8. `map_validation.validate` — reloads the outputs (`map_quality.ConversionOutputs`), checks the metrics and control coverage under every profile (the verdict is `autocritic.preset`'s with `autocritic.thresholds`; the default preset `none` judges nothing; a failing preset makes `convert_map` delete the map outputs and raise `MapRejected`, exit code 4; `autocritic.enabled=false` skips the stage); conversion-time findings (`ConversionFindings`: linked gaps, dropped and far signals, painted stop lines, light codes marked static, lanes with several stop positions) are checks L10-L15 and, when `verifier_timeout_s` > 0, runs the map verifier on the exported CommonRoad network; the `Verdict` goes into the conversion report.
+
+Around stages 2–8, `convert_map` collects the `crdesigner.degradation` records (`conversion_report.attach`) and writes `<map>_conversion_report.json` whether the stages succeed or raise.
+
+Frame invariant: the vendored parser leaves road geometry in file coordinates; `CustomTransfomer.to_local` adds the header `<offset>` x/y shift (its `hdg` and `z` are ignored with a warning) and subtracts `GeoReference.translation` (the map centre for UTM and false-origin tmerc maps). The `.osm` (hence the mesh) and the stoplines both go through `to_local`, so they share one local frame.
+
+## Where the IAI seams live
+
+These are the names/files that diverge from upstream. Search for them when changing the OpenDRIVE → CommonRoad path:
+
+- The repo-root scripts — IAI-authored, not upstream.
+- `crdesigner/map_conversion/lanelet2/cr2lanelet.py` — small IAI tweaks (import / type-hint cleanup, the narrowed same-direction marking rule) and `_share_seam_nodes`, which merges coinciding predecessor/successor end nodes so routing sees the link; `_nodes_at` (the `shared_node_tolerance` constructor argument, H10) stops linked lanelets that do not meet from sharing end nodes; `one_way=no` for bidirectional vehicle lanes; `_create_nodes` writes each bound in full when the left and right bounds have different vertex counts (upstream cut the right bound to the left's length).
+- `crdesigner/map_conversion/opendrive/odr2cr/opendrive_conversion/network.py` — `export_lanelet_network` swaps the bounds (and road marks) of left-hand-traffic lanelets whose left bound lies on the right of their direction (`left_bound_on_right`): the vendored lanelets take the inner border as left, and Lanelet2 would turn them around.
+- `crdesigner/map_conversion/common/conversion_lanelet_network.py` — `check_concatenation_potential` never concatenates bidirectional lanelets. `convert_map.bidirectional_fixes` drops the OpenDRIVE conversion's wrong links around them.
+- `crdesigner/map_conversion/opendrive/odr2cr/opendrive_conversion/plane_elements/` — elevation: `Border.calc_elevation` follows the reference chain, `ParametricLane.calc_elevation` (reversed lanes) and `ParametricLaneGroup.calc_elevation` (merge/split mirroring).
+- Vendored code reports degradations through `opendrive_parser/vocabulary.record`, a `logging.getLogger("crdesigner.degradation")` warning with `extra={kind, element, id, value, action}` (no IAI imports inside `crdesigner/`); `conversion_report.py` documents the kinds. Degrade-and-record sites: `opendrive_parser/parser.py` (decimal commas normalised as the XML is read; `parse_float`/`parse_required_float` raise `UnparseableNumber`, caught per record by `_dropped_on_error` and per road, signal, object and junction; a bad or unknown `<geometry>` (`UnknownGeometry`) drops its road because `PlanView` places records by summed length; speed unit, contactPoint, road links and
+neighbours, road type, singleSide, road-type speed, signal value), the element setters in `opendrive_parser/elements/` (lane and object type, signal `dynamic`/`orientation`, object orientation), `plane_elements/traffic_signals.py` (a country without a sign table → `ZAM`) `plane_group.convert_line_marking` (unmapped road marks and weights) and `cr2lanelet._convert_speed_sign` (a speed sign
+without a value).
+- `crdesigner/.../opendrive_parser/vocabulary.py` — the reader's tables in one place, set by the repo-root `vocabulary.install` from the dictionary (no IAI imports inside crdesigner): `TRANSLATIONS` (read through `translate` by the lane, road-mark, object, signal, connection, link, road-type and speed readers), `STOP_STENCIL_NAMES` / `YIELD_STENCIL_NAMES` (`network.py`), `UNKNOWN_COUNTRY_TABLE` / `SIGN_TYPE_REPLACEMENTS` / `NON_VEHICLE_LIGHT_TYPES` (`traffic_signals.py`), `SPEED_UNIT_DIVISORS` / `UNITLESS_SPEED_UNIT` (`parser.py`; the latter from the `speed_unit=` setting); `ALLOWED`, the values the reader understands per attribute (the loader checks translation targets against it, with `roadObject.ROAD_OBJECT_TYPES` / `CUSTOM_OBJECT_TYPES`, `Lane.laneTypes` and `RoadType.allowedTypes`); and `record`, which every IAI degrade-and-record site calls.
+- Custom attributes on upstream objects: `signal_references` (parsed lanes, the lane ids a `<validity>` names), `_iai_stop_signs`, `_iai_yield_signs`, `opendrive_id` (traffic lights and signs). Grep for `iai_` inside `crdesigner/` to find where they're attached.
+- `git diff master -- crdesigner/` (or whatever the upstream-tracking branch is) is the authoritative way to enumerate IAI deltas.
+
+## Dependencies worth knowing
+
+- `torchdrivesim` — Inverted AI package (public). Provides `Stopline`, `MapConfig`, `BirdviewMesh`, the renderer, and mesh utilities. Pinned to a git commit in `requirements.txt`: `convert_map.py` needs `BirdviewRGBMeshGenerator`, which no PyPI release (≤ 0.2.3) has.
+- `lanelet2` — installed from PyPI wheels (cp310–cp313, Linux).
+- `click<8.2` — upstream pins `typer ^0.9`, which fails on newer click.
+- CI (`.github/workflows/python-app.yml`) runs Ubuntu only on Python 3.10–3.13. macOS and Windows are not supported by upstream.

@@ -220,3 +220,45 @@ def test_a_rejected_map_report_still_has_its_stoplines(tmp_path):
     assert result.returncode == conversion_common.REJECTED_EXIT_CODE, result.stderr
     summary = json.loads((tmp_path / "case_autocritic.json").read_text())["map"]
     assert summary["stoplines"]["traffic_light"] > 0
+
+
+# --- plain-language explanations ----------------------------------------------------------------------------
+
+
+def test_every_heuristic_and_check_has_a_plain_explanation():
+    import conversion_heuristics
+    import map_validation
+
+    for heuristic in conversion_heuristics.HEURISTICS:
+        assert 40 <= len(heuristic.plain) <= 400, heuristic.id
+    controls = map_validation.ControlCoverage(
+        lights=0, lights_without_stopline=[], stop_yield_signs=0, signs_without_stopline=[], positions={}
+    )
+    checks = map_validation.evaluate(metrics={}, metric_errors={}, controls=controls, config=map_validation.PROFILES["perfect"])
+    names = {c.name for c in checks}
+    assert len(names) >= 14 and names <= set(map_validation.CHECK_EXPLANATIONS)
+
+
+def test_each_section_explains_itself_in_plain_language():
+    import conversion_heuristics
+
+    report = ar.build(records=RECORDS, verdict=VERDICT, autofix_enabled=True, would_have_fixed=True)
+    html = ar.render_html(report=report, polylines=POLYLINES, config=ar.ReportConfig(), title="case")
+    import html as html_text
+
+    import map_validation
+
+    assert html_text.escape(conversion_heuristics.by_id(heuristic_id="H4").plain) in html
+    assert html_text.escape(conversion_heuristics.by_id(heuristic_id="H6").plain) in html
+    assert "switched off" in html  # the would-have-fixed section says what it lists
+    assert html_text.escape(map_validation.CHECK_EXPLANATIONS["routing_edge_pct"]) in html
+    assert "How to read this report" in html
+
+
+def test_geometry_repairs_get_their_own_explained_section():
+    cut = {"kind": "geometry", "element": "bound_loop_cut", "id": 7, "value": 2.5, "action": "cut",
+           "message": "lanelet 7: right bound looped back over 2.5 m - loop cut", "location": [3.0, 4.0]}
+    report = ar.build(records=[cut], verdict=None, autofix_enabled=True, would_have_fixed=True)
+    sections = {(s["kind"], s["key"]): s for s in report["sections"]}
+    assert [i["location"] for i in sections[("geometry", "bound_loop_cut")]["items"]] == [[3.0, 4.0]]
+    assert sections[("geometry", "bound_loop_cut")]["explanation"]

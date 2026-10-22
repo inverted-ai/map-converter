@@ -374,6 +374,16 @@ def test_a_light_code_marked_static_is_listed_without_failing_a_preset(tmp_path)
 
 
 
+def test_a_lane_with_stoplines_at_two_places_is_listed_without_failing_a_preset(tmp_path):
+    # No junction ahead and 40 m apart (beyond the 30 m approach distance): two stop positions on one lane.
+    lights = [xb.SignalSpec(id=i, s=s, validity=(-1, -1)) for i, s in (("21", 5.0), ("22", 45.0))]
+    verdict, _ = _convert(tmp_path=tmp_path, roads=[xb.straight_road(id="1", length=50.0, signals=lights)])
+    check = _check(verdict=verdict, name="lanes_with_several_stops")
+    assert check["value"] == 1 and check["limit"] is None and check["passed"]
+    assert "2 stop positions" in check["locations"][0]["detail"]
+    assert "lanes_with_several_stops" not in verdict["profiles"]["perfect"]["failed"]
+
+
 def test_perfect_allows_no_linked_gap_and_no_dropped_signal():
     assert (mv.PROFILES["perfect"].max_linked_gaps, mv.PROFILES["perfect"].max_dropped_signals) == (0, 0)
     assert (mv.PROFILES["strict"].max_linked_gaps, mv.PROFILES["strict"].max_dropped_signals) == (None, None)

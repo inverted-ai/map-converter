@@ -414,6 +414,184 @@ def test_partly_scoped_sign_records_its_centre_line_validity(tmp_path):
     assert _translated_ids(out=out, element="signal.validity") == ["88"]
 
 
+def _approach_road(*, n_right: int = 1, signals=()) -> xb.RoadSpec:
+    """Road 1: 50 m along +x, ``n_right`` lanes travelling +x, into junction 100 at x = 50."""
+    return xb.straight_road(
+        id="1", length=50.0, n_left=0, n_right=n_right, signals=list(signals),
+        successor=xb.LinkSpec(element_type="junction", element_id="100", contact_point=None),
+    )
+
+
+def _branch(
+    *, id: str, links=((-1, -1),), curvature: float = 0.0, hdg: float = 0.0, y: float = 0.0, n_right: int = 1,
+    signals=(), references=(),
+) -> tuple[xb.RoadSpec, xb.ConnectionSpec]:
+    """A 10 m connecting road of junction 100 leaving road 1's end at (50, y); ``links`` are (road 1 lane, its lane)."""
+    road = xb.straight_road(
+        id=id, length=10.0, x=50.0, y=y, hdg=hdg, n_left=0, n_right=n_right, junction="100",
+        predecessor=xb.LinkSpec(element_type="road", element_id="1", contact_point="end"),
+        geometries=[xb.GeometrySpec(length=10.0, curvature=curvature)],
+        signals=list(signals), signal_references=list(references),
+    )
+    for lane in road.lane_sections[0].lanes:
+        lane.predecessor = next(a for a, b in links if b == lane.id)
+    return road, xb.ConnectionSpec(id=id, incoming_road="1", connecting_road=id, contact_point="start", lane_links=list(links))
+
+
+def _junction_case(*, tmp_path, approach: xb.RoadSpec, branches, **config: str) -> dict:
+    roads = [approach] + [road for road, _ in branches]
+    junction = xb.JunctionSpec(id="100", connections=[connection for _, connection in branches])
+    return _convert(tmp_path=tmp_path, roads=roads, junctions=[junction], **config)
+
+
+def _light(*, id: str, s: float, validity, t: float = -5.0) -> xb.SignalSpec:
+    return xb.SignalSpec(id=id, s=s, t=t, validity=validity)
+
+
+def _reference(*, id: str, validity=(-1, -1)) -> xb.SignalReferenceSpec:
+    return xb.SignalReferenceSpec(id=id, s=0.0, validity=validity)
+
+
+def _stopline_ids(*, tmp_path) -> dict:
+    with open(tmp_path / "case_signal_groups.json") as f:
+        return json.load(f).get("stopline_ids", {})
+
+
+def _three_ways(*, curvature: float = 0.1, hdg: float = 0.0, signals=(), **config: str) -> list:
+    """Straight, left and right connecting roads from road 1's lane -1; light 11 on all three, unless ``signals``."""
+    signals = list(signals) or [_light(id="11", s=0.5, t=0.0, validity=(-1, -1))]
+    return [
+        _branch(id="2", signals=signals),
+        _branch(id="4", curvature=curvature if hdg == 0.0 else 0.0, hdg=hdg, references=[_reference(id="11")]),
+        _branch(id="5", curvature=-curvature if hdg == 0.0 else 0.0, hdg=-hdg, references=[_reference(id="11")]),
+    ]
+
+
+def test_light_on_every_connecting_lane_of_one_approach_lane_writes_one_row(tmp_path):
+    # Left, straight and right leave lane -1 from one point: one stopline, not three on top of each other.
+    out = _junction_case(tmp_path=tmp_path, approach=_approach_road(), branches=_three_ways())
+    assert _rows(out=out) == [("11", 50.0, LANE_RIGHT_Y, 0.0)]
+
+
+def test_connecting_lanes_fanning_from_one_approach_lane_share_the_straight_ones_entry(tmp_path):
+    # Straight connecting roads at +-0.3 rad: their lanes start up to 0.5 m from the straight one's.
+    out = _junction_case(tmp_path=tmp_path, approach=_approach_road(), branches=_three_ways(hdg=0.3))
+    assert _rows(out=out) == [("11", 50.0, LANE_RIGHT_Y, 0.0)]
+
+
+def test_light_on_two_approach_lanes_writes_one_row_per_approach_lane(tmp_path):
+    branches = [
+        _branch(id="2", links=((-1, -1), (-2, -2)), n_right=2, signals=[_light(id="11", s=0.5, t=0.0, validity=(-2, -1))]),
+        _branch(id="4", curvature=0.1, references=[_reference(id="11")]),
+        _branch(id="5", links=((-2, -1),), curvature=-0.1, y=-3.5, references=[_reference(id="11")]),
+    ]
+    out = _junction_case(tmp_path=tmp_path, approach=_approach_road(n_right=2), branches=branches)
+    assert _rows(out=out) == [("11", 50.0, -5.25, 0.0), ("11", 50.0, LANE_RIGHT_Y, 0.0)]
+
+
+def test_lights_along_the_approach_share_one_row_where_the_last_one_stands(tmp_path):
+    lights = [_light(id=i, s=s, validity=(-1, -1)) for i, s in (("21", 40.0), ("22", 44.0), ("23", 48.0))]
+    out = _junction_case(tmp_path=tmp_path, approach=_approach_road(signals=lights), branches=[_branch(id="2")])
+    assert _rows(out=out) == [("21", 48.0, LANE_RIGHT_Y, 0.0)]
+    assert out["controls"]["lights_without_stopline"] == []
+    (finding,) = _findings(out=out, heuristic_id="H15")
+    assert (str(finding["id"]), finding["action"], finding["applied"]) == ("21", "shared_id", True)
+    assert _stopline_ids(tmp_path=tmp_path) == {"21": ["21", "22", "23"]}
+    assert {r["action"] for r in _findings(out=out, heuristic_id="H4")} == {"shares_approach_stop"}
+
+
+def test_approach_light_and_connecting_road_light_share_one_row(tmp_path):
+    branches = [_branch(id="2", signals=[_light(id="11", s=0.5, t=0.0, validity=(-1, -1))])]
+    approach = _approach_road(signals=[_light(id="21", s=45.0, validity=(-1, -1))])
+    out = _junction_case(tmp_path=tmp_path, approach=approach, branches=branches)
+    assert _rows(out=out) == [("11", 50.0, LANE_RIGHT_Y, 0.0)]
+    assert _stopline_ids(tmp_path=tmp_path) == {"11": ["11", "21"]}
+
+
+def test_light_farther_from_the_junction_than_the_limit_stays_at_its_s(tmp_path):
+    approach = _approach_road(signals=[_light(id="21", s=10.0, validity=(-1, -1))])
+    out = _junction_case(tmp_path=tmp_path, approach=approach, branches=[_branch(id="2")])
+    assert _rows(out=out) == [("21", 10.0, LANE_RIGHT_Y, 0.0)]
+    assert {r["action"] for r in _findings(out=out, heuristic_id="H4")} == {"placed_at_s"}
+
+
+def test_lights_millimetres_apart_away_from_junctions_share_one_row(tmp_path):
+    # Heads of one signal a few mm apart along a road with no junction: one stop position (the signs' same-spot rule).
+    lights = [_light(id="21", s=40.0, validity=(-1, -1)), _light(id="22", s=40.003, validity=(-1, -1))]
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=lights)])
+    assert _rows(out=out) == [("21", 40.0, LANE_RIGHT_Y, 0.0)]
+
+
+def test_lights_without_a_junction_ahead_share_the_last_ones_row_within_the_approach_distance(tmp_path):
+    # No junction anywhere: the lane's last light (s=35) anchors the lights within 30 m behind it.
+    lights = [_light(id=i, s=s, validity=(-1, -1)) for i, s in (("23", 10.0), ("22", 20.0), ("21", 35.0))]
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=lights)])
+    assert _rows(out=out) == [("21", 35.0, LANE_RIGHT_Y, 0.0)]
+    assert _stopline_ids(tmp_path=tmp_path) == {"21": ["21", "22", "23"]}
+
+
+def test_lights_without_a_junction_ahead_farther_apart_keep_their_own_rows(tmp_path):
+    lights = [_light(id="21", s=5.0, validity=(-1, -1)), _light(id="22", s=45.0, validity=(-1, -1))]
+    out = _convert(tmp_path=tmp_path, roads=[_plain_road(signals=lights)])
+    assert _rows(out=out) == [("21", 5.0, LANE_RIGHT_Y, 0.0), ("22", 45.0, LANE_RIGHT_Y, 0.0)]
+
+
+def test_a_light_on_two_lanes_keeps_its_own_id_where_it_is_alone(tmp_path):
+    lights = [_light(id="31", s=48.0, validity=(-1, -1)), _light(id="32", s=48.0, validity=(-2, -2)),
+              _light(id="33", s=48.0, validity=(-2, -1))]
+    branches = [_branch(id="2", links=((-1, -1), (-2, -2)), n_right=2)]
+    out = _junction_case(tmp_path=tmp_path, approach=_approach_road(n_right=2, signals=lights), branches=branches)
+    assert _rows(out=out) == [("31", 48.0, LANE_RIGHT_Y, 0.0), ("32", 48.0, -5.25, 0.0)]
+    assert out["controls"]["lights_without_stopline"] == []
+    assert _stopline_ids(tmp_path=tmp_path) == {"31": ["31", "33"], "32": ["32", "33"]}
+
+
+def test_without_autofix_lights_on_one_lane_keep_their_own_ids_at_one_position(tmp_path):
+    signals = [_light(id="11", s=0.5, t=0.0, validity=(-1, -1)), _light(id="13", s=0.5, t=0.0, validity=(-1, -1))]
+    out = _junction_case(
+        tmp_path=tmp_path, approach=_approach_road(), branches=_three_ways(signals=signals), **{"autofix.enabled": "false"}
+    )
+    assert _rows(out=out) == [("11", 50.0, LANE_RIGHT_Y, 0.0), ("13", 50.0, LANE_RIGHT_Y, 0.0)]
+    assert "H15" in out["not_applied"]
+    assert _stopline_ids(tmp_path=tmp_path) == {}
+
+
+def test_two_signs_along_the_approach_write_one_row_where_the_last_one_stands(tmp_path):
+    signs = [xb.SignalSpec(id=i, s=s, dynamic="no", type="206", validity=(-1, -1)) for i, s in (("41", 44.0), ("42", 48.0))]
+    out = _junction_case(tmp_path=tmp_path, approach=_approach_road(signals=signs), branches=[_branch(id="2")], **H6_ON)
+    assert _rows(out=out, agent_type="stop_sign") == [("41", 48.0, LANE_RIGHT_Y, 0.0)]
+    assert out["controls"]["signs_without_stopline"] == []
+
+
+def test_a_lone_light_before_a_junction_stays_where_it_stands(tmp_path):
+    # Hand-placed lights mark the stop; the declared junction may start later than the crossing traffic does.
+    approach = _approach_road(signals=[_light(id="21", s=30.0, validity=(-1, -1))])
+    out = _junction_case(tmp_path=tmp_path, approach=approach, branches=[_branch(id="2")])
+    assert _rows(out=out) == [("21", 30.0, LANE_RIGHT_Y, 0.0)]
+
+
+def test_a_light_takes_priority_over_a_stop_stencil_and_a_yield_sign_on_its_lane(tmp_path):
+    approach = _approach_road(signals=[xb.SignalSpec(id="51", s=46.0, dynamic="no", type="205", validity=(-1, -1))])
+    approach.objects.append(xb.ObjectSpec(id="9", s=44.0, orientation="-"))  # CARLA: "-" faces +s
+    branches = [_branch(id="2", signals=[_light(id="11", s=0.5, t=0.0, validity=(-1, -1))])]
+    out = _junction_case(tmp_path=tmp_path, approach=approach, branches=branches, **H6_ON)
+    assert _rows(out=out) == [("11", 50.0, LANE_RIGHT_Y, 0.0)]
+    assert _rows(out=out, agent_type="stop_sign") == [] and _rows(out=out, agent_type="yield_sign") == []
+    assert sorted(str(r["id"]) for r in _findings(out=out, heuristic_id="H16")) == ["51", "9"]
+    assert out["controls"]["signs_without_stopline"] == []
+
+
+def test_without_the_heuristic_signs_keep_their_rows_on_a_lit_lane(tmp_path):
+    approach = _approach_road()
+    approach.objects.append(xb.ObjectSpec(id="9", s=44.0, orientation="-"))  # CARLA: "-" faces +s
+    branches = [_branch(id="2", signals=[_light(id="11", s=0.5, t=0.0, validity=(-1, -1))])]
+    out = _junction_case(
+        tmp_path=tmp_path, approach=approach, branches=branches, **{"autofix.heuristics.light_priority.enabled": "false"}
+    )
+    assert [row[0] for row in _rows(out=out, agent_type="stop_sign")] == ["9"]
+    assert [str(i) for i in out["not_applied"]["H16"]["ids"]] == ["9"]
+
+
 def test_stencil_covering_some_of_a_signs_lanes_is_recorded(tmp_path):
     # The sign binds lanes -1 and -2; a stop stencil lies on lane -1 only, so lane -2 gets the sign's row.
     stop = xb.SignalSpec(id="89", s=40.0, t=-12.0, dynamic="no", type="206", validity=(-2, -1))

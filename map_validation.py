@@ -73,6 +73,8 @@ class ConversionFindings:
         painted_stop_lines: Painted stop lines, listed and never converted.
         static_light_codes: Signals with a traffic-light code marked ``dynamic="no"``: read as static signs, so
             they get no stoplines; listed, never judged.
+        lanes_with_several_stops: Lanes whose stopline rows lie at more than one position (controls away from
+            a junction, each at its own s); listed, never judged.
     """
 
     linked_gaps: list[dict[str, Any]] = dataclasses.field(default_factory=list)
@@ -80,6 +82,55 @@ class ConversionFindings:
     signal_distances: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     painted_stop_lines: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     static_light_codes: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    lanes_with_several_stops: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+
+
+# What each check looks for, in plain language for readers of the AutoCritic report (one or two sentences).
+CHECK_EXPLANATIONS = {
+    "has_lanelets": "The map has at least one drivable lane.",
+    "routing_edge_pct": (
+        "Where one lane ends at the start of another (within 1 m), vehicles must be able to drive from one into the "
+        "other. Lists lane ends that meet another lane without such a link; an end that meets nothing, such as the "
+        "map's edge, is fine."
+    ),
+    "seam_handshake_pct": (
+        "Lanes that meet end to start should share their boundary points. Where they do not, there is a hairline "
+        "gap that routing and the simulator cannot cross."
+    ),
+    "crossed_lanelets": (
+        "Lanes whose outline folds over itself, or that the Lanelet2 map loader reads in the wrong direction. "
+        "Both produce road surface where there is none, or a lane driving the wrong way."
+    ),
+    "traffic_light_stoplines": "Every traffic light should make at least one stopline. Lists the lights that made none.",
+    "stop_yield_stoplines": "Every stop or yield sign should make at least one stopline. Lists the signs that made none.",
+    "lanelets_without_subtype": (
+        "Every lane should say what kind of lane it is (for example road); tools that filter by kind would drop the "
+        "lanes listed."
+    ),
+    "point_extent_m": (
+        "The map should not reach implausibly far from its centre, which usually means a misplaced road. Shows the "
+        "point farthest out."
+    ),
+    "origin_in_range": "The map's anchor point on Earth must be a valid latitude and longitude.",
+    "linked_gaps": (
+        "Lanes the map links end to start whose ends lie farther apart than the converter joins, so vehicles cannot "
+        "drive from one into the other."
+    ),
+    "dropped_signals": "Signals the map places past the end of their road, too far to move back, which were dropped.",
+    "far_signals": (
+        "Lights and signs whose nearest stopline lies far from the signal itself (over 50 m), which often means "
+        "the stopline went onto the wrong lane."
+    ),
+    "not_converted": "Painted stop lines in the map. Listed only: they never create a stopline themselves.",
+    "static_light_codes": (
+        "Signals that carry a traffic-light code but are marked as not changing (dynamic=\"no\"). The converter "
+        "reads them as fixed signs, so they make no stopline."
+    ),
+    "lanes_with_several_stops": (
+        "Lanes with stoplines at more than one place. Every light and sign of one lane approaching a junction "
+        "shares one stopline; these lanes have controls away from any junction, each placed where it stands."
+    ),
+}
 
 
 PROFILES = {
@@ -337,6 +388,12 @@ def evaluate(
         places=findings.static_light_codes,
         limit=None,
         detail='signals with a traffic-light code marked dynamic="no": read as static signs, so they get no stoplines',
+    )
+    listed(
+        name="lanes_with_several_stops",
+        places=findings.lanes_with_several_stops,
+        limit=None,
+        detail="lanes with stopline rows at more than one position",
     )
     return checks
 

@@ -108,12 +108,69 @@ class MapLayers:
     raw_note: Optional[str]
 
 
+GEOMETRY_EXPLANATIONS = {
+    "bound_loop_cut": (
+        "Where a lane edge lies farther inside a bend than the bend's radius it loops back over itself, and the "
+        "Lanelet2 loader can then read the whole lane backwards. The converter cut each loop listed here at the point "
+        "where the edge crosses itself."
+    ),
+    "bound_vertices_added": (
+        "The Lanelet2 loader decides which way a lane edge runs from the edge's middle point and would have read "
+        "these edges backwards. The converter added points on the edges' own lines (their shape is unchanged) so "
+        "the middle point reads correctly."
+    ),
+    "sharp_kink": (
+        "Places where a road's reference line turns sharply (over 90 degrees) between two of its pieces. Nothing "
+        "is changed; such kinks often mean the source map is drawn badly here."
+    ),
+}
+VOCABULARY_EXPLANATION = (
+    "The map uses a name or code the converter reads through its vocabulary dictionary (vocabularies/default.yaml "
+    "or your own): each item below was read as the name the converter understands."
+)
+WOULD_HAVE_FIXED_PREFIX = (
+    "This AutoFix heuristic is switched off here (or AutoFix is off); the items are the places it would have acted. "
+)
+HOW_TO_READ = (
+    "<details open><summary><b>How to read this report</b></summary><p>The <b>Map</b> section shows the converted "
+    "map beside the original .xodr as an independent reader sees it; differences between the two panels point at a "
+    "conversion or reading error. Stoplines are coloured by what makes them: magenta a traffic light, blue a stop "
+    "sign, orange a yield sign.</p><p>Each further section is one AutoFix heuristic (a guess the converter makes "
+    "where the map leaves something open), one would-have-fixed heuristic, one vocabulary reading, one geometry "
+    "repair, or one AutoCritic check. Its explanation says what it means. Its items are numbered; on its whole-map "
+    "image and its close-ups each item is a <b>red circle</b> with the same number, centred where the item applies. "
+    "Close-ups are 50 m wide.</p></details>"
+)
+
+
 def _items(*, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"number": n, **entry} for n, entry in enumerate(entries, 1)]
 
 
+def _heuristic_plain(*, heuristic_id: str) -> str:
+    import conversion_heuristics
+
+    try:
+        return conversion_heuristics.by_id(heuristic_id=heuristic_id).plain
+    except StopIteration:
+        return ""
+
+
+def _check_plain(*, name: str) -> str:
+    import map_validation
+
+    return map_validation.CHECK_EXPLANATIONS.get(name, "")
+
+
 def _rounded(*, value: Any) -> Any:
-    return round(value, 2) if isinstance(value, float) else value
+    """A check's value or limit for a title: floats to 3 significant decimals, dicts as ``key value`` pairs."""
+    if isinstance(value, float):
+        return round(value, 3)
+    if isinstance(value, dict):
+        return ", ".join(f"{k.replace('_', ' ')} {_rounded(value=v)}" for k, v in value.items())
+    if value is None:
+        return "none"
+    return value
 
 
 def build(
@@ -146,11 +203,13 @@ def build(
             continue
         for key in sorted((k for a, k in by_heuristic if a == applied), key=heuristic_number):
             entries = by_heuristic[(applied, key)]
+            plain = _heuristic_plain(heuristic_id=key)
             sections.append(
                 {
                     "kind": kind,
                     "key": key,
                     "title": f"{key} {names[key]}",
+                    "explanation": plain if applied else WOULD_HAVE_FIXED_PREFIX + plain,
                     "items": _items(entries=entries),
                 }
             )
@@ -166,7 +225,24 @@ def build(
                 "kind": "vocabulary",
                 "key": element,
                 "title": f"{element}: {len(by_element[element])} translated",
+                "explanation": VOCABULARY_EXPLANATION,
                 "items": _items(entries=by_element[element]),
+            }
+        )
+    by_repair: dict[str, list[dict[str, Any]]] = {}
+    for r in records:
+        if r.get("kind") == "geometry":
+            by_repair.setdefault(r["element"], []).append(
+                {"element": f"{r['element']} {r['id']}", "location": r.get("location"), "detail": r["message"]}
+            )
+    for element in sorted(by_repair):
+        sections.append(
+            {
+                "kind": "geometry",
+                "key": element,
+                "title": f"{element}: {len(by_repair[element])}",
+                "explanation": GEOMETRY_EXPLANATIONS.get(element, ""),
+                "items": _items(entries=by_repair[element]),
             }
         )
     for check in (verdict or {}).get("checks", []):
@@ -176,9 +252,10 @@ def build(
             {
                 "kind": "metric",
                 "key": check["name"],
-                "title": f"{check['name']}: {_rounded(value=check['value'])} (limit {check['limit']}) - "
+                "title": f"{check['name']}: {_rounded(value=check['value'])} (limit {_rounded(value=check['limit'])}) - "
                 + ("passed" if check["passed"] else "failed"),
                 "detail": check.get("detail", ""),
+                "explanation": _check_plain(name=check["name"]),
                 "items": _items(
                     entries=[
                         {"element": str(p["id"]), "location": p.get("location"), "detail": p.get("detail", "")}
@@ -462,6 +539,7 @@ body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;ma
 h1{font-size:22px}h2{font-size:18px;border-top:1px solid var(--line);padding-top:12px}
 .muted{color:var(--muted)}img{max-width:100%;height:auto;background:#fff;border:1px solid var(--line)}
 ol{padding-left:2.2em}li{overflow-wrap:anywhere}
+.explain{border-left:3px solid var(--line);padding-left:10px;max-width:900px}details{margin:8px 0 16px}
 """
 
 SECTION_HEADINGS = {
@@ -469,6 +547,7 @@ SECTION_HEADINGS = {
     "would_have_fixed": "Would have fixed",
     "vocabulary": "Vocabulary",
     "metric": "AutoCritic metrics",
+    "geometry": "Geometry repairs",
 }
 
 
@@ -491,6 +570,7 @@ def render_html(
         f"<h1>{html.escape(title)}: AutoCritic report</h1>",
         f"<p>AutoFix {'on' if summary['autofix'] else 'off'}; preset {html.escape(str(summary['preset']))}; "
         f"verdict {html.escape(str(summary['status']))}. Numbers in each section match its images.</p>",
+        HOW_TO_READ,
     ]
     if layers is not None and config.birdview:
         parts.append("<h2>Map</h2>")
@@ -519,6 +599,8 @@ def render_html(
         parts.append(
             f"<h2>{number}. {html.escape(SECTION_HEADINGS[section['kind']])}: {html.escape(section['title'])}</h2>"
         )
+        if section.get("explanation"):
+            parts.append(f"<p class=explain>{html.escape(section['explanation'])}</p>")
         if section.get("detail"):
             parts.append(f"<p class=muted>{html.escape(section['detail'])}</p>")
         parts.append(f"<p class=muted>{len(items)} item(s), {len(items) - len(placed)} without a position.</p>")

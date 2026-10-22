@@ -105,7 +105,7 @@ exit code 3 and write nothing.
 | `<map>_mesh.json` | Road and lane-marking `BirdviewMesh`: `verts`, `faces`, `categories`, `vert_category`, `colors`, `zs` | TorchDriveSim rendering |
 | `metadata.json` | `MapConfig`: `name`, `center`, `lanelet_map_origin` (lat, lon), `left_handed_coordinates`, the three file names above, `traffic_light_controller_path`, `iai_location_name` | `torchdrivesim.map.load_map_config` |
 | `visualization.png` | 2048×2048 top-down render centred on `center`, `visualization_fov` metres wide | People |
-| `<map>_signal_groups.json` | Traffic-light structure the OpenDRIVE file declares: junction per signal id (`membership`, with the source it came from), `<controller>` groups and `sequence`, conflicts, non-integer ids | `traffic_light_fsm.py` |
+| `<map>_signal_groups.json` | Traffic-light structure the OpenDRIVE file declares: junction per signal id (`membership`, with the source it came from), `<controller>` groups and `sequence`, conflicts, non-integer ids; `stopline_ids`: per stopline row id, the lights it stands for (H15) | `traffic_light_fsm.py` |
 | `<map>_provenance.json` | What produced the outputs: input path and sha256, the full `MapConversionConfig`, converter git commit and dirty flag (`null` outside a git checkout), the visualization FOV used, the traffic side of the roads (`RHT`, `LHT` or `mixed`), the OpenDRIVE version (`revMajor.revMinor`), the vocabulary dictionaries used (paths and sha256), Python and package versions, UTC time | People, `map_report.py` |
 | `<map>_conversion_report.json` | Everything in the input the converter could not use as written, and what it did instead (see below). Written even when the conversion fails, once the input file is known | People |
 | `<map>_autocritic.html`, `<map>_autocritic.json` | The AutoCritic report (see "AutoCritic report" below); also written when a preset rejects the map | People; scripts (JSON) |
@@ -185,12 +185,14 @@ checks failed and exits with code 4. A failed `perfect` verdict also says whethe
 | L12 | `far_signals` | listed, not judged (`max_far_signals`; far = nearest stopline more than `far_signal_m`, 50 m) | same |
 | L13 | `not_converted` | listed, never judged | same |
 | L14 | `static_light_codes` | listed, never judged: signals with a traffic-light code marked `dynamic="no"`, read as static signs with no stoplines | same |
+| L15 | `lanes_with_several_stops` | listed, never judged: lanes with stopline rows at more than one position (controls away from a junction, each at its own s) | same |
 
-L10-L14 come from the conversion itself: lanelets the OpenDRIVE links whose ends lie farther apart than the seam
+L10-L15 come from the conversion itself: lanelets the OpenDRIVE links whose ends lie farther apart than the seam
 tolerance (H10), so routing cannot cross; signals H14 dropped because they lie past their road's end; lights and
 signs whose nearest stopline row lies far from the signal; painted stop lines (unrecognised and dropped elements are
 in the report's `unrecognised_tokens` and `elements`); and signals with a traffic-light code marked `dynamic="no"`,
-which the reader takes for static signs. Only `perfect` judges L10 and L11; L12-L14 are listed in both presets. Set any limit with `autocritic.thresholds.<name>`.
+which the reader takes for static signs; and lanes with stopline rows at more than one position. Only `perfect`
+judges L10 and L11; L12-L15 are listed in both presets. Set any limit with `autocritic.thresholds.<name>`.
 
 The output metrics come from `map_quality.py` (the same metrics `map_report.py` records). A metric that raises
 fails its check; one with nothing to measure (no seams, say) passes.
@@ -212,14 +214,17 @@ stop. Each one is listed in the conversion report (`kind="not_converted"`, with 
 ### AutoCritic report
 
 `<map>_autocritic.html` is self-contained (images embedded); `<map>_autocritic.json` holds the same numbered
-items for scripts. After a summary (AutoFix on or off, preset, verdict) it has one section per:
+items for scripts. After a summary (AutoFix on or off, preset, verdict) and a short guide to reading it, it shows
+the "Map" section (the converted map with its stoplines beside the raw `.xodr`) and one section per:
 
 1. heuristic that changed the conversion against BasicConversion (AutoFix);
 2. heuristic that was off and would have acted (with AutoFix off, every heuristic; `autocritic.would_have_fixed`);
 3. element attribute the vocabulary dictionary translated (every place, see "Vocabulary");
-4. check that failed, or that lists places (L10-L14).
+4. geometry repair of the lane bounds (`geometry` records: loops cut, vertices added, sharp kinks reported);
+5. check that failed, or that lists places (L10-L15).
 
-Each section numbers its items (element, position in the local frame, what happened) and draws them: a birdview
+Each section opens with a one- or two-sentence plain-language explanation (heuristics: `Heuristic.plain` in
+`conversion_heuristics.py`; checks: `map_validation.CHECK_EXPLANATIONS`). Each section numbers its items (element, position in the local frame, what happened) and draws them: a birdview
 of the whole map with every item circled and numbered, and a close-up of each (50 m wide, 24 per image). The
 `report.*` settings switch the parts off. The FSM heuristics H11-H13 are reported by `traffic_light_fsm.py` in
 `<map>_fsm_review.json`.
@@ -282,7 +287,7 @@ switched-off one would have acted (`applied` false), with its position.
 | Id | Name | Default | Decides |
 |---|---|---|---|
 | H3 | `facing_lanes` | on | A light (or, with H6, a sign) no validity binds covers the drivable lanes its `orientation` faces, on its references' roads or else its own |
-| H4 | `stop_at_signal_s` | on | Outside a junction a stopline sits at the signal's (or reference's) s; on a junction's connecting road it sits where the lane enters |
+| H4 | `stop_at_signal_s` | on | Outside a junction a control stops each lane at the signal's (or reference's) s; the controls of one lane entering a junction within H6's `max_junction_distance_m` share one position, that of the control nearest the junction (no stopline moves past a control of its lane); on a lane no junction anchors, the controls within that distance behind its last control share that control's position; without it, where the lane enters its road |
 | H5 | `sign_stencil_match` | on, `max_distance_m=10` | A stop/yield stencil of the same kind within the distance of a sign (or, with H6, inside a lane the sign binds, within the distance of its row) is that sign's stopline |
 | H6 | `sign_signal_stoplines` | on, `max_junction_distance_m=30`, `stencil_lane_distance_m=10` | The converter creates stopline rows for stop/yield sign signals (where H5 finds no stencil): lanes read in the lane section at the sign's (or reference's) s, on a junction road where the lane enters it, one row per lane; only on lanes that enter a junction within `max_junction_distance_m` of the sign, and not where a same-kind stencil lies within `stencil_lane_distance_m` along the lane |
 | H7 | `non_vehicle_light` | on | A light no validity binds, on a road with no drivable lane, is a pedestrian/cyclist signal |
@@ -291,6 +296,8 @@ switched-off one would have acted (`applied` false), with its position.
 | H12 | `fsm_axis_split` | on, `min_angle_rad=0.5` | `traffic_light_fsm.py`: an intersection's phases are split by stopline direction; without it they are the declared controllers, in sequence order, and one phase per light no controller names |
 | H13 | `fsm_topology_refinement` | on, `max_hops=3` | `traffic_light_fsm.py`: a distance cluster of low certainty is split where its lights' lanelets do not meet within the hops |
 | H14 | `signal_past_road_end` | on, `max_overshoot_m=1.0` | A signal whose `s` lies past its road's end (beyond the reader's rounding tolerance, 1 cm + 1 % of the road length) is placed at the end within `max_overshoot_m`, else dropped; without it the map is refused (exit code 3) naming those signals |
+| H15 | `shared_lane_id` | on | Lights stopping one approach lane share one row with the lowest id (the others listed in `<map>_signal_groups.json` `stopline_ids`); without it each light keeps its own row at the same position |
+| H16 | `light_priority` | on | A stop or yield row (sign or painted marking) within H6's `stencil_lane_distance_m` along its lane of a traffic light's row is not written: the light stops that lane |
 
 Guesses that live in vendored code or in other tools are listed at the top of `conversion_heuristics.py`.
 

@@ -872,12 +872,15 @@ def _within_trim(*, cfg: MapConversionConfig, x: float, y: float, z: Optional[fl
 @dataclasses.dataclass(slots=True)
 class ExtractedStoplines:
     """The written stoplines file, the coverage of lights and stop/yield signs it gives, each signal's
-    distance to its nearest row, and the painted stop lines listed as not converted."""
+    distance to its nearest row, the painted stop lines listed as not converted, the lights each row stands for
+    (H15) and the lanes with rows at several positions."""
 
     path: str
     controls: map_validation.ControlCoverage
     distances: list[dict]
     painted_stop_lines: list[dict]
+    stopline_ids: dict[str, list[str]]  # H15: row id -> the lights it stands for
+    several_stops: list[dict]  # lanes with rows at more than one position
 
 
 def extract_stoplines(
@@ -912,7 +915,8 @@ def extract_stoplines(
         logger.info(f'Writing extracted stoplines to {stoplines_path}')
         json.dump(built.rows, f, indent=4)
     return ExtractedStoplines(
-        path=stoplines_path, controls=built.coverage, distances=built.distances, painted_stop_lines=painted
+        path=stoplines_path, controls=built.coverage, distances=built.distances, painted_stop_lines=painted,
+        stopline_ids=built.stopline_ids, several_stops=built.several_stops,
     )
 
 
@@ -1184,7 +1188,9 @@ def _convert(
         words=parsed.words,
     )
     write_signal_groups(
-        xodr_path=opendrive_path, out_path=os.path.join(cfg.dir_path, f"{parsed.location}_signal_groups.json")
+        xodr_path=opendrive_path,
+        out_path=os.path.join(cfg.dir_path, f"{parsed.location}_signal_groups.json"),
+        stopline_ids=stoplines.stopline_ids,
     )
     mesh = build_mesh(cfg=cfg, location=parsed.location, osm_path=exported.osm_path, projector=parsed.projector)
     render_and_finish(
@@ -1216,6 +1222,7 @@ def _convert(
             signal_distances=stoplines.distances,
             painted_stop_lines=stoplines.painted_stop_lines,
             static_light_codes=static_light_codes(opendrive=parsed.opendrive, words=parsed.words, frame=parsed.frame),
+            lanes_with_several_stops=stoplines.several_stops,
         ),
     )
     logger.info(f'Validation: {verdict.status}')

@@ -192,10 +192,22 @@ def _approach_junction(*, road: _Road, s: Optional[float], max_distance: float) 
     return min(reachable)[1] if reachable else None
 
 
-def write_signal_groups(*, xodr_path: str, out_path: str, max_distance: float = DEFAULT_MAX_DISTANCE_M) -> str:
-    """Extract and write the sidecar; returns its absolute path."""
+def write_signal_groups(
+    *,
+    xodr_path: str,
+    out_path: str,
+    max_distance: float = DEFAULT_MAX_DISTANCE_M,
+    stopline_ids: Optional[dict[str, list[str]]] = None,
+) -> str:
+    """Extract and write the sidecar; returns its absolute path.
+
+    ``stopline_ids`` (from a conversion): per stopline row id, the signals it stands for when several lights share
+    one approach lane's row (H15), written as ``stopline_ids``.
+    """
     out_path = os.path.abspath(out_path)
     groups = extract_signal_groups(xodr_path=xodr_path, max_distance=max_distance)
+    if stopline_ids is not None:
+        groups["stopline_ids"] = stopline_ids
     with open(out_path, "w") as f:
         json.dump(groups, f, indent=2)
     logger.info("Wrote %d signal memberships and %d controllers to %s", len(groups["membership"]), len(groups["controllers"]), out_path)

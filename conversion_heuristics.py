@@ -166,6 +166,8 @@ class HeuristicsConfig:
         default_factory=FsmTopologyRefinementConfig
     )
     signal_past_road_end: SignalPastRoadEndConfig = dataclasses.field(default_factory=SignalPastRoadEndConfig)
+    shared_lane_id: Switch = dataclasses.field(default_factory=Switch)
+    light_priority: Switch = dataclasses.field(default_factory=Switch)
 
 
 @dataclasses.dataclass(slots=True)
@@ -195,11 +197,13 @@ def applied_heuristics(*, autofix: AutoFixConfig) -> HeuristicsConfig:
 
 @dataclasses.dataclass(slots=True, frozen=True)
 class Heuristic:
-    """One registered guess: its id, its name (= its :class:`HeuristicsConfig` entry) and its rule."""
+    """One registered guess: its id, its name (= its :class:`HeuristicsConfig` entry), its rule, and a plain-language
+    explanation (``plain``, one or two sentences for readers of the AutoCritic report)."""
 
     id: str
     name: str
     rule: Callable
+    plain: str
 
     @property
     def doc(self) -> str:
@@ -210,9 +214,9 @@ class Heuristic:
 HEURISTICS: list[Heuristic] = []
 
 
-def _heuristic(*, id: str, name: str) -> Callable[[Callable], Callable]:
+def _heuristic(*, id: str, name: str, plain: str) -> Callable[[Callable], Callable]:
     def register(rule: Callable) -> Callable:
-        HEURISTICS.append(Heuristic(id=id, name=name, rule=rule))
+        HEURISTICS.append(Heuristic(id=id, name=name, rule=rule, plain=plain))
         return rule
 
     return register
@@ -283,7 +287,15 @@ def record(
     return applied
 
 
-@_heuristic(id="H3", name="facing_lanes")
+@_heuristic(
+    id="H3",
+    name="facing_lanes",
+    plain=(
+        "Some traffic lights and signs do not say which lanes they control. The converter assumes such a "
+        "control applies to every drivable lane travelling the way it faces, and gives each of those lanes a "
+        "stopline."
+    ),
+)
 def faces(*, orientation: Optional[str], travels_with_s: bool) -> bool:
     """A control no lane names covers the drivable lanes that travel the way it faces.
 
@@ -306,25 +318,51 @@ def faces(*, orientation: Optional[str], travels_with_s: bool) -> bool:
     return True
 
 
-@_heuristic(id="H4", name="stop_at_signal_s")
+@_heuristic(
+    id="H4",
+    name="stop_at_signal_s",
+    plain=(
+        "A light or sign on an ordinary road (not inside a junction) stops traffic where it stands. The controls of "
+        "one lane within max_junction_distance_m of sign_signal_stoplines (30 m by default) of a junction share one "
+        "stopline, where the one nearest it stands; with no junction that close, those within that distance behind "
+        "the lane's last control share its stopline."
+    ),
+)
 def stops_at_signal_s(*, on_junction_road: bool) -> bool:
-    """Outside a junction a control's stopline sits at the signal's (or reference's) s on each lane.
+    """Outside a junction a control stops each lane at its own s; one approach lane's controls share one position.
 
     Assumes: a control on a junction's connecting road (the CARLA layout) stops traffic where the
-    lane enters the junction, as before; one on an ordinary road stands where traffic stops, so
-    the stopline goes at its s rather than at the start of the lane.
+    lane enters the junction, as before; one on an ordinary road stands where traffic stops, so the
+    stopline goes at its s rather than at the start of the lane. The controls of one lane entering a
+    junction within ``sign_signal_stoplines.max_junction_distance_m`` share one stop position: that of
+    the control nearest the junction (a connecting-road control's is the junction entry), so no stopline
+    is moved past a control of its lane, and hand-placed lights keep their place. On a lane no junction
+    anchors that way, the controls within the same distance behind its most downstream control share that
+    control's position (then again from the next control behind them).
 
     Evidence: lights bound on ordinary roads exist in two corpus maps (142 references with a lane
-    validity), most near the end of the road before a junction; their old stoplines were at the
-    start of the road. No CARLA map binds a light on an ordinary road.
+    validity), most near the end of the road before a junction (one map: 273 of 315 within 10 m, 4
+    beyond 10 m, 38 on roads entering no junction); placed each at its own s, the heads of one approach
+    gave stoplines metres apart in one lane. Moving every one to the junction entry instead put lights of
+    hand-edited maps into crossing traffic where the crossing is not modelled as a junction. On lanes no
+    junction anchors, one map has the heads of one signal up to 22 m apart (and three heads within 1 m 57 m
+    before a junction). No CARLA map binds a light on an ordinary road.
 
     Breaks when: a source puts a light on the road after the junction (the far-side layout) and
-    binds it with a validity there; its stopline lands after the junction.
+    binds it with a validity there; its stopline lands after the junction. A mid-block crossing within
+    the distance of a junction, or of another signal on a lane with no junction, shares that position.
     """
     return not on_junction_road
 
 
-@_heuristic(id="H5", name="sign_stencil_match")
+@_heuristic(
+    id="H5",
+    name="sign_stencil_match",
+    plain=(
+        "A painted STOP or YIELD marking on the road close to a matching sign (within max_distance_m, 10 m by "
+        "default) is taken to be where that sign makes traffic stop, so the stopline goes at the marking."
+    ),
+)
 def matches_stencil(*, distance_m: float, config: HeuristicsConfig) -> bool:
     """A stop/yield stencil of the same kind within ``max_distance_m`` of a sign is that sign's control.
 
@@ -342,7 +380,15 @@ def matches_stencil(*, distance_m: float, config: HeuristicsConfig) -> bool:
     return distance_m <= config.sign_stencil_match.max_distance_m
 
 
-@_heuristic(id="H6", name="sign_signal_stoplines")
+@_heuristic(
+    id="H6",
+    name="sign_signal_stoplines",
+    plain=(
+        "A stop or yield sign with no painted marking gets its own stopline, but only on lanes that reach a "
+        "junction soon after the sign (max_junction_distance_m, 30 m by default); signs far from any junction "
+        "get none."
+    ),
+)
 def writes_sign_signal_stoplines(*, covered_by_stencil: bool) -> bool:
     """Stop and yield sign signals no stencil covers (H5) write their own stoplines.
 
@@ -364,7 +410,14 @@ def writes_sign_signal_stoplines(*, covered_by_stencil: bool) -> bool:
     return not covered_by_stencil
 
 
-@_heuristic(id="H7", name="non_vehicle_light")
+@_heuristic(
+    id="H7",
+    name="non_vehicle_light",
+    plain=(
+        "A traffic light on a road with no drivable lane on either side is taken for a pedestrian or cyclist "
+        "signal, so it gives vehicles no stopline."
+    ),
+)
 def is_vehicle_light(*, has_drivable_lane: bool) -> bool:
     """A light whose road has no drivable lane on either side is a pedestrian or cyclist signal.
 
@@ -385,7 +438,14 @@ READER_S_TOLERANCE_FRACTION = 0.01
 BASIC_SEAM_TOLERANCE_M = 0.01
 
 
-@_heuristic(id="H10", name="seam_tolerance")
+@_heuristic(
+    id="H10",
+    name="seam_tolerance",
+    plain=(
+        "Where the map links two lanes end to start but their ends lie a little apart (up to max_gap_m, 1 m "
+        "by default), the converter joins them at one point so vehicles can drive from one into the other."
+    ),
+)
 def joins_seam(*, gap_m: float, config: HeuristicsConfig) -> bool:
     """Linked lanelets whose ends lie up to ``max_gap_m`` apart share their end nodes: one seam.
 
@@ -410,7 +470,14 @@ def shared_node_tolerance(*, config: HeuristicsConfig) -> float:
     return config.seam_tolerance.max_gap_m if config.seam_tolerance.enabled else BASIC_SEAM_TOLERANCE_M
 
 
-@_heuristic(id="H11", name="fsm_distance_clusters")
+@_heuristic(
+    id="H11",
+    name="fsm_distance_clusters",
+    plain=(
+        "When building traffic-light timing, lights closer together than max_distance_m (50 m by default) are "
+        "treated as one intersection."
+    ),
+)
 def merges_intersections(*, declared_count: int) -> bool:
     """Traffic lights closer than ``max_distance_m`` are one intersection (``traffic_light_fsm.py``).
 
@@ -431,7 +498,14 @@ def merges_intersections(*, declared_count: int) -> bool:
     return declared_count > 1
 
 
-@_heuristic(id="H12", name="fsm_axis_split")
+@_heuristic(
+    id="H12",
+    name="fsm_axis_split",
+    plain=(
+        "An intersection's lights are split into at most two phases by the direction their stoplines face, so "
+        "that crossing approaches are not green at the same time."
+    ),
+)
 def changes_phases(*, axis_groups: list[list[int]], declared_groups: list[list[int]]) -> bool:
     """An intersection's lights are split into at most two phases by stopline axis (``traffic_light_fsm.py``).
 
@@ -451,7 +525,14 @@ def changes_phases(*, axis_groups: list[list[int]], declared_groups: list[list[i
     return sorted(map(sorted, axis_groups)) != sorted(map(sorted, declared_groups))
 
 
-@_heuristic(id="H13", name="fsm_topology_refinement")
+@_heuristic(
+    id="H13",
+    name="fsm_topology_refinement",
+    plain=(
+        "A group of lights formed only by distance is split again where their lanes do not connect within a "
+        "few steps of the road network (max_hops, 3 by default)."
+    ),
+)
 def splits_intersection(*, parts: int) -> bool:
     """A low-certainty distance cluster is split where its lights' lanelets do not meet within ``max_hops``.
 
@@ -471,7 +552,14 @@ def splits_intersection(*, parts: int) -> bool:
     return parts > 1
 
 
-@_heuristic(id="H14", name="signal_past_road_end")
+@_heuristic(
+    id="H14",
+    name="signal_past_road_end",
+    plain=(
+        "A signal the map places past the end of its road is moved back to the road's end if it overshoots by "
+        "at most max_overshoot_m (1 m by default); farther out it is dropped and reported."
+    ),
+)
 def road_end_placement(*, s: float, road_length: float, config: HeuristicsConfig) -> Optional[str]:
     """A signal whose ``s`` lies past its road's end is moved to the end if it is close, else dropped.
 
@@ -494,3 +582,55 @@ def road_end_placement(*, s: float, road_length: float, config: HeuristicsConfig
     if overshoot <= READER_S_TOLERANCE_M + READER_S_TOLERANCE_FRACTION * road_length:
         return None
     return "placed_at_road_end" if overshoot <= config.signal_past_road_end.max_overshoot_m else "dropped"
+
+
+@_heuristic(
+    id="H15",
+    name="shared_lane_id",
+    plain=(
+        "Where several traffic lights control the same approach lane, the converter assumes they always show the "
+        "same state, so the lane gets one stopline whose id is the lowest of theirs; the others are listed with it "
+        "in the signal-groups file."
+    ),
+)
+def shares_one_row(*, lights_at_stop: int) -> bool:
+    """Several lights stopping one approach lane at one position share one stopline row (the lowest id).
+
+    Assumes: the lights an OpenDRIVE file binds to one approach lane are heads of one signal (one state), as in
+    CARLA, which binds one light per approach lane; the traffic-light FSM then gives the lane one state instead of
+    several that could disagree at one place. The ids each row stands for are written to
+    ``<map>_signal_groups.json`` (``stopline_ids``), so a simulator light can be traced to its row.
+
+    Evidence: no CARLA town (Town01-07, 10HD) has two lights at one stop position; maps without controllers bind
+    several heads of one approach to every lane of it (one map: 597 extra light rows stacked on others).
+
+    Breaks when: lights on one lane show different states (a turn arrow and a main head on a shared
+    straight-and-turn lane); the lane follows the lowest id's state only.
+    """
+    return lights_at_stop > 1
+
+
+@_heuristic(
+    id="H16",
+    name="light_priority",
+    plain=(
+        "A traffic light takes priority over a stop or yield sign (or painted STOP/YIELD marking) on the same lane: "
+        "where the sign's stopline would lie within stencil_lane_distance_m of sign_signal_stoplines (10 m by "
+        "default) along the lane of a light's stopline, the sign gets none."
+    ),
+)
+def light_takes_priority(*, gap_m: float, config: HeuristicsConfig) -> bool:
+    """A stop or yield row within ``sign_signal_stoplines.stencil_lane_distance_m`` along its lane of a traffic
+    light's row (same travel direction) is not written: the light stops that lane.
+
+    Assumes: a lane a traffic light stops is controlled by the light, not by a stop or yield sign or marking at the
+    same place; a sign there is a fallback for a dark signal or a leftover of the map's authoring. The distance is
+    the one at which H5 takes a stencil on a lane for that lane's stop.
+
+    Evidence: one CARLA town paints STOP stencils on 23 lanes that also have a traffic light, 3-7 m before the
+    light's stopline, which gave each lane two stoplines of different kinds.
+
+    Breaks when: a sign governs a movement the light does not (a yield for a slip lane sharing the light's lane
+    before it splits); that movement loses its stopline.
+    """
+    return gap_m <= config.sign_signal_stoplines.stencil_lane_distance_m
